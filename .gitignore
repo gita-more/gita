@@ -1,1 +1,24 @@
-goal.md
+# Rust build artifacts
+/target
+**/target
+
+# Node
+/node_modules
+**/node_modules
+/web/dist
+
+# Runtime data
+/data
+*.db
+*.db-shm
+*.db-wal
+
+# Environment
+.env
+config/gita.toml
+
+# IDE / OS
+.idea
+.vscode
+*.swp
+.DS_Store
