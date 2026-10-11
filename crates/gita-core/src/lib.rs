@@ -127,6 +127,12 @@ pub struct ReviewComment {
     pub message: String,
     pub suggestion: String,
     pub created_at: DateTime<Utc>,
+    /// Whether the repository owner has marked this comment as resolved.
+    pub resolved: bool,
+    /// The user who resolved this comment, if any.
+    pub resolved_by: Option<i64>,
+    /// When the comment was resolved, if at all.
+    pub resolved_at: Option<DateTime<Utc>>,
 }
 
 /// An AI review of a pull request (or of a push).
@@ -143,7 +149,26 @@ pub struct Review {
     pub risk_score: i64,
     pub summary: String,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
     pub comments: Vec<ReviewComment>,
+}
+
+/// A user comment on an AI review (discussion thread).
+///
+/// Unlike [`ReviewComment`] (which is an AI-generated, line-level finding),
+/// this type represents a human comment posted in the review discussion,
+/// similar to a GitHub PR review thread. Deletion is a soft delete.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewDiscussionComment {
+    pub id: i64,
+    pub review_id: i64,
+    pub author_id: i64,
+    pub author_name: String,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// Soft-delete marker; `None` means the comment is visible.
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 /// Status of an issue.

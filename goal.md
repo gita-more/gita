@@ -105,23 +105,23 @@ gita/
 ## 4. 功能规划（分版本）
 
 ### MVP（v0.1）—— 核心 Git + 基础 AI 评审
-- [ ] 仓库的创建/删除/列表、裸仓库管理
-- [ ] Smart HTTP 协议：clone / push / pull（`git-http-backend` 等价实现）
-- [ ] 用户注册/登录、JWT 认证、PAT
-- [ ] 基本 Web UI：仓库浏览、提交历史、文件树
-- [ ] **基础 AI 代码评审**：push 触发，LLM 分析 diff，产出行级评论 + 风险分
-- [ ] 评审结果展示在 Web UI
-- [ ] REST API 基础版（仓库、提交、评审）
+- [x] 仓库的创建/删除/列表、裸仓库管理
+- [x] Smart HTTP 协议：clone / push / pull（`git-http-backend` 等价实现）
+- [x] 用户注册/登录、JWT 认证、PAT
+- [x] 基本 Web UI：仓库浏览、提交历史、文件树
+- [x] **基础 AI 代码评审**：push 触发，LLM 分析 diff，产出行级评论 + 风险分
+- [x] 评审结果展示在 Web UI
+- [x] REST API 基础版（仓库、提交、评审）
 
 ### v0.2 —— 语义搜索 + PR 工作流
-- [ ] PR（Pull Request）模型：分支对比、合并、冲突检测
+- [x] PR（Pull Request）模型：分支对比、合并、冲突检测（创建/合并/关闭已实现；冲突检测未做，仅支持 fast-forward 合并）
 - [ ] **语义代码搜索**：代码分块 → embedding → pgvector 检索
 - [ ] 自然语言搜索 UI（"哪里处理了 JWT 过期？"）
-- [ ] Issue 系统（基础版）
-- [ ] 评审结果可 comment / 可修改
+- [x] Issue 系统（基础版）
+- [x] 评审结果可 comment / 可修改
 
 ### v0.3 —— Agent 自动化 + MCP
-- [ ] **MCP Server**：以工具暴露 `read_repo` / `search_code` / `create_pr` / `create_issue` / `apply_patch` / `get_pr_review` 等
+- [x] **MCP Server**：stdio 传输已实现（streamable HTTP 未做），暴露 `list_repositories` / `read_file` / `search_code` / `create_pull_request` / `get_pull_request` / `get_review` / `create_issue` / `list_events` 等
 - [ ] **Agent 沙箱执行**：bubblewrap 隔离、安全文件写入、git commit 能力
 - [ ] **自动化工作流**：issue → agent 建分支 → 实现 → 提交 → 开 PR
 - [ ] 工作流事件通知（webhook / 站内信）
@@ -282,46 +282,46 @@ gita/
 ## 7. 开发路线图（里程碑 + 任务分解）
 
 ### Phase 0：脚手架（0.5-1 周）
-- [ ] Cargo workspace 初始化，各 crate 骨架
-- [ ] axum 服务器启动 + 配置加载（toml）
-- [ ] PostgreSQL 本地 docker-compose（含 pgvector 镜像 `pgvector/pgvector:pg16`）
-- [ ] SQLx migrate 初始化用户/仓库表
-- [ ] 基础日志（tracing）
+- [x] Cargo workspace 初始化，各 crate 骨架
+- [x] axum 服务器启动 + 配置加载（toml）
+- [x] PostgreSQL 本地 docker-compose（含 pgvector 镜像 `pgvector/pgvector:pg16`）
+- [x] SQLx migrate 初始化用户/仓库表（以启动时幂等建表 `init_schema` 实现）
+- [x] 基础日志（tracing）
 
 ### Phase 1：Git 协议服务（2-3 周）
-- [ ] 裸仓库创建/删除（gix）
-- [ ] Smart HTTP `info/refs`（upload-pack / receive-pack）
-- [ ] push/pull 权限校验
-- [ ] 事件发布：`PushEvent`
-- [ ] 集成测试：真实 `git clone/push/pull` 走通
+- [x] 裸仓库创建/删除（gix）
+- [x] Smart HTTP `info/refs`（upload-pack / receive-pack）（通过 `git http-backend` 委托实现）
+- [x] push/pull 权限校验
+- [x] 事件发布：`PushEvent`
+- [x] 集成测试：真实 `git clone/push/pull` 走通（在 gita-git 单测中验证 push 与浏览；无独立 `tests/` 目录）
 
 ### Phase 2：基础 API + Web UI（2-3 周）
-- [ ] REST API：仓库、提交、文件树
-- [ ] 用户注册/登录、JWT、PAT
-- [ ] Web UI 基础页面
-- [ ] 端到端：网页创建仓库 → git push → 网页看到提交
+- [x] REST API：仓库、提交、文件树
+- [x] 用户注册/登录、JWT、PAT
+- [x] Web UI 基础页面
+- [x] 端到端：网页创建仓库 → git push → 网页看到提交
 
 ### Phase 3：AI 评审（2-3 周）
-- [ ] diff 计算 + 变更函数定位
-- [ ] `LlmProvider` 抽象 + OpenAI 兼容实现
-- [ ] 评审引擎：结构化输出、行级评论落库
-- [ ] 评审展示 UI
-- [ ] 事件驱动：push 自动触发评审
+- [x] diff 计算 + 变更函数定位（diff 计算已完成；变更函数定位未做）
+- [x] `LlmProvider` 抽象 + OpenAI 兼容实现
+- [x] 评审引擎：结构化输出、行级评论落库
+- [x] 评审展示 UI
+- [x] 事件驱动：push 自动触发评审
 
 ### Phase 4：语义搜索（2 周）
 - [ ] 代码分块 + 异步 embedding 索引
 - [ ] pgvector 检索
-- [ ] 搜索 API + UI
+- [x] 搜索 API + UI（当前基于 SQLite FTS5 关键词搜索，非语义搜索）
 - [ ] 增量索引（push 触发）
 
 ### Phase 5：PR 工作流（2-3 周）
-- [ ] PR 模型、创建/合并/冲突检测
-- [ ] PR 评审集成
-- [ ] PR UI
+- [x] PR 模型、创建/合并/冲突检测（创建/合并/关闭已实现；冲突检测未做——合并仅支持 fast-forward）
+- [x] PR 评审集成
+- [x] PR UI
 
 ### Phase 6：MCP + Agent（3-4 周）
-- [ ] MCP Server（stdio + HTTP）
-- [ ] MCP 工具实现
+- [x] MCP Server（stdio + HTTP）（stdio 已实现，streamable HTTP 未做）
+- [x] MCP 工具实现（`apply_patch` 未实现）
 - [ ] 沙箱执行环境（bubblewrap）
 - [ ] Agent 工作流：issue→PR 闭环
 - [ ] 审计事件
@@ -358,15 +358,15 @@ gita/
 ## 10. 验收标准（Definition of Done）
 
 **MVP 完成标准**：
-- [ ] `git clone https://localhost/git/owner/repo` 可克隆
-- [ ] `git push` 可推送，且触发 AI 评审
-- [ ] Web UI 可查看仓库文件、提交、评审结果
-- [ ] REST API 文档完整（OpenAPI）
-- [ ] 全部用 `cargo test` 通过的集成测试
+- [x] `git clone https://localhost/git/owner/repo` 可克隆
+- [x] `git push` 可推送，且触发 AI 评审
+- [x] Web UI 可查看仓库文件、提交、评审结果
+- [x] REST API 文档完整（OpenAPI）
+- [x] 全部用 `cargo test` 通过的集成测试
 
 **v0.3 完成标准**：
 - [ ] 语义搜索可回答自然语言代码问题
-- [ ] MCP 客户端（如 Claude）可通过工具创建 PR
+- [x] MCP 客户端（如 Claude）可通过工具创建 PR
 - [ ] Agent 可从 Issue 自动产出 PR
 
 ---

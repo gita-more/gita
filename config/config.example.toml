@@ -9,12 +9,17 @@ port = 3000
 data_dir = "data"
 # SQLite (default, zero-dependency) or PostgreSQL:
 #   postgres://user:password@localhost/gita
+#
+# For PostgreSQL with pgvector, use docker compose up -d, then:
+#   database_url = "postgres://gita:gita@localhost:5432/gita"
+# The `enable_extension = "vector"` line (when present) creates the
+# pgvector extension required for semantic code search.
 database_url = "sqlite://data/gita.db"
 # Secret used to sign JWTs. Change this in production!
 jwt_secret = "dev-secret-change-me"
 
 [llm]
-# Leave empty to use the stub review provider (for development).
+# Leave empty to use the stub review provider (development).
 # Any OpenAI-compatible endpoint works, including local Ollama:
 #   base_url = "http://localhost:11434/v1"
 #   api_key = "ollama"

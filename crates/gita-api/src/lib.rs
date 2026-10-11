@@ -13,6 +13,7 @@
 //! The API follows a GitHub-like style.
 
 pub mod auth;
+pub mod docs;
 pub mod error;
 pub mod extract;
 pub mod routes;
@@ -36,5 +37,6 @@ pub fn api_router(state: AppState) -> axum::Router {
         .merge(routes::search_routes())
         .merge(routes::event_routes())
         .merge(routes::misc_routes())
+        .merge(docs::docs_routes())
         .with_state(state)
 }

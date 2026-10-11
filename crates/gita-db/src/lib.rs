@@ -26,7 +26,16 @@ impl Db {
     /// - `sqlite::memory:` or `sqlite:///path.db` for SQLite
     /// - `postgres://user:pass@host/db` for PostgreSQL
     pub async fn connect(url: &str) -> Result<Self> {
-        let opts = AnyConnectOptions::from_str(url)
+        // Install default drivers so sqlx::any can use SQLite/PostgreSQL
+        sqlx::any::install_default_drivers();
+        // sqlx 0.8 does not create SQLite files by default; ensure read-write-create mode
+        // so `sqlite://path.db` behaves like an ordinary file-backed database.
+        let url = if url.starts_with("sqlite:") && !url.contains("mode=") {
+            format!("{url}?mode=rwc")
+        } else {
+            url.to_string()
+        };
+        let opts = AnyConnectOptions::from_str(&url)
             .with_context(|| format!("invalid database URL prefix: {url}"))?;
         let pool = AnyPoolOptions::new()
             .max_connections(10)
@@ -223,7 +232,90 @@ impl Db {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS review_discussion_comments (
+                id INTEGER PRIMARY KEY,
+                review_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                author_name TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Idempotent migrations for columns added after the initial schema.
+        // SQLite does not support `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`,
+        // so we check for column existence first.
+        self.ensure_column(
+            "reviews",
+            "updated_at",
+            "ALTER TABLE reviews ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
+        )
+        .await?;
+        self.ensure_column(
+            "review_comments",
+            "resolved",
+            "ALTER TABLE review_comments ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0",
+        )
+        .await?;
+        self.ensure_column(
+            "review_comments",
+            "resolved_by",
+            "ALTER TABLE review_comments ADD COLUMN resolved_by INTEGER",
+        )
+        .await?;
+        self.ensure_column(
+            "review_comments",
+            "resolved_at",
+            "ALTER TABLE review_comments ADD COLUMN resolved_at TEXT",
+        )
+        .await?;
+
         info!("database schema ready");
+        Ok(())
+    }
+
+    /// Ensure a column exists on a table, adding it if missing.
+    ///
+    /// SQLite cannot express `ADD COLUMN IF NOT EXISTS`, so we inspect the
+    /// schema catalog first and only run the `ALTER TABLE` when the column
+    /// is absent. PostgreSQL is checked via `information_schema`.
+    ///
+    /// Table and column names are hard-coded constants in this file (never
+    /// user input), so they are inlined directly into the catalog queries.
+    async fn ensure_column(&self, table: &str, column: &str, ddl: &str) -> Result<()> {
+        // SQLite: pragma_table_info does not accept bound parameters for the
+        // table name, and binding the column name also fails to match; use
+        // fully-inline literals (table/column are constants, so this is safe).
+        let sqlite_has = matches!(
+            sqlx::query(&format!(
+                "SELECT name FROM pragma_table_info('{table}') WHERE name = '{column}'"
+            ))
+            .fetch_optional(&self.pool)
+            .await,
+            Ok(Some(_))
+        );
+        // PostgreSQL.
+        let pg_has = matches!(
+            sqlx::query(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+            )
+            .bind(table)
+            .bind(column)
+            .fetch_optional(&self.pool)
+            .await,
+            Ok(Some(_))
+        );
+        if !sqlite_has && !pg_has {
+            info!("adding column {table}.{column}");
+            self.raw_query(ddl).await?;
+        }
         Ok(())
     }
 
@@ -837,7 +929,8 @@ impl Db {
         let created_at = review.created_at.to_rfc3339();
         let row = sqlx::query(
             "INSERT INTO reviews (pr_id, repo_id, commit_sha, status, risk_score, summary, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             RETURNING id",
         )
         .bind(review.pr_id)
         .bind(review.repo_id)
@@ -846,9 +939,9 @@ impl Db {
         .bind(review.risk_score)
         .bind(&review.summary)
         .bind(&created_at)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        let review_id = row.last_insert_id().unwrap_or(0) as i64;
+        let review_id: i64 = row.try_get("id").unwrap_or(0);
         for c in &review.comments {
             self.insert_review_comment(review_id, c).await?;
         }
@@ -933,7 +1026,7 @@ impl Db {
 
     async fn list_review_comments(&self, review_id: i64) -> Result<Vec<ReviewComment>> {
         let rows = sqlx::query(
-            "SELECT id, review_id, file_path, line, severity, message, suggestion, created_at
+            "SELECT id, review_id, file_path, line, severity, message, suggestion, created_at, resolved, resolved_by, resolved_at
              FROM review_comments WHERE review_id = ? ORDER BY id ASC",
         )
         .bind(review_id)
@@ -941,10 +1034,226 @@ impl Db {
         .await?;
         rows.iter().map(row_to_review_comment).collect()
     }
+
+    pub async fn list_review_comments_public(&self, review_id: i64) -> Result<Vec<ReviewComment>> {
+        self.list_review_comments(review_id).await
+    }
+
+    /// Get a single AI review comment (line-level finding).
+    pub async fn get_review_comment(&self, id: i64) -> Result<Option<ReviewComment>> {
+        let rows = sqlx::query(
+            "SELECT id, review_id, file_path, line, severity, message, suggestion, created_at, resolved, resolved_by, resolved_at
+             FROM review_comments WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(row_to_review_comment(&rows[0])?))
+    }
+
+    // -----------------------------------------------------------------------
+    // Review discussion comments (user comments on a review)
+    // -----------------------------------------------------------------------
+
+    pub async fn insert_review_discussion_comment(
+        &self,
+        review_id: i64,
+        author_id: i64,
+        author_name: &str,
+        body: &str,
+    ) -> Result<ReviewDiscussionComment> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "INSERT INTO review_discussion_comments (review_id, author_id, author_name, body, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             RETURNING id",
+        )
+        .bind(review_id)
+        .bind(author_id)
+        .bind(author_name)
+        .bind(body)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        let id: i64 = row.try_get("id").unwrap_or(0);
+        Ok(ReviewDiscussionComment {
+            id,
+            review_id,
+            author_id,
+            author_name: author_name.to_string(),
+            body: body.to_string(),
+            created_at: DateTime::parse_from_rfc3339(&now)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            updated_at: DateTime::parse_from_rfc3339(&now)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            deleted_at: None,
+        })
+    }
+
+    pub async fn list_review_discussion_comments(
+        &self,
+        review_id: i64,
+    ) -> Result<Vec<ReviewDiscussionComment>> {
+        let rows = sqlx::query(
+            "SELECT id, review_id, author_id, author_name, body, created_at, updated_at, deleted_at
+             FROM review_discussion_comments
+             WHERE review_id = ? AND deleted_at IS NULL
+             ORDER BY id ASC",
+        )
+        .bind(review_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_discussion_comment).collect()
+    }
+
+    pub async fn get_review_discussion_comment(
+        &self,
+        id: i64,
+    ) -> Result<Option<ReviewDiscussionComment>> {
+        let rows = sqlx::query(
+            "SELECT id, review_id, author_id, author_name, body, created_at, updated_at, deleted_at
+             FROM review_discussion_comments WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(row_to_discussion_comment(&rows[0])?))
+    }
+
+    /// Edit a discussion comment. Only the author can edit (`author_id` check).
+    pub async fn update_review_discussion_comment(
+        &self,
+        id: i64,
+        author_id: i64,
+        body: &str,
+    ) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        let res = sqlx::query(
+            "UPDATE review_discussion_comments SET body = ?, updated_at = ?
+             WHERE id = ? AND author_id = ? AND deleted_at IS NULL",
+        )
+        .bind(body)
+        .bind(&now)
+        .bind(id)
+        .bind(author_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Soft-delete a discussion comment. Only the author can delete.
+    pub async fn delete_review_discussion_comment(
+        &self,
+        id: i64,
+        author_id: i64,
+    ) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        let res = sqlx::query(
+            "UPDATE review_discussion_comments SET deleted_at = ?
+             WHERE id = ? AND author_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(id)
+        .bind(author_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    // -----------------------------------------------------------------------
+    // Review modification (summary / risk_score) and comment resolution
+    // -----------------------------------------------------------------------
+
+    /// Update the editable fields of a review. Only non-`None` fields are set.
+    pub async fn update_review(
+        &self,
+        id: i64,
+        summary: Option<&str>,
+        risk_score: Option<i64>,
+    ) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        let mut sql = String::from("UPDATE reviews SET updated_at = ?");
+        let mut args: Vec<String> = vec![now.clone()];
+        if let Some(s) = summary {
+            sql.push_str(", summary = ?");
+            args.push(s.to_string());
+        }
+        if let Some(rs) = risk_score {
+            sql.push_str(", risk_score = ?");
+            args.push(rs.to_string());
+        }
+        sql.push_str(" WHERE id = ?");
+        args.push(id.to_string());
+        let mut q = sqlx::query(&sql);
+        for a in &args {
+            q = q.bind(a.as_str());
+        }
+        let res = q.execute(&self.pool).await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Mark a review comment as resolved / unresolved.
+    pub async fn set_review_comment_resolved(
+        &self,
+        id: i64,
+        resolved: bool,
+        by_user_id: i64,
+    ) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        let (resolved_val, resolved_by, resolved_at) = if resolved {
+            (1, Some(by_user_id.to_string()), Some(now))
+        } else {
+            (0, None, None)
+        };
+        let res = sqlx::query(
+            "UPDATE review_comments SET resolved = ?, resolved_by = ?, resolved_at = ?
+             WHERE id = ?",
+        )
+        .bind(resolved_val)
+        .bind(resolved_by)
+        .bind(resolved_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+}
+
+fn row_to_discussion_comment(row: &sqlx::any::AnyRow) -> Result<ReviewDiscussionComment> {
+    let created_at: String = row.try_get("created_at")?;
+    let updated_at: String = row.try_get("updated_at")?;
+    let deleted_at: Option<String> = row.try_get("deleted_at").ok().flatten();
+    Ok(ReviewDiscussionComment {
+        id: row.try_get("id")?,
+        review_id: row.try_get("review_id")?,
+        author_id: row.try_get("author_id")?,
+        author_name: row.try_get("author_name")?,
+        body: row.try_get("body")?,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        updated_at: DateTime::parse_from_rfc3339(&updated_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        deleted_at: deleted_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc)),
+    })
 }
 
 fn row_to_review(row: &sqlx::any::AnyRow) -> Result<Review> {
     let created_at: String = row.try_get("created_at")?;
+    let updated_at: String = row.try_get("updated_at").unwrap_or_default();
     Ok(Review {
         id: row.try_get("id")?,
         pr_id: row.try_get("pr_id")?,
@@ -956,6 +1265,9 @@ fn row_to_review(row: &sqlx::any::AnyRow) -> Result<Review> {
         created_at: DateTime::parse_from_rfc3339(&created_at)
             .map(|d| d.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
+        updated_at: DateTime::parse_from_rfc3339(&updated_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
         comments: Vec::new(),
     })
 }
@@ -963,6 +1275,8 @@ fn row_to_review(row: &sqlx::any::AnyRow) -> Result<Review> {
 fn row_to_review_comment(row: &sqlx::any::AnyRow) -> Result<ReviewComment> {
     let severity: String = row.try_get("severity")?;
     let created_at: String = row.try_get("created_at")?;
+    let resolved: i64 = row.try_get("resolved").unwrap_or(0);
+    let resolved_at: Option<String> = row.try_get("resolved_at").ok().flatten();
     Ok(ReviewComment {
         id: row.try_get("id")?,
         review_id: row.try_get("review_id")?,
@@ -978,6 +1292,12 @@ fn row_to_review_comment(row: &sqlx::any::AnyRow) -> Result<ReviewComment> {
         created_at: DateTime::parse_from_rfc3339(&created_at)
             .map(|d| d.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
+        resolved: resolved != 0,
+        resolved_by: row.try_get("resolved_by").ok().flatten(),
+        resolved_at: resolved_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc)),
     })
 }
 
@@ -1275,5 +1595,189 @@ mod tests {
         let events = db.list_events(None, None, 10).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::RepoCreated);
+    }
+
+    #[tokio::test]
+    async fn discussion_comment_crud() {
+        let db = new_test_db().await;
+        // Create a review to attach comments to.
+        let review = Review {
+            id: 0,
+            pr_id: None,
+            repo_id: 1,
+            commit_sha: "abc".to_string(),
+            status: "completed".to_string(),
+            risk_score: 10,
+            summary: "s".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            comments: Vec::new(),
+        };
+        let review_id = db.insert_review(&review).await.unwrap();
+
+        let c = db
+            .insert_review_discussion_comment(review_id, 7, "alice", "Looks good")
+            .await
+            .unwrap();
+        assert!(c.id > 0);
+        assert_eq!(c.author_name, "alice");
+
+        let listed = db
+            .list_review_discussion_comments(review_id)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+
+        // Author can edit.
+        let ok = db
+            .update_review_discussion_comment(c.id, 7, "Actually, fix this")
+            .await
+            .unwrap();
+        assert!(ok);
+        // Non-author cannot edit.
+        let ok = db
+            .update_review_discussion_comment(c.id, 99, "hijack")
+            .await
+            .unwrap();
+        assert!(!ok);
+
+        // Soft delete.
+        let ok = db.delete_review_discussion_comment(c.id, 7).await.unwrap();
+        assert!(ok);
+        let listed = db
+            .list_review_discussion_comments(review_id)
+            .await
+            .unwrap();
+        assert!(listed.is_empty());
+        // Non-author cannot delete.
+        let ok = db
+            .delete_review_discussion_comment(c.id, 99)
+            .await
+            .unwrap();
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn update_review_fields() {
+        let db = new_test_db().await;
+        let review = Review {
+            id: 0,
+            pr_id: None,
+            repo_id: 1,
+            commit_sha: "abc".to_string(),
+            status: "completed".to_string(),
+            risk_score: 10,
+            summary: "s".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            comments: Vec::new(),
+        };
+        let review_id = db.insert_review(&review).await.unwrap();
+
+        let ok = db
+            .update_review(review_id, Some("new summary"), Some(50))
+            .await
+            .unwrap();
+        assert!(ok);
+
+        let fetched = db.get_review(review_id).await.unwrap().unwrap();
+        assert_eq!(fetched.summary, "new summary");
+        assert_eq!(fetched.risk_score, 50);
+        // updated_at should be set (not the default empty string).
+        assert!(fetched.updated_at.timestamp() > 0);
+    }
+
+    #[tokio::test]
+    async fn review_comment_resolve() {
+        let db = new_test_db().await;
+        let review = Review {
+            id: 0,
+            pr_id: None,
+            repo_id: 1,
+            commit_sha: "abc".to_string(),
+            status: "completed".to_string(),
+            risk_score: 10,
+            summary: "s".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            comments: Vec::new(),
+        };
+        let review_id = db.insert_review(&review).await.unwrap();
+        let fetched = db.get_review(review_id).await.unwrap().unwrap();
+        // Insert review has no AI comments, so verify resolution on a manual one
+        // through the private insert path via a review with comments.
+        drop(fetched);
+
+        // Use a review with one AI comment.
+        let now = Utc::now();
+        let comment = ReviewComment {
+            id: 0,
+            review_id: 0,
+            file_path: "src/lib.rs".to_string(),
+            line: Some(42),
+            severity: Severity::Warning,
+            message: "unused var".to_string(),
+            suggestion: "remove".to_string(),
+            created_at: now,
+            resolved: false,
+            resolved_by: None,
+            resolved_at: None,
+        };
+        let review_with_comment = Review {
+            id: 0,
+            pr_id: None,
+            repo_id: 1,
+            commit_sha: "abc".to_string(),
+            status: "completed".to_string(),
+            risk_score: 10,
+            summary: "s".to_string(),
+            created_at: now,
+            updated_at: now,
+            comments: vec![comment],
+        };
+        let review_id = db.insert_review(&review_with_comment).await.unwrap();
+        let fetched = db.get_review(review_id).await.unwrap().unwrap();
+        let comment_id = fetched.comments[0].id;
+
+        let ok = db
+            .set_review_comment_resolved(comment_id, true, 7)
+            .await
+            .unwrap();
+        assert!(ok);
+        let fetched = db.get_review(review_id).await.unwrap().unwrap();
+        assert!(fetched.comments[0].resolved);
+        assert_eq!(fetched.comments[0].resolved_by, Some(7));
+        assert!(fetched.comments[0].resolved_at.is_some());
+
+        let ok = db
+            .set_review_comment_resolved(comment_id, false, 7)
+            .await
+            .unwrap();
+        assert!(ok);
+        let fetched = db.get_review(review_id).await.unwrap().unwrap();
+        assert!(!fetched.comments[0].resolved);
+        assert_eq!(fetched.comments[0].resolved_by, None);
+        assert!(fetched.comments[0].resolved_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn migration_idempotent() {
+        // Connecting twice to an existing in-memory DB is not possible (single
+        // connection), so instead verify init_schema can be called again on a
+        // fresh in-memory db and that migrated columns exist.
+        let db = new_test_db().await;
+        db.init_schema().await.unwrap();
+        // Verify the migrated columns are present and usable.
+        let ok = db
+            .update_review(1, Some("x"), Some(1))
+            .await
+            .is_ok();
+        assert!(ok);
+        // Verify review_discussion_comments table is present.
+        let ok = db
+            .insert_review_discussion_comment(1, 1, "u", "hello")
+            .await
+            .is_ok();
+        assert!(ok);
     }
 }

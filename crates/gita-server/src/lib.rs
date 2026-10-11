@@ -146,7 +146,17 @@ impl App {
             .with_context(|| format!("connect to database {db_url}"))?;
 
         let git = Arc::new(GitManager::new(repos_dir));
-        let bus = EventBus::default();
+        // Persist every published event to the database so the `/api/events`
+        // endpoint and AI-readable event stream reflect real activity.
+        let event_db = db.clone();
+        let bus = EventBus::new(Some(Arc::new(move |event: gita_core::Event| {
+            let db = event_db.clone();
+            tokio::spawn(async move {
+                if let Err(e) = db.insert_event(&event).await {
+                    warn!("failed to persist event: {e}");
+                }
+            });
+        })));
         let auth = Auth::new(config.server.jwt_secret.clone());
         let ai = AiEngine::from_config(config.llm.clone());
         if !ai.configured {
@@ -161,7 +171,7 @@ impl App {
 
         let api_state = gita_api::AppState::new(
             db.clone(),
-            auth,
+            auth.clone(),
             (*git).clone(),
             bus.clone(),
             ai.clone(),
@@ -173,6 +183,8 @@ impl App {
             git: git.clone(),
             db: db.clone(),
             bus: bus.clone(),
+            ai: Arc::new(ai.clone()),
+            auth: Arc::new(auth.clone()),
         };
 
         Ok(Self {

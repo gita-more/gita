@@ -97,12 +97,24 @@ impl GitManager {
         cmd.env("GIT_HTTP_EXPORT_ALL", "1");
         cmd.env("PATH_INFO", path_info);
         cmd.env("REQUEST_METHOD", method);
-        cmd.env("GIT_PROTOCOL", "version=2");
+        // Note: do not set GIT_PROTOCOL here. When it is set to
+        // `version=2`, `git http-backend` serves receive-pack (push)
+        // advertisements without the `# service=git-receive-pack`
+        // preamble line, which git clients reject with
+        // "not valid: is this a git repository?". Leaving it unset lets
+        // http-backend negotiate the protocol version with the client.
         if let Some(qs) = query_string {
             cmd.env("QUERY_STRING", qs);
         }
         cmd.env("CONTENT_TYPE", content_type);
         cmd.env("CONTENT_LENGTH", body.len().to_string());
+        // Enable the receive-pack (push) service. `git http-backend` only
+        // serves receive-pack when the repository config sets
+        // `http.receivepack = true`; inject that setting per-request so
+        // push works for every repository without mutating on-disk configs.
+        cmd.env("GIT_CONFIG_COUNT", "1");
+        cmd.env("GIT_CONFIG_KEY_0", "http.receivepack");
+        cmd.env("GIT_CONFIG_VALUE_0", "true");
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -134,8 +146,8 @@ impl GitManager {
         let mut body: &[u8] = &stdout;
 
         // Parse status line and headers from the CGI output.
-        if let Some(header_end) = find_cgi_header_end(&stdout) {
-            let header_text = String::from_utf8_lossy(&stdout[..header_end]);
+        if let Some(body_start) = find_cgi_header_end(&stdout) {
+            let header_text = String::from_utf8_lossy(&stdout[..body_start]);
             for line in header_text.lines() {
                 let line = line.trim_end_matches('\r');
                 if let Some((key, value)) = line.split_once(':') {
@@ -152,7 +164,7 @@ impl GitManager {
                     }
                 }
             }
-            body = &stdout[header_end + 2..];
+            body = &stdout[body_start..];
         }
 
         Ok((status, headers, body.to_vec()))
@@ -442,9 +454,14 @@ fn find_entry_by_path<'a>(
     Ok(entry)
 }
 
-/// Find the end of the CGI header block (`\n\n` separating headers from body).
+/// Find the start of the CGI body (the byte index just past the header
+/// block). `git http-backend` emits `\r\n` line endings, so the separator
+/// is `\r\n\r\n`; fall back to `\n\n` for robustness.
 fn find_cgi_header_end(bytes: &[u8]) -> Option<usize> {
-    bytes.windows(2).position(|w| w == b"\n\n")
+    if let Some(pos) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+        return Some(pos + 4);
+    }
+    bytes.windows(2).position(|w| w == b"\n\n").map(|pos| pos + 2)
 }
 
 /// Returns whether `git` is available on PATH.

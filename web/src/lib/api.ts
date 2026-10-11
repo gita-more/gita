@@ -50,6 +50,9 @@ export interface ReviewComment {
   message: string
   suggestion: string
   created_at: string
+  resolved: boolean
+  resolved_by: number | null
+  resolved_at: string | null
 }
 
 export interface Review {
@@ -61,7 +64,19 @@ export interface Review {
   risk_score: number
   summary: string
   created_at: string
+  updated_at: string
   comments: ReviewComment[]
+}
+
+export interface ReviewDiscussionComment {
+  id: number
+  review_id: number
+  author_id: number
+  author_name: string
+  body: string
+  created_at: string
+  updated_at: string
+  deleted_at: string | null
 }
 
 export interface PullRequest {
@@ -206,6 +221,33 @@ export const api = {
   listReviews: () =>
     request<{ reviews: Review[] }>('/api/reviews'),
   getReview: (id: number) => request<Review>(`/api/reviews/${id}`),
+
+  // review discussion comments
+  listReviewComments: (reviewId: number) =>
+    request<{ review_id: number; comments: ReviewDiscussionComment[] }>(`/api/reviews/${reviewId}/comments`),
+  addReviewComment: (reviewId: number, body: string) =>
+    request<ReviewDiscussionComment>(`/api/reviews/${reviewId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+  editReviewComment: (commentId: number, body: string) =>
+    request<ReviewDiscussionComment>(`/api/reviews/comments/${commentId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    }),
+  deleteReviewComment: (commentId: number) =>
+    request<{ message: string }>(`/api/reviews/comments/${commentId}`, { method: 'DELETE' }),
+
+  // review modification (owner only)
+  updateReview: (id: number, summary?: string, riskScore?: number) =>
+    request<Review>(`/api/reviews/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ summary, risk_score: riskScore }),
+    }),
+  resolveReviewComment: (commentId: number) =>
+    request<{ message: string }>(`/api/reviews/comments/${commentId}/resolve`, { method: 'POST' }),
+  unresolveReviewComment: (commentId: number) =>
+    request<{ message: string }>(`/api/reviews/comments/${commentId}/unresolve`, { method: 'POST' }),
 
   // issues
   createIssue: (owner: string, name: string, title: string, body: string) =>

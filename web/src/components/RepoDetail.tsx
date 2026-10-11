@@ -6,6 +6,7 @@ import {
   type PullRequest,
   type Review,
   type ReviewComment,
+  type ReviewDiscussionComment,
   type Issue,
   type TreeEntry,
 } from '../lib/api'
@@ -215,7 +216,7 @@ export function RepoDetail({
 
       {tab === 'prs' && <PrPanel owner={owner} name={name} prs={prs} onChanged={() => void loadPrs()} />}
       {tab === 'issues' && <IssuePanel owner={owner} name={name} issues={issues} onChanged={() => void loadIssues()} />}
-      {tab === 'reviews' && <ReviewsPanel reviews={reviews} owner={owner} name={name} />}
+      {tab === 'reviews' && <ReviewsPanel reviews={reviews} owner={owner} />}
       {tab === 'search' && <SearchPanel owner={owner} name={name} />}
     </div>
   )
@@ -394,12 +395,29 @@ function PrPanel({
   )
 }
 
-function ReviewCommentRow({ comment }: { comment: ReviewComment }) {
+function ReviewCommentRow({
+  comment,
+  isOwner = false,
+  onResolvedChange,
+}: {
+  comment: ReviewComment
+  isOwner?: boolean
+  onResolvedChange?: () => void
+}) {
   return (
-    <div className={`review-comment severity-${comment.severity}`}>
+    <div className={`review-comment severity-${comment.severity}${comment.resolved ? ' resolved' : ''}`}>
       <div className="review-comment-header">
         <span className="severity-badge">{comment.severity}</span>
         <code>{comment.file_path}{comment.line ? `:${comment.line}` : ''}</code>
+        {comment.resolved && <span className="resolved-badge">✓ 已解决</span>}
+        {isOwner && onResolvedChange && (
+          <button
+            className="btn-ghost btn-small"
+            onClick={onResolvedChange}
+          >
+            {comment.resolved ? '取消解决' : '标记解决'}
+          </button>
+        )}
       </div>
       <p>{comment.message}</p>
       {comment.suggestion && (
@@ -506,34 +524,237 @@ function IssuePanel({
 function ReviewsPanel({
   reviews,
   owner,
-  name,
 }: {
   reviews: Review[]
   owner: string
-  name: string
 }) {
-  void owner
-  void name
+  const [currentUser, setCurrentUser] = useState<{ id: number; username: string } | null>(null)
+
+  useEffect(() => {
+    api.me().then(setCurrentUser).catch(() => setCurrentUser(null))
+  }, [])
+
+  const isOwner = currentUser?.username === owner
+
   return (
     <div className="reviews-panel">
-      <h3>AI 评审</h3>
+      <div className="panel-header">
+        <h3>AI 评审</h3>
+      </div>
       {reviews.length === 0 ? (
         <div className="empty">暂无 AI 评审。在 PR 详情页点击「触发 AI 评审」。</div>
       ) : (
         reviews.map((r) => (
-          <div key={r.id} className="review-card">
-            <div className="review-header">
-              <span>风险分: <b>{r.risk_score}</b></span>
-              <code>{r.commit_sha.slice(0, 10)}</code>
-              <span>{new Date(r.created_at).toLocaleString()}</span>
-            </div>
-            <p>{r.summary}</p>
-            {r.comments.map((c) => (
-              <ReviewCommentRow key={c.id} comment={c} />
-            ))}
-          </div>
+          <ReviewCard
+            key={r.id}
+            review={r}
+            isOwner={isOwner}
+            currentUserId={currentUser?.id ?? null}
+          />
         ))
       )}
+    </div>
+  )
+}
+
+function ReviewCard({
+  review,
+  isOwner,
+  currentUserId,
+}: {
+  review: Review
+  isOwner: boolean
+  currentUserId: number | null
+}) {
+  const [comments, setComments] = useState<ReviewDiscussionComment[]>([])
+  const [newComment, setNewComment] = useState('')
+  const [editingCommentId, setEditingCommentId] = useState<number | null>(null)
+  const [editBody, setEditBody] = useState('')
+  const [editingReview, setEditingReview] = useState(false)
+  const [summary, setSummary] = useState(review.summary)
+  const [riskScore, setRiskScore] = useState(review.risk_score)
+  const [error, setError] = useState('')
+
+  const loadComments = useCallback(async () => {
+    try {
+      const res = await api.listReviewComments(review.id)
+      setComments(res.comments)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [review.id])
+
+  useEffect(() => {
+    void loadComments()
+  }, [loadComments])
+
+  async function addComment() {
+    setError('')
+    const body = newComment.trim()
+    if (!body) return
+    try {
+      await api.addReviewComment(review.id, body)
+      setNewComment('')
+      await loadComments()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function saveEdit(commentId: number) {
+    setError('')
+    try {
+      await api.editReviewComment(commentId, editBody)
+      setEditingCommentId(null)
+      setEditBody('')
+      await loadComments()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function deleteComment(commentId: number) {
+    setError('')
+    try {
+      await api.deleteReviewComment(commentId)
+      await loadComments()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function saveReview() {
+    setError('')
+    try {
+      const updated = await api.updateReview(review.id, summary, riskScore)
+      review.summary = updated.summary
+      review.risk_score = updated.risk_score
+      setEditingReview(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function toggleResolved(commentId: number, resolved: boolean) {
+    setError('')
+    try {
+      if (resolved) {
+        await api.unresolveReviewComment(commentId)
+      } else {
+        await api.resolveReviewComment(commentId)
+      }
+      // Reload the review so the resolved state refreshes.
+      const updated = await api.getReview(review.id)
+      review.comments = updated.comments
+      review.risk_score = updated.risk_score
+      review.summary = updated.summary
+      // Force a re-render by refreshing local state.
+      setSummary(updated.summary)
+      setRiskScore(updated.risk_score)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  return (
+    <div className="review-card">
+      <div className="review-header">
+        <span>风险分: <b>{review.risk_score}</b></span>
+        <code>{review.commit_sha.slice(0, 10)}</code>
+        <span>{new Date(review.created_at).toLocaleString()}</span>
+        {isOwner && (
+          <button className="btn-ghost btn-small" onClick={() => setEditingReview(!editingReview)}>
+            {editingReview ? '取消' : '编辑'}
+          </button>
+        )}
+      </div>
+
+      {editingReview && isOwner ? (
+        <div className="review-edit-form">
+          <textarea
+            placeholder="评审摘要"
+            value={summary}
+            onChange={(e) => setSummary(e.target.value)}
+          />
+          <input
+            type="number"
+            min={0}
+            max={100}
+            placeholder="风险分 (0-100)"
+            value={riskScore}
+            onChange={(e) => setRiskScore(Number(e.target.value))}
+          />
+          <button className="btn-primary" onClick={() => void saveReview()}>保存</button>
+        </div>
+      ) : (
+        <p>{review.summary}</p>
+      )}
+
+      {review.comments.map((c) => (
+        <ReviewCommentRow
+          key={c.id}
+          comment={c}
+          isOwner={isOwner}
+          onResolvedChange={
+            isOwner ? () => void toggleResolved(c.id, c.resolved) : undefined
+          }
+        />
+      ))}
+
+      {error && <div className="error-banner">{error}</div>}
+
+      {/* User discussion */}
+      {comments.length > 0 && (
+        <div className="review-discussion">
+          <h4>讨论</h4>
+          {comments.map((c) => (
+            <div key={c.id} className="discussion-comment">
+              <div className="discussion-comment-header">
+                <b>{c.author_name}</b>
+                <span>{new Date(c.created_at).toLocaleString()}</span>
+                {currentUserId === c.author_id && (
+                  <span className="discussion-actions">
+                    <button
+                      className="btn-ghost btn-small"
+                      onClick={() => {
+                        setEditingCommentId(c.id)
+                        setEditBody(c.body)
+                      }}
+                    >
+                      编辑
+                    </button>
+                    <button
+                      className="btn-danger btn-small"
+                      onClick={() => void deleteComment(c.id)}
+                    >
+                      删除
+                    </button>
+                  </span>
+                )}
+              </div>
+              {editingCommentId === c.id ? (
+                <div className="discussion-edit">
+                  <textarea value={editBody} onChange={(e) => setEditBody(e.target.value)} />
+                  <button className="btn-primary btn-small" onClick={() => void saveEdit(c.id)}>保存</button>
+                  <button className="btn-ghost btn-small" onClick={() => setEditingCommentId(null)}>取消</button>
+                </div>
+              ) : (
+                <p>{c.body}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="discussion-input">
+        <input
+          placeholder="发表评论…"
+          value={newComment}
+          onChange={(e) => setNewComment(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void addComment()}
+        />
+        <button className="btn-primary btn-small" onClick={() => void addComment()}>评论</button>
+      </div>
     </div>
   )
 }

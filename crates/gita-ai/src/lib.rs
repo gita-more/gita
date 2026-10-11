@@ -208,6 +208,9 @@ pub fn review_from_result(
             message: c.message.clone(),
             suggestion: c.suggestion.clone(),
             created_at: now,
+            resolved: false,
+            resolved_by: None,
+            resolved_at: None,
         })
         .collect();
     Review {
@@ -219,6 +222,7 @@ pub fn review_from_result(
         risk_score: result.risk_score.clamp(0, 100),
         summary: result.summary.clone(),
         created_at: now,
+        updated_at: now,
         comments,
     }
 }

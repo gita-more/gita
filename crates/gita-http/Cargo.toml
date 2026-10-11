@@ -14,7 +14,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+base64 = { workspace = true }
 gita-core = { path = "../gita-core" }
 gita-git = { path = "../gita-git" }
 gita-db = { path = "../gita-db" }
 gita-events = { path = "../gita-events" }
+gita-ai = { path = "../gita-ai" }
+gita-api = { path = "../gita-api" }

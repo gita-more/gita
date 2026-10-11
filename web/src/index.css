@@ -541,6 +541,111 @@ button:hover {
   padding: 8px;
   overflow-x: auto;
 }
+
+/* Review comment resolution */
+.review-comment.resolved {
+  opacity: 0.6;
+}
+
+.review-comment.resolved p {
+  text-decoration: line-through;
+}
+
+.resolved-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: #2ea043;
+  border: 1px solid #2ea043;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.btn-small {
+  font-size: 11px;
+  padding: 2px 8px;
+  margin-left: 4px;
+}
+
+/* Review edit form */
+.review-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.review-edit-form textarea {
+  min-height: 60px;
+}
+
+.review-edit-form input {
+  max-width: 140px;
+}
+
+/* Review discussion (user comments) */
+.review-discussion {
+  margin-top: 12px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+
+.review-discussion h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.discussion-comment {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.discussion-comment-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.discussion-comment-header b {
+  color: var(--text);
+}
+
+.discussion-comment p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.discussion-actions {
+  margin-left: auto;
+}
+
+.discussion-edit {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 4px;
+}
+
+.discussion-edit textarea {
+  flex: 1;
+  min-height: 40px;
+}
+
+.discussion-input {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.discussion-input input {
+  flex: 1;
+}
 .search-bar {
   display: flex;
   gap: 8px;
