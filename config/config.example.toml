@@ -1,0 +1,25 @@
+# Gita configuration example.
+# Copy to config/gita.toml and adjust as needed.
+
+[server]
+# Bind address. Use 0.0.0.0 to expose to the network.
+host = "127.0.0.1"
+port = 3000
+# Directory for repositories and database.
+data_dir = "data"
+# SQLite (default, zero-dependency) or PostgreSQL:
+#   postgres://user:password@localhost/gita
+database_url = "sqlite://data/gita.db"
+# Secret used to sign JWTs. Change this in production!
+jwt_secret = "dev-secret-change-me"
+
+[llm]
+# Leave empty to use the stub review provider (for development).
+# Any OpenAI-compatible endpoint works, including local Ollama:
+#   base_url = "http://localhost:11434/v1"
+#   api_key = "ollama"
+#   model = "qwen2.5-coder:7b"
+base_url = ""
+api_key = ""
+model = "gpt-4o-mini"
+timeout_secs = 60
