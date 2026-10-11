@@ -16,7 +16,7 @@ pub const OPENAPI_JSON: &str = r##"{
   "info": {
     "title": "Gita API",
     "description": "AI-native Git server REST API. Standard GitHub-like endpoints plus AI review, semantic search, PR/Issue workflows and an AI-readable event stream.",
-    "version": "0.1.0"
+    "version": "0.0.1"
   },
   "servers": [
     { "url": "/" }

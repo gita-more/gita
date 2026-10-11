@@ -866,7 +866,7 @@ dependencies = [
 
 [[package]]
 name = "gita-ai"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -886,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "gita-api"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -915,7 +915,7 @@ dependencies = [
 
 [[package]]
 name = "gita-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "chrono",
  "serde",
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "gita-db"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "gita-events"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "chrono",
  "gita-core",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "gita-git"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -971,7 +971,7 @@ dependencies = [
 
 [[package]]
 name = "gita-http"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "gita-mcp"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "gita-core",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "gita-server"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "gita-web"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",

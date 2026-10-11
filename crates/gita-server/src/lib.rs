@@ -201,7 +201,12 @@ impl App {
     pub fn router(&self) -> axum::Router {
         let api_router = gita_api::api_router(self.api_state.clone());
         let git_router = gita_http::router(self.git_http_state.clone());
-        let web_router = gita_web::web_router(Some(self.config.server.data_dir.join("web")));
+        // Serve the built React frontend from `<project root>/web/dist` when
+        // present. The server binary runs from the workspace root, so the
+        // frontend lives at `web/dist` next to the crate sources.
+        let web_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../web/dist");
+        let web_router = gita_web::web_router(Some(web_dist));
 
         axum::Router::new()
             .merge(api_router)

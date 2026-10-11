@@ -35,7 +35,8 @@ impl LlmConfig {
     }
 
     pub fn is_configured(&self) -> bool {
-        self.base_url.is_some() && self.api_key.is_some()
+        self.base_url.as_deref().is_some_and(|u| !u.is_empty())
+            && self.api_key.as_deref().is_some_and(|k| !k.is_empty())
     }
 }
 
@@ -61,9 +62,11 @@ impl OpenAiCompatibleLlm {
     pub fn new(config: LlmConfig) -> Result<Self> {
         let base_url = config
             .base_url
+            .filter(|u| !u.is_empty())
             .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         let api_key = config
             .api_key
+            .filter(|k| !k.is_empty())
             .ok_or_else(|| anyhow!("api_key is required for OpenAiCompatibleLlm"))?;
         let model = config.model.unwrap_or_else(|| "gpt-4o-mini".to_string());
         let timeout = Duration::from_secs(config.timeout_secs.max(10));

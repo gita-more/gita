@@ -186,7 +186,7 @@ impl McpServer {
                     "capabilities": {
                         "tools": { "listChanged": false }
                     },
-                    "serverInfo": {"name": "gita-mcp", "version": "0.1.0"}
+                    "serverInfo": {"name": "gita-mcp", "version": "0.0.1"}
                 })
             }
             "tools/list" => {

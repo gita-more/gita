@@ -1,0 +1,33 @@
+# Gita development environment.
+#
+# Spins up PostgreSQL with the pgvector extension, which Gita uses for
+# relational data (users/repos/PRs/reviews) and vector search
+# (semantic code embeddings).
+#
+# Usage:
+#   docker compose up -d
+#
+# Then run Gita with a PostgreSQL URL, e.g.:
+#   cargo run -- -c config/gita.toml
+# with `database_url = "postgres://gita:gita@localhost:5432/gita"`.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: gita-postgres
+    environment:
+      POSTGRES_USER: gita
+      POSTGRES_PASSWORD: gita
+      POSTGRES_DB: gita
+    ports:
+      - "5432:5432"
+    volumes:
+      - gita-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gita -d gita"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  gita-pgdata:

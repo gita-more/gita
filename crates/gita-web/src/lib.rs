@@ -8,17 +8,18 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Router, routing::get_service};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tower_http::services::ServeDir;
 
 /// Serves static files from `web/dist` and falls back to a landing page.
 pub fn web_router(dist_dir: Option<PathBuf>) -> Router {
-    let mut router = Router::new();
-
     if let Some(dist) = dist_dir {
         if dist.join("index.html").exists() {
-            router = router.nest_service(
-                "/",
+            // Serve the built frontend. In axum 0.8, mounting a service at
+            // the root is no longer supported, so the static file server is
+            // attached as the fallback: every unmatched request (including
+            // `/`) is served from `web/dist`.
+            return Router::new().fallback_service(
                 get_service(ServeDir::new(&dist)).handle_error(|_| async {
                     (
                         StatusCode::NOT_FOUND,
@@ -27,13 +28,11 @@ pub fn web_router(dist_dir: Option<PathBuf>) -> Router {
                         .into_response()
                 }),
             );
-            return router;
         }
     }
 
     // Fallback landing page (no frontend build yet).
-    router = router.route("/", get(landing_page));
-    router
+    Router::new().route("/", get(landing_page))
 }
 
 async fn landing_page() -> Html<&'static str> {
