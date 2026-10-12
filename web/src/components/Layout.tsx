@@ -65,8 +65,6 @@ export function Topbar({
   onToggleSidebar?: () => void
   sidebarOpen?: boolean
 }) {
-  const { user } = useAuth()
-
   return (
     <header className="topbar">
       {onToggleSidebar && (
@@ -99,21 +97,10 @@ export function Topbar({
             </li>
           </ol>
         </nav>
-      ) : (
-        <div className="topbar-title">
-          <span className="topbar-title-text">Gita</span>
-        </div>
-      )}
+      ) : null}
       <div className="topbar-spacer" />
       <div className="topbar-actions">
         {actions}
-        {user && (
-          <span className="user-chip">
-            <Avatar username={user.username} />
-            {user.username}
-          </span>
-        )}
-        <LogoutButton />
       </div>
     </header>
   )
@@ -127,20 +114,6 @@ export function setNavigateHome(fn: (() => void) | null) {
 }
 function onNavigateHome() {
   if (_onNavigateHome) _onNavigateHome()
-}
-
-function LogoutButton() {
-  const { logout } = useAuth()
-  return (
-    <button
-      className="btn btn-ghost btn-sm"
-      title="退出登录"
-      onClick={logout}
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-    >
-      <LogOutIcon size={14} />
-    </button>
-  )
 }
 
 export function Sidebar({
@@ -157,8 +130,6 @@ export function Sidebar({
   collapsed?: boolean
 }) {
   const { user, logout } = useAuth()
-
-  const activeLabel = SIDEBAR_NAV.find((item) => item.key === active)?.label ?? ''
 
   return (
     <aside className="sidebar">
@@ -183,9 +154,6 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* 上下文头：显示当前激活导航项的标题（类似 GitLab "Your work"） */}
-      <div className="sidebar-context-header">{activeLabel}</div>
-
       <nav className="sidebar-nav" aria-label="主导航">
         <div className="sidebar-group-label">导航</div>
         {SIDEBAR_NAV.map((item) => {
@@ -208,13 +176,7 @@ export function Sidebar({
         })}
       </nav>
 
-      {/* 底部：版本 + API 链接 + 用户图标 */}
-      <div className="sidebar-footer">
-        <span className="version">v0.0.1</span>
-        <a href="/api/docs" target="_blank" rel="noreferrer" title="OpenAPI 文档">
-          API
-        </a>
-      </div>
+      {/* 底部用户区：头像 + 用户名 + 退出 + ^ */}
       <div className="sidebar-user-bottom">
         <button className="sidebar-user-bottom-btn" onClick={logout} title="退出登录">
           <Avatar username={user?.username ?? 'U'} />

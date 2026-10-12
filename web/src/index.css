@@ -367,19 +367,6 @@ select {
   gap: 8px;
 }
 
-.user-chip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 10px 3px 4px;
-  border: 1px solid var(--border-default);
-  border-radius: 20px;
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 13px;
-  cursor: default;
-}
-
 .user-avatar {
   display: grid;
   place-items: center;
@@ -412,8 +399,6 @@ select {
 
 .app.sidebar-collapsed .sidebar-nav .sidebar-group-label,
 .app.sidebar-collapsed .sidebar-user-name,
-.app.sidebar-collapsed .sidebar-context-header,
-.app.sidebar-collapsed .sidebar-footer .version,
 .app.sidebar-collapsed .sidebar-link span:not(.count),
 .app.sidebar-collapsed .sidebar-link .count,
 .app.sidebar-collapsed .sidebar-user-bottom-btn .sidebar-user-name,
@@ -446,21 +431,6 @@ select {
 .app.sidebar-collapsed .sidebar-link svg {
   width: 18px;
   height: 18px;
-}
-
-.app.sidebar-collapsed .sidebar-footer {
-  justify-content: center;
-  padding: 8px 4px;
-}
-
-.app.sidebar-collapsed .sidebar-footer a {
-  font-size: 0;
-}
-
-.app.sidebar-collapsed .sidebar-footer a::after {
-  content: 'API';
-  font-size: 11px;
-  color: var(--fg-subtle);
 }
 
 .app.sidebar-collapsed .sidebar-user-bottom {
@@ -527,18 +497,6 @@ select {
 }
 
 /* GitLab Super Sidebar 上下文头：显示当前导航标题 */
-.sidebar-context-header {
-  padding: 4px 16px 10px;
-  margin: 0 8px 8px;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--fg-default);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border-bottom: 1px solid var(--border-muted);
-}
-
 .sidebar-nav {
   flex: 1;
   overflow-y: auto;
@@ -605,37 +563,6 @@ select {
   border-radius: 20px;
   padding: 0 8px;
   line-height: 18px;
-}
-
-.sidebar-footer {
-  padding: 8px 16px 0;
-  margin-top: 20px;
-  border-top: 1px solid var(--border-muted);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.sidebar-footer .version {
-  font-size: 12px;
-  color: var(--fg-subtle);
-}
-
-.sidebar-footer a {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--fg-subtle);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 2px 0;
-}
-
-.sidebar-footer a:hover {
-  color: var(--fg-default);
-  text-decoration: none;
 }
 
 /* GitLab Super Sidebar 底部用户区：用户图标 + 用��名 + 退出 + ^ */

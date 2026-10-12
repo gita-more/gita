@@ -40,7 +40,7 @@ async function ensureTestRepo(page: Page) {
 // 侧边栏布局测试
 // ---------------------------------------------------------------------------
 test.describe('GitLab 风格侧边栏布局', () => {
-  test('侧边栏四要素存在：顶部 user-bar（Logo+折叠++）、上下文头、底部用户区', async ({ page }) => {
+  test('侧边栏三要素存在；Topbar 已精简（无用户信息/Gita标题）', async ({ page }) => {
     await loginViaApi(page)
     await page.goto('/')
     await expect(page.locator('.sidebar')).toBeVisible()
@@ -52,46 +52,50 @@ test.describe('GitLab 风格侧边栏布局', () => {
     await expect(userBar.locator('.sidebar-toggle-btn')).toBeVisible()
     await expect(userBar.locator('.sidebar-new-btn')).toBeVisible()
 
-    // 上下文头：显示当前激活导航标题
-    const ctx = page.locator('.sidebar-context-header')
-    await expect(ctx).toBeVisible()
-    await expect(ctx).toHaveText('仓库')
-
     // 底部用户区：头像 + 用户名 + 退出按钮
     const bottom = page.locator('.sidebar-user-bottom')
     await expect(bottom).toBeVisible()
     await expect(bottom.locator('.user-avatar')).toBeVisible()
     await expect(bottom.locator('.sidebar-user-name')).toHaveText(USER)
+
+    // Topbar 精简：不再有 Gita 标题、用户 chip、独立退出按钮
+    await expect(page.locator('.topbar-title')).toHaveCount(0)
+    await expect(page.locator('.user-chip')).toHaveCount(0)
+    await expect(page.locator('.topbar .btn-ghost')).toHaveCount(0)
+
+    // 侧边栏不再有 context-header 和 footer
+    await expect(page.locator('.sidebar-context-header')).toHaveCount(0)
+    await expect(page.locator('.sidebar-footer')).toHaveCount(0)
   })
 
-  test('仓库详情页：点击导航项后上下文头跟随更新', async ({ page }) => {
+  test('仓库详情页：点击导航项后高亮跟随、内容面板切换', async ({ page }) => {
     await loginViaApi(page)
     await page.goto('/')
     await ensureTestRepo(page)
 
     // 进入仓库详情页（仓库卡片是可点击按钮）
     await page.locator('.repo-card', { hasText: 'e2e-demo' }).first().click()
-    await expect(page.locator('.sidebar-context-header')).toHaveText('代码', { timeout: 5000 })
+    await expect(page.locator('.sidebar-link', { hasText: /^代码$/ })).toHaveClass(/active/, { timeout: 5000 })
 
     // 点击"提交"
-    await page.locator('.sidebar-link', { hasText: '提交' }).click()
-    await expect(page.locator('.sidebar-context-header')).toHaveText('提交')
+    await page.locator('.sidebar-link', { hasText: /^提交$/ }).click()
+    await expect(page.locator('.sidebar-link', { hasText: /^提交$/ })).toHaveClass(/active/)
 
     // 点击"合并请求"
-    await page.locator('.sidebar-link', { hasText: '合并请求' }).click()
-    await expect(page.locator('.sidebar-context-header')).toHaveText('合并请求')
+    await page.locator('.sidebar-link', { hasText: /^合并请求$/ }).click()
+    await expect(page.locator('.sidebar-link', { hasText: /^合并请求$/ })).toHaveClass(/active/)
 
     // 点击"Issue"
-    await page.locator('.sidebar-link', { hasText: 'Issue' }).click()
-    await expect(page.locator('.sidebar-context-header')).toHaveText('Issue')
+    await page.locator('.sidebar-link', { hasText: /^Issue$/ }).click()
+    await expect(page.locator('.sidebar-link', { hasText: /^Issue$/ })).toHaveClass(/active/)
 
     // 点击"AI 评审"
-    await page.locator('.sidebar-link', { hasText: 'AI 评审' }).click()
-    await expect(page.locator('.sidebar-context-header')).toHaveText('AI 评审')
+    await page.locator('.sidebar-link', { hasText: /^AI 评审$/ }).click()
+    await expect(page.locator('.sidebar-link', { hasText: /^AI 评审$/ })).toHaveClass(/active/)
 
     // 点击"代码搜索"
-    await page.locator('.sidebar-link', { hasText: '代码搜索' }).click()
-    await expect(page.locator('.sidebar-context-header')).toHaveText('代码搜索')
+    await page.locator('.sidebar-link', { hasText: /^代码搜索$/ }).click()
+    await expect(page.locator('.sidebar-link', { hasText: /^代码搜索$/ })).toHaveClass(/active/)
   })
 
   test('折叠/展开：折叠后只显示图标，展开恢复', async ({ page }) => {
