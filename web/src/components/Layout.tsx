@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import {
   BookIcon,
-  ChevronRightIcon,
   CircleCheckIcon,
   CircleDotIcon,
   GitCommitIcon,
@@ -30,16 +29,16 @@ const SIDEBAR_NAV: { key: NavTarget; label: string; icon: typeof HomeIcon; count
   { key: 'files', label: '代码', icon: BookIcon },
   { key: 'commits', label: '提交', icon: GitCommitIcon },
   { key: 'prs', label: '合并请求', icon: GitPullRequestIcon, countKey: 'prs' },
-  { key: 'issues', label: 'Issue', icon: CircleDotIcon },
+  { key: 'issues', label: 'Issue', icon: CircleDotIcon, countKey: 'issues' },
   { key: 'reviews', label: 'AI 评审', icon: SparklesIcon },
   { key: 'search', label: '代码搜索', icon: SearchIcon },
 ]
 
-export function Brand() {
+export function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
       <span className="brand-mark">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg width={compact ? 20 : 18} height={compact ? 20 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M6 3v12" />
           <circle cx="18" cy="6" r="3" />
           <circle cx="6" cy="18" r="3" />
@@ -58,24 +57,52 @@ function Avatar({ username }: { username: string }) {
 export function Topbar({
   repo,
   actions,
+  onToggleSidebar,
+  sidebarOpen,
 }: {
   repo?: { owner: string; name: string }
   actions?: ReactNode
+  onToggleSidebar?: () => void
+  sidebarOpen?: boolean
 }) {
-  const { user, logout } = useAuth()
+  const { user } = useAuth()
 
   return (
     <header className="topbar">
-      <Brand />
-      {repo && (
-        <>
-          <span className="topbar-divider" />
-          <div className="topbar-repo">
-            <span>{repo.owner}</span>
-            <ChevronRightIcon size={14} />
-            <a href="#" onClick={(e) => e.preventDefault()}>{repo.name}</a>
-          </div>
-        </>
+      {onToggleSidebar && (
+        <button
+          className="sidebar-toggle"
+          onClick={onToggleSidebar}
+          title="切换菜单"
+          aria-label="切换菜单"
+          aria-expanded={sidebarOpen}
+        >
+          {sidebarOpen ? <XIcon size={16} /> : <MenuIcon size={16} />}
+        </button>
+      )}
+      {repo ? (
+        <nav className="breadcrumbs" aria-label="Breadcrumb">
+          <ol className="breadcrumb-list">
+            <li className="breadcrumb-item">
+              <a href="#" onClick={(e) => { e.preventDefault(); onNavigateHome() }}>
+                <HomeIcon size={14} />
+                <span>仓库</span>
+              </a>
+            </li>
+            <li className="breadcrumb-sep" aria-hidden="true">/</li>
+            <li className="breadcrumb-item">
+              <a href="#" onClick={(e) => e.preventDefault()}>{repo.owner}</a>
+            </li>
+            <li className="breadcrumb-sep" aria-hidden="true">/</li>
+            <li className="breadcrumb-item current" aria-current="page">
+              {repo.name}
+            </li>
+          </ol>
+        </nav>
+      ) : (
+        <div className="topbar-title">
+          <span className="topbar-title-text">Gita</span>
+        </div>
       )}
       <div className="topbar-spacer" />
       <div className="topbar-actions">
@@ -86,16 +113,33 @@ export function Topbar({
             {user.username}
           </span>
         )}
-        <button
-          className="btn btn-ghost btn-sm"
-          title="退出登录"
-          onClick={logout}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-        >
-          <LogOutIcon size={14} />
-        </button>
+        <LogoutButton />
       </div>
     </header>
+  )
+}
+
+// Helper used by Topbar breadcrumbs — navigates back to repo list.
+// Implemented via a module-level callback set by AppLayout.
+let _onNavigateHome: (() => void) | null = null
+export function setNavigateHome(fn: (() => void) | null) {
+  _onNavigateHome = fn
+}
+function onNavigateHome() {
+  if (_onNavigateHome) _onNavigateHome()
+}
+
+function LogoutButton() {
+  const { logout } = useAuth()
+  return (
+    <button
+      className="btn btn-ghost btn-sm"
+      title="退出登录"
+      onClick={logout}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+    >
+      <LogOutIcon size={14} />
+    </button>
   )
 }
 
@@ -103,15 +147,47 @@ export function Sidebar({
   active,
   onNavigate,
   counts,
+  onToggleCollapse,
+  collapsed,
 }: {
   active: NavTarget
   onNavigate: (target: NavTarget) => void
   counts?: Partial<Record<'prs' | 'issues', number>>
+  onToggleCollapse?: () => void
+  collapsed?: boolean
 }) {
+  const { user, logout } = useAuth()
+
+  const activeLabel = SIDEBAR_NAV.find((item) => item.key === active)?.label ?? ''
+
   return (
     <aside className="sidebar">
-      <div className="sidebar-group">
-        <div className="sidebar-group-label">仓库</div>
+      {/* GitLab Super Sidebar 顶部用户区：Logo + 折叠图标 + 新建按钮 */}
+      <div className="sidebar-user-bar">
+        <Brand compact />
+        <button
+          className="btn btn-ghost btn-sm sidebar-toggle-btn"
+          onClick={onToggleCollapse}
+          title={collapsed ? '展开侧边栏' : '折叠侧边栏'}
+          aria-label={collapsed ? '展开侧边栏' : '折叠侧边栏'}
+        >
+          <PanelLeftIcon size={15} />
+        </button>
+        <button
+          className="btn btn-ghost btn-sm sidebar-new-btn"
+          title="新建仓库"
+          aria-label="新建仓库"
+          onClick={() => onNavigate('home')}
+        >
+          <PlusIcon size={15} />
+        </button>
+      </div>
+
+      {/* 上下文头：显示当前激活导航项的标题（类似 GitLab "Your work"） */}
+      <div className="sidebar-context-header">{activeLabel}</div>
+
+      <nav className="sidebar-nav" aria-label="主导航">
+        <div className="sidebar-group-label">导航</div>
         {SIDEBAR_NAV.map((item) => {
           const Icon = item.icon
           const isActive = active === item.key
@@ -130,12 +206,24 @@ export function Sidebar({
             </button>
           )
         })}
-      </div>
+      </nav>
+
+      {/* 底部：版本 + API 链接 + 用户图标 */}
       <div className="sidebar-footer">
         <span className="version">v0.0.1</span>
         <a href="/api/docs" target="_blank" rel="noreferrer" title="OpenAPI 文档">
           API
         </a>
+      </div>
+      <div className="sidebar-user-bottom">
+        <button className="sidebar-user-bottom-btn" onClick={logout} title="退出登录">
+          <Avatar username={user?.username ?? 'U'} />
+          <span className="sidebar-user-name">{user?.username ?? '未登录'}</span>
+          <LogOutIcon size={13} className="sidebar-user-bottom-logout" />
+        </button>
+        <button className="sidebar-user-bottom-caret" title="帮助" aria-label="帮助">
+          <ChevronUpIcon size={14} />
+        </button>
       </div>
     </aside>
   )
@@ -155,65 +243,43 @@ export function AppLayout({
   children: ReactNode
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const { logout } = useAuth()
+  const [collapsed, setCollapsed] = useState(false)
+
+  const isMobile = () => window.matchMedia('(max-width: 860px)').matches
+
+  const handleToggleSidebar = () => {
+    if (isMobile()) {
+      setSidebarOpen((v) => !v)
+    } else {
+      setCollapsed((v) => !v)
+    }
+  }
 
   const handleNavigate = (target: NavTarget) => {
     setSidebarOpen(false)
     onNavigate(target)
   }
 
+  // 注册"返回仓库列表"回调，供顶栏面包屑使用
+  setNavigateHome(() => onNavigate('home'))
+
   return (
     <>
       <Topbar
         repo={repo}
-        actions={
-          <button
-            className="sidebar-toggle"
-            onClick={() => setSidebarOpen((v) => !v)}
-            title="切换菜单"
-          >
-            {sidebarOpen ? <XIcon size={14} /> : <MenuIcon size={14} />}
-          </button>
-        }
+        onToggleSidebar={handleToggleSidebar}
+        sidebarOpen={sidebarOpen}
       />
-      <div className="app">
+      <div className={`app${collapsed ? ' sidebar-collapsed' : ''}`}>
         <div className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
-        <div className={`sidebar${sidebarOpen ? ' open' : ''}`}>
-          <div className="sidebar-group">
-            <div className="sidebar-group-label">仓库</div>
-            {SIDEBAR_NAV.map((item) => {
-              const Icon = item.icon
-              const isActive = active === item.key
-              return (
-                <button
-                  key={item.key}
-                  className={`sidebar-link${isActive ? ' active' : ''}`}
-                  onClick={() => handleNavigate(item.key)}
-                >
-                  <Icon size={16} />
-                  <span>{item.label}</span>
-                  {item.countKey && counts?.[item.countKey] != null && counts[item.countKey]! > 0 && (
-                    <span className="count">{counts[item.countKey]}</span>
-                  )}
-                </button>
-              )
-            })}
-          </div>
-          <div className="sidebar-footer">
-            <span className="version">v0.0.1</span>
-            <a href="/api/docs" target="_blank" rel="noreferrer">API</a>
-            <button
-              onClick={() => {
-                setSidebarOpen(false)
-                logout()
-              }}
-              className="sidebar-link"
-              style={{ borderLeft: 'none', padding: '4px 0', width: 'auto' }}
-            >
-              <LogOutIcon size={14} />
-              <span>退出</span>
-            </button>
-          </div>
+        <div className={`sidebar-shell${sidebarOpen ? ' open' : ''}`}>
+          <Sidebar
+            active={active}
+            onNavigate={handleNavigate}
+            counts={counts}
+            collapsed={collapsed}
+            onToggleCollapse={handleToggleSidebar}
+          />
         </div>
         <main className="main">
           <div className="content">{children}</div>
@@ -229,6 +295,32 @@ function MenuIcon({ size = 16 }: { size?: number }) {
       <line x1="3" y1="6" x2="21" y2="6" />
       <line x1="3" y1="12" x2="21" y2="12" />
       <line x1="3" y1="18" x2="21" y2="18" />
+    </svg>
+  )
+}
+
+function PlusIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  )
+}
+
+function PanelLeftIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <line x1="9" y1="3" x2="9" y2="21" />
+    </svg>
+  )
+}
+
+function ChevronUpIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="18 15 12 9 6 15" />
     </svg>
   )
 }

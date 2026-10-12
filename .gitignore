@@ -22,3 +22,8 @@ config/gita.toml
 .vscode
 *.swp
 .DS_Store
+tmp
+
+# Playwright
+web/test-results
+web/playwright-report

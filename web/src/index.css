@@ -306,32 +306,55 @@ select {
   display: block;
 }
 
-.topbar-divider {
-  width: 1px;
-  height: 24px;
-  background: var(--border-default);
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  font-size: 14px;
 }
 
-.topbar-repo {
+.breadcrumb-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.breadcrumb-item {
   display: flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
-  font-size: 14px;
-  font-weight: 600;
+}
+
+.breadcrumb-item a {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   color: var(--fg-muted);
+  text-decoration: none;
+  font-weight: 500;
   white-space: nowrap;
 }
 
-.topbar-repo a {
+.breadcrumb-item a:hover {
+  color: var(--fg-accent);
+  text-decoration: none;
+}
+
+.breadcrumb-item.current {
   color: var(--fg-default);
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.topbar-repo a:hover {
-  color: var(--fg-accent);
-  text-decoration: none;
+.breadcrumb-sep {
+  color: var(--fg-subtle);
+  flex-shrink: 0;
 }
 
 .topbar-spacer {
@@ -376,16 +399,94 @@ select {
   min-height: 100vh;
 }
 
-.sidebar {
+.sidebar-shell {
   width: var(--sidebar-width);
   flex-shrink: 0;
+  transition: width 0.2s ease;
+}
+
+/* 桌面端折叠侧边栏（GitLab 折叠行为）：只显示图标 */
+.app.sidebar-collapsed .sidebar-shell {
+  width: 56px;
+}
+
+.app.sidebar-collapsed .sidebar-nav .sidebar-group-label,
+.app.sidebar-collapsed .sidebar-user-name,
+.app.sidebar-collapsed .sidebar-context-header,
+.app.sidebar-collapsed .sidebar-footer .version,
+.app.sidebar-collapsed .sidebar-link span:not(.count),
+.app.sidebar-collapsed .sidebar-link .count,
+.app.sidebar-collapsed .sidebar-user-bottom-btn .sidebar-user-name,
+.app.sidebar-collapsed .sidebar-user-bottom-logout {
+  display: none;
+}
+
+.app.sidebar-collapsed .sidebar-user-bar {
+  justify-content: center;
+  padding: 12px 8px;
+}
+
+.app.sidebar-collapsed .sidebar-user-bar .brand {
+  flex: initial;
+}
+
+.app.sidebar-collapsed .sidebar-user-bar .brand span:last-child {
+  display: none;
+}
+
+.app.sidebar-collapsed .sidebar-user-bar .brand-mark {
+  margin-right: 0;
+}
+
+.app.sidebar-collapsed .sidebar-link {
+  justify-content: center;
+  padding: 8px;
+}
+
+.app.sidebar-collapsed .sidebar-link svg {
+  width: 18px;
+  height: 18px;
+}
+
+.app.sidebar-collapsed .sidebar-footer {
+  justify-content: center;
+  padding: 8px 4px;
+}
+
+.app.sidebar-collapsed .sidebar-footer a {
+  font-size: 0;
+}
+
+.app.sidebar-collapsed .sidebar-footer a::after {
+  content: 'API';
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+
+.app.sidebar-collapsed .sidebar-user-bottom {
+  justify-content: center;
+  padding: 8px 4px 4px;
+}
+
+.app.sidebar-collapsed .sidebar-user-bottom-btn {
+  flex: initial;
+  padding: 4px;
+}
+
+.app.sidebar-collapsed .sidebar-user-bottom-caret {
+  display: none;
+}
+
+.sidebar {
   background: var(--bg-canvas-muted);
   border-right: 1px solid var(--border-muted);
   position: sticky;
   top: var(--topbar-height);
   height: calc(100vh - var(--topbar-height));
   overflow-y: auto;
-  padding: 16px 0;
+  padding: 0 0 16px;
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar::-webkit-scrollbar {
@@ -395,6 +496,52 @@ select {
 .sidebar::-webkit-scrollbar-thumb {
   background: var(--border-default);
   border-radius: 4px;
+}
+
+/* GitLab Super Sidebar 顶部用��区：Logo + 折叠图标 + 新建 */
+.sidebar-user-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid var(--border-muted);
+  margin-bottom: 8px;
+}
+
+.sidebar-user-bar .brand {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-toggle-btn,
+.sidebar-new-btn {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  padding: 4px;
+}
+
+.sidebar-toggle-btn:hover,
+.sidebar-new-btn:hover {
+  color: var(--fg-default);
+  background: var(--bg-hover);
+}
+
+/* GitLab Super Sidebar 上下文头：显示当前导航标题 */
+.sidebar-context-header {
+  padding: 4px 16px 10px;
+  margin: 0 8px 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--fg-default);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
 }
 
 .sidebar-group {
@@ -489,6 +636,68 @@ select {
 .sidebar-footer a:hover {
   color: var(--fg-default);
   text-decoration: none;
+}
+
+/* GitLab Super Sidebar 底部用户区：用户图标 + 用��名 + 退出 + ^ */
+.sidebar-user-bottom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px 4px;
+  border-top: 1px solid var(--border-muted);
+  margin-top: 8px;
+}
+
+.sidebar-user-bottom-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-default);
+  text-align: left;
+}
+
+.sidebar-user-bottom-btn:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar-user-bottom-btn .user-avatar {
+  flex-shrink: 0;
+}
+
+.sidebar-user-bottom-btn .sidebar-user-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-default);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-user-bottom-logout {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+}
+
+.sidebar-user-bottom-caret {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-subtle);
+}
+
+.sidebar-user-bottom-caret:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
 }
 
 .main {
@@ -1613,7 +1822,9 @@ select {
 /* ============================ Responsive ============================ */
 
 .sidebar-toggle {
-  display: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: transparent;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-sm);
@@ -1622,12 +1833,17 @@ select {
   cursor: pointer;
 }
 
+.sidebar-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg-default);
+}
+
 .sidebar-overlay {
   display: none;
 }
 
 @media (max-width: 860px) {
-  .sidebar {
+  .sidebar-shell {
     position: fixed;
     z-index: 90;
     top: var(--topbar-height);
@@ -1640,7 +1856,14 @@ select {
     width: 260px;
   }
 
-  .sidebar.open {
+  .sidebar-shell .sidebar {
+    position: static;
+    height: 100%;
+    top: auto;
+    border-right: none;
+  }
+
+  .sidebar-shell.open {
     transform: translateX(0);
   }
 
