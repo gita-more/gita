@@ -6,8 +6,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:3000',
-      '/git': 'http://127.0.0.1:3000',
+      '/api': 'http://127.0.0.1:3100',
+      '/git': 'http://127.0.0.1:3100',
     },
   },
 })

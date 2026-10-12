@@ -31,42 +31,79 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
   return (
     <div className="auth-page">
       <div className="auth-card">
-        <h1>🦀 Gita</h1>
-        <p className="auth-subtitle">AI-native Git Server</p>
-        <div className="auth-tabs">
-          <button className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>登录</button>
-          <button className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>注册</button>
+        <div className="auth-brand">
+          <span className="brand-mark">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M6 3v12" />
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M18 9a9 9 0 0 1-9 9" />
+            </svg>
+          </span>
+          <h1>Gita</h1>
+          <p>AI-native Git Server</p>
         </div>
-        <form onSubmit={handleSubmit}>
-          <input
-            placeholder="用户名"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-            minLength={2}
-          />
-          {mode === 'register' && (
+
+        {error && (
+          <div className="alert alert-error" style={{ marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
+
+        <form className="auth-form" onSubmit={handleSubmit}>
+          <div className="field">
+            <label className="field-label" htmlFor="username">用户名</label>
             <input
-              placeholder="邮箱"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              id="username"
+              className="input"
+              placeholder="请输入用户名"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
               required
+              minLength={2}
+              autoComplete="username"
             />
+          </div>
+          {mode === 'register' && (
+            <div className="field">
+              <label className="field-label" htmlFor="email">邮箱</label>
+              <input
+                id="email"
+                className="input"
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoComplete="email"
+              />
+            </div>
           )}
-          <input
-            placeholder="密码"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={6}
-          />
-          {error && <div className="error-banner">{error}</div>}
-          <button className="btn-primary" type="submit" disabled={busy}>
+          <div className="field">
+            <label className="field-label" htmlFor="password">密码</label>
+            <input
+              id="password"
+              className="input"
+              type="password"
+              placeholder="至少 6 位"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={6}
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            />
+          </div>
+          <button className="btn btn-primary btn-block" type="submit" disabled={busy}>
             {busy ? '处理中…' : mode === 'login' ? '登录' : '注册'}
           </button>
         </form>
+
+        <div className="auth-switch">
+          {mode === 'login' ? '还没有账号？' : '已有账号？'}
+          <button type="button" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
+            {mode === 'login' ? '立即注册' : '去登录'}
+          </button>
+        </div>
       </div>
     </div>
   )
