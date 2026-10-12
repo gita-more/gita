@@ -201,18 +201,50 @@ impl App {
     pub fn router(&self) -> axum::Router {
         let api_router = gita_api::api_router(self.api_state.clone());
         let git_router = gita_http::router(self.git_http_state.clone());
-        // Serve the built React frontend from `<project root>/web/dist` when
-        // present. The server binary runs from the workspace root, so the
-        // frontend lives at `web/dist` next to the crate sources.
-        let web_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../web/dist");
-        let web_router = gita_web::web_router(Some(web_dist));
+        // Serve the built React frontend (`web/dist`) when present.
+        let web_router = match find_web_dist() {
+            Some(dist) => gita_web::web_router(Some(dist)),
+            None => {
+                warn!("web/dist not found; serving fallback landing page");
+                gita_web::web_router(None)
+            }
+        };
 
         axum::Router::new()
             .merge(api_router)
             .merge(git_router)
             .merge(web_router)
     }
+}
+
+/// Locate the built React frontend (`web/dist`).
+///
+/// The frontend may live in a few different places depending on how the
+/// binary was built and deployed:
+/// 1. `<CARGO_MANIFEST_DIR>/../../web/dist` — building from the workspace
+///    source tree (compile-time absolute path).
+/// 2. `<exe_dir>/web/dist` — a container/image layout where the binary and
+///    frontend are siblings under a common root.
+/// 3. `<current_dir>/web/dist` — running from the workspace root.
+fn find_web_dist() -> Option<PathBuf> {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from));
+    let cwd = std::env::current_dir().ok();
+
+    let candidates = [
+        manifest.join("../../web/dist"),
+        exe_dir
+            .as_ref()
+            .map(|d| d.join("web/dist"))
+            .unwrap_or_default(),
+        cwd.as_ref().map(|d| d.join("web/dist")).unwrap_or_default(),
+    ];
+
+    candidates
+        .into_iter()
+        .find(|p| p.join("index.html").is_file())
 }
 
 /// Run the server.

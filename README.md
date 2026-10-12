@@ -119,17 +119,45 @@ git push -u origin main
 A push automatically triggers an AI review; open the repository in the web
 UI to see it.
 
-### PostgreSQL (optional)
+### Docker deployment (optional)
 
-The default is SQLite (zero dependencies). For PostgreSQL with pgvector,
-use the provided `docker-compose.yml`:
+Gita ships with a `Dockerfile` and `docker-compose.yml` for containerized
+deployment. This is the easiest way to run with PostgreSQL + pgvector.
 
 ```bash
-docker compose up -d
+# 1. Prepare environment variables
+cp .env.example .env
+#    edit .env — at minimum change JWT_SECRET!
+
+# 2. Build and start
+docker-compose up -d --build
 ```
 
-Then set `database_url = "postgres://gita:gita@localhost:5432/gita"` in
-`config/gita.toml`.
+Notes:
+
+- The app listens on port **3000** inside the container; the host port is
+  mapped via `GITA_PORT` in `.env` (default `3100`) to avoid conflicts.
+  Open <http://127.0.0.1:3100>.
+- By default (`DATABASE_URL` empty in `.env`) the app uses SQLite stored in
+  the `gita-data` volume. To use PostgreSQL, set
+  `DATABASE_URL=postgres://gita:gita@postgres:5432/gita` in `.env`.
+- If your host has no `docker compose` plugin (e.g. Podman 3.x), the
+  standalone `docker-compose` v1 works with the same file.
+- On rootless Podman, point `docker-compose` at the user socket first:
+
+  ```bash
+  export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
+  docker-compose up -d
+  ```
+
+To run the server directly instead of Docker, follow the Quick Start above
+and use PostgreSQL:
+
+```bash
+docker-compose up -d postgres
+# then in config/gita.toml:
+#   database_url = "postgres://gita:gita@localhost:5432/gita"
+```
 
 ## MCP Client Setup
 

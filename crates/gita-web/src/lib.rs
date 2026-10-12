@@ -5,9 +5,10 @@
 //! hasn't been built yet.
 
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::{Router, routing::get_service};
+use std::fs;
 use std::path::PathBuf;
 use tower_http::services::ServeDir;
 
@@ -15,19 +16,35 @@ use tower_http::services::ServeDir;
 pub fn web_router(dist_dir: Option<PathBuf>) -> Router {
     if let Some(dist) = dist_dir {
         if dist.join("index.html").exists() {
-            // Serve the built frontend. In axum 0.8, mounting a service at
-            // the root is no longer supported, so the static file server is
-            // attached as the fallback: every unmatched request (including
-            // `/`) is served from `web/dist`.
-            return Router::new().fallback_service(
-                get_service(ServeDir::new(&dist)).handle_error(|_| async {
-                    (
-                        StatusCode::NOT_FOUND,
-                        "not found",
-                    )
-                        .into_response()
-                }),
-            );
+            // Serve the built frontend. Use ServeDir with precompressed support
+            // and explicit index.html for root path.
+            let serve_dir = ServeDir::new(&dist)
+                .append_index_html_on_directories(true)
+                .precompressed_gzip()
+                .precompressed_br()
+                .precompressed_deflate()
+                .precompressed_zstd();
+
+            return Router::new()
+                .route("/", get(move || async move {
+                    let index_path = dist.join("index.html");
+                    match fs::read_to_string(&index_path) {
+                        Ok(html) => Html(html).into_response(),
+                        Err(_) => (
+                            StatusCode::NOT_FOUND,
+                            "index.html not found",
+                        ).into_response(),
+                    }
+                }))
+                .fallback_service(
+                    get_service(serve_dir).handle_error(|_| async {
+                        (
+                            StatusCode::NOT_FOUND,
+                            "not found",
+                        )
+                            .into_response()
+                    }),
+                );
         }
     }
 

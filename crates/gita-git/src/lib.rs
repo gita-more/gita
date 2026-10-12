@@ -236,7 +236,9 @@ impl GitManager {
         path: &str,
     ) -> Result<Vec<TreeEntry>> {
         let repo = self.open(owner, name)?;
-        let id = resolve_reference_id(&repo, reference)?;
+        let Some(id) = resolve_reference_id_opt(&repo, reference)? else {
+            return Ok(Vec::new());
+        };
         let tree = repo.find_commit(id)?.tree()?;
         let mut entries = Vec::new();
         collect_tree_entries(&tree, path, &mut entries)?;
@@ -252,7 +254,9 @@ impl GitManager {
         path: &str,
     ) -> Result<Option<FileContent>> {
         let repo = self.open(owner, name)?;
-        let id = resolve_reference_id(&repo, reference)?;
+        let Some(id) = resolve_reference_id_opt(&repo, reference)? else {
+            return Ok(None);
+        };
         let tree = repo.find_commit(id)?.tree()?;
         let entry = find_entry_by_path(&tree, path)?;
         let object = entry.object()?.into_blob();
@@ -273,7 +277,9 @@ impl GitManager {
         limit: usize,
     ) -> Result<Vec<Commit>> {
         let repo = self.open(owner, name)?;
-        let id = resolve_reference_id(&repo, reference)?;
+        let Some(id) = resolve_reference_id_opt(&repo, reference)? else {
+            return Ok(Vec::new());
+        };
         let walk = repo
             .rev_walk([id])
             .sorting(gix::revision::walk::Sorting::ByCommitTime(
@@ -415,6 +421,22 @@ fn resolve_reference_id(repo: &Repository, reference: &str) -> Result<gix::Objec
         .find_reference(&full)
         .with_context(|| format!("find reference {full}"))?;
     Ok(reference.id().detach())
+}
+
+/// Like [`resolve_reference_id`], but returns `Ok(None)` when the reference
+/// does not exist. This is used by read-only browsing operations so that an
+/// empty repository (or a request for a not-yet-created branch) yields an
+/// empty result instead of an error/500.
+fn resolve_reference_id_opt(repo: &Repository, reference: &str) -> Result<Option<gix::ObjectId>> {
+    let full = if reference == "HEAD" || reference.contains("refs/") {
+        reference.to_string()
+    } else {
+        format!("refs/heads/{reference}")
+    };
+    match repo.find_reference(&full) {
+        Ok(reference) => Ok(Some(reference.id().detach())),
+        Err(_) => Ok(None),
+    }
 }
 
 /// Recursively collect entries under `prefix_path`.
