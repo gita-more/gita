@@ -11,6 +11,7 @@ members = [
     "crates/gita-mcp",
     "crates/gita-server",
     "crates/gita-web",
+    "integration/cli",
 ]
 
 [workspace.package]

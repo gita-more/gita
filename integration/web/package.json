@@ -1,0 +1,13 @@
+{
+  "name": "gita-integration-web",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Gita web E2E tests (Playwright)",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0"
+  }
+}

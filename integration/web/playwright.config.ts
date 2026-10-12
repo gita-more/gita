@@ -1,6 +1,6 @@
 import { defineConfig } from '@playwright/test'
 
-// Gita E2E 测试配置
+// Gita Web E2E 测试配置
 // 浏览器使用本机缓存的 Chromium（与 @playwright/test 版本匹配），不重新下载。
 // 服务地址默认 http://127.0.0.1:3100（可用环境变量 GITA_URL 覆盖）。
 const GITA_URL = process.env.GITA_URL ?? 'http://127.0.0.1:3100'
