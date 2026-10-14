@@ -5,9 +5,7 @@
 //! - authentication (register, login, PAT tokens)
 //! - repositories (CRUD, browse tree, read files, commits)
 //! - pull requests (create, list, get, merge, close)
-//! - AI reviews (trigger, list, get)
 //! - issues (create, list, get, close)
-//! - semantic code search
 //! - event stream (AI-readable)
 //!
 //! The API follows a GitHub-like style and is documented via utoipa.

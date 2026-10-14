@@ -2,9 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use gita_ai::{AiEngine, LlmConfig};
 use gita_api::auth::Auth;
-use gita_api::search::{Fts5Backend, SearchService};
 use gita_db::Db;
 use gita_events::EventBus;
 use gita_git::GitManager;
@@ -27,7 +25,6 @@ pub struct Args {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     pub server: ServerConfig,
-    pub llm: LlmConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,9 +94,6 @@ impl Config {
             if !parsed.server.jwt_secret.is_empty() && parsed.server.jwt_secret != default_jwt_secret() {
                 config.server.jwt_secret = parsed.server.jwt_secret;
             }
-            if parsed.llm.base_url.is_some() || parsed.llm.api_key.is_some() {
-                config.llm = parsed.llm;
-            }
         } else {
             warn!(
                 "config file {} not found, using defaults",
@@ -158,32 +152,18 @@ impl App {
             });
         })));
         let auth = Auth::new(config.server.jwt_secret.clone());
-        let ai = AiEngine::from_config(config.llm.clone());
-        if !ai.configured {
-            warn!("no LLM API key configured — AI reviews will use the stub provider");
-        }
-
-        let search_backend = Arc::new(Fts5Backend {
-            db: db.clone(),
-            git: git.clone(),
-        });
-        let search = SearchService::new(search_backend);
 
         let api_state = gita_api::AppState::new(
             db.clone(),
             auth.clone(),
             (*git).clone(),
             bus.clone(),
-            ai.clone(),
-            search.clone(),
-            config.llm.clone(),
         );
 
         let git_http_state = GitHttpState {
             git: git.clone(),
             db: db.clone(),
             bus: bus.clone(),
-            ai: Arc::new(ai.clone()),
             auth: Arc::new(auth.clone()),
         };
 

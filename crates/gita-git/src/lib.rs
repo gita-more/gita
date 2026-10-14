@@ -16,7 +16,7 @@ use gita_core::{Commit, FileContent, TreeEntry};
 use gix::Repository;
 use std::path::{PathBuf};
 use std::process::Stdio;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Manages the on-disk bare repositories and provides git operations.
 #[derive(Debug, Clone)]

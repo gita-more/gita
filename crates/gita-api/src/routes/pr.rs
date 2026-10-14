@@ -1,4 +1,4 @@
-//! Pull request routes: create, list, get, merge, close, review.
+//! Pull request routes: create, list, get, merge, close.
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::AuthUserExtractor;
@@ -64,7 +64,6 @@ pub fn pr_routes() -> Router<AppState> {
         .route("/api/repos/{owner}/{repo}/prs/{number}", get(get_pr))
         .route("/api/repos/{owner}/{repo}/prs/{number}/merge", post(merge_pr))
         .route("/api/repos/{owner}/{repo}/prs/{number}/close", post(close_pr))
-        .route("/api/repos/{owner}/{repo}/prs/{number}/review", post(trigger_review))
 }
 
 async fn create_pr(
@@ -164,11 +163,8 @@ async fn get_pr(
         .get_pull_request(repo.id, number)
         .await?
         .ok_or_else(|| ApiError::NotFound("pull request not found".into()))?;
-    // Include AI reviews for this PR.
-    let reviews = state.db.list_reviews(None, Some(pr.id), 10).await?;
     Ok(Json(serde_json::json!({
         "pr": PrResponse::from(pr),
-        "reviews": reviews,
     })))
 }
 
@@ -252,62 +248,3 @@ async fn close_pr(
         message: "pull request closed".to_string(),
     }))
 }
-
-async fn trigger_review(
-    State(state): State<AppState>,
-    user: AuthUserExtractor,
-    Path((owner, repo_name, number)): Path<(String, String, i64)>,
-) -> ApiResult<Json<gita_core::Review>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo_name)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    let pr = state
-        .db
-        .get_pull_request(repo.id, number)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("pull request not found".into()))?;
-
-    // Compute the diff between base and head.
-    let diff = state
-        .git
-        .diff_between(&owner, &repo_name, &pr.target_branch, &pr.source_branch)
-        .map_err(ApiError::from)?;
-
-    let result = state
-        .ai
-        .review_diff(&diff, &format!("{owner}/{repo_name}"))
-        .await
-        .map_err(ApiError::from)?;
-
-    let review = gita_ai::review_from_result(
-        repo.id,
-        Some(pr.id),
-        &pr.head_sha,
-        result,
-    );
-
-    let review_id = state.db.insert_review(&review).await?;
-    let mut saved = state
-        .db
-        .get_review(review_id)
-        .await?
-        .ok_or_else(|| ApiError::Internal("review not found after insert".into()))?;
-    saved.id = review_id;
-
-    state.bus.publish(
-        EventType::ReviewCompleted,
-        Some(repo.id),
-        Some(user.id),
-        serde_json::json!({
-            "pr": pr.number,
-            "review_id": review_id,
-            "risk_score": saved.risk_score,
-        }),
-    );
-
-    Ok(Json(saved))
-}
-
-// Review listing routes are in review.rs

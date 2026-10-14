@@ -15,7 +15,7 @@ pub const OPENAPI_JSON: &str = r##"{
   "openapi": "3.0.3",
   "info": {
     "title": "Gita API",
-    "description": "AI-native Git server REST API. Standard GitHub-like endpoints plus AI review, semantic search, PR/Issue workflows and an AI-readable event stream.",
+    "description": "AI-native Git server REST API. Standard GitHub-like endpoints, PR/Issue workflows and an AI-readable event stream.",
     "version": "0.0.1"
   },
   "servers": [
@@ -26,9 +26,7 @@ pub const OPENAPI_JSON: &str = r##"{
     { "name": "repos", "description": "Repository CRUD and content browsing" },
     { "name": "commits", "description": "Commit history" },
     { "name": "prs", "description": "Pull request workflow" },
-    { "name": "reviews", "description": "AI code reviews" },
     { "name": "issues", "description": "Issue tracking" },
-    { "name": "search", "description": "Code search" },
     { "name": "events", "description": "AI-readable event stream" },
     { "name": "misc", "description": "Health and metadata" }
   ],
@@ -47,7 +45,6 @@ pub const OPENAPI_JSON: &str = r##"{
                   "properties": {
                     "status": { "type": "string", "enum": ["ok", "degraded"] },
                     "db": { "type": "string", "enum": ["ok", "error"] },
-                    "ai_configured": { "type": "boolean" },
                     "git": { "type": "string" }
                   }
                 }
@@ -320,7 +317,7 @@ pub const OPENAPI_JSON: &str = r##"{
     "/api/repos/{owner}/{repo}/prs/{number}": {
       "get": {
         "tags": ["prs"],
-        "summary": "Get a pull request with its AI reviews",
+        "summary": "Get a pull request",
         "parameters": [
           { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
@@ -336,228 +333,6 @@ pub const OPENAPI_JSON: &str = r##"{
             }
           },
           "404": { "description": "PR not found" }
-        }
-      }
-    },
-    "/api/repos/{owner}/{repo}/prs/{number}/review": {
-      "post": {
-        "tags": ["reviews", "prs"],
-        "summary": "Trigger an AI review of a pull request",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "number", "in": "path", "required": true, "schema": { "type": "integer" } }
-        ],
-        "responses": {
-          "200": {
-            "description": "AI review",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Review" }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/reviews": {
-      "get": {
-        "tags": ["reviews"],
-        "summary": "List AI reviews",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "limit", "in": "query", "schema": { "type": "integer" } }
-        ],
-        "responses": {
-          "200": {
-            "description": "Review list",
-            "content": {
-              "application/json": {
-                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Review" } }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/reviews/{id}": {
-      "get": {
-        "tags": ["reviews"],
-        "summary": "Get an AI review by id",
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
-        ],
-        "responses": {
-          "200": {
-            "description": "Review",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Review" }
-              }
-            }
-          },
-          "404": { "description": "Review not found" }
-        }
-      },
-      "patch": {
-        "tags": ["reviews"],
-        "summary": "Update an AI review (summary / risk_score). Repository owner only.",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/UpdateReviewRequest" }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Updated review",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Review" }
-              }
-            }
-          },
-          "403": { "description": "Forbidden (not the repository owner)" },
-          "404": { "description": "Review not found" }
-        }
-      }
-    },
-    "/api/reviews/{id}/comments": {
-      "get": {
-        "tags": ["reviews"],
-        "summary": "List user comments on a review",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
-        ],
-        "responses": {
-          "200": {
-            "description": "Comment list",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "review_id": { "type": "integer" },
-                    "comments": {
-                      "type": "array",
-                      "items": { "$ref": "#/components/schemas/ReviewDiscussionComment" }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "404": { "description": "Review not found" }
-        }
-      },
-      "post": {
-        "tags": ["reviews"],
-        "summary": "Post a user comment on a review",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/CreateDiscussionCommentRequest" }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Created comment",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ReviewDiscussionComment" }
-              }
-            }
-          },
-          "404": { "description": "Review not found" }
-        }
-      }
-    },
-    "/api/reviews/comments/{comment_id}": {
-      "patch": {
-        "tags": ["reviews"],
-        "summary": "Edit your own review comment",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "comment_id", "in": "path", "required": true, "schema": { "type": "integer" } }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/UpdateDiscussionCommentRequest" }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Updated comment",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ReviewDiscussionComment" }
-              }
-            }
-          },
-          "403": { "description": "Forbidden (not the comment author)" },
-          "404": { "description": "Comment not found" }
-        }
-      },
-      "delete": {
-        "tags": ["reviews"],
-        "summary": "Delete your own review comment (soft delete)",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "comment_id", "in": "path", "required": true, "schema": { "type": "integer" } }
-        ],
-        "responses": {
-          "200": {
-            "description": "Deleted"
-          },
-          "403": { "description": "Forbidden (not the comment author)" },
-          "404": { "description": "Comment not found" }
-        }
-      }
-    },
-    "/api/reviews/comments/{comment_id}/resolve": {
-      "post": {
-        "tags": ["reviews"],
-        "summary": "Mark an AI review comment as resolved. Repository owner only.",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "comment_id", "in": "path", "required": true, "schema": { "type": "integer" } }
-        ],
-        "responses": {
-          "200": { "description": "Resolved" },
-          "403": { "description": "Forbidden (not the repository owner)" },
-          "404": { "description": "Comment not found" }
-        }
-      }
-    },
-    "/api/reviews/comments/{comment_id}/unresolve": {
-      "post": {
-        "tags": ["reviews"],
-        "summary": "Clear the resolved flag on an AI review comment. Repository owner only.",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "comment_id", "in": "path", "required": true, "schema": { "type": "integer" } }
-        ],
-        "responses": {
-          "200": { "description": "Unresolved" },
-          "403": { "description": "Forbidden (not the repository owner)" },
-          "404": { "description": "Comment not found" }
         }
       }
     },
@@ -599,28 +374,6 @@ pub const OPENAPI_JSON: &str = r##"{
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Issue" }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/search": {
-      "get": {
-        "tags": ["search"],
-        "summary": "Search repository code",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Query (keyword or natural language)" },
-          { "name": "repo", "in": "query", "schema": { "type": "string" }, "description": "owner/name to restrict search" },
-          { "name": "limit", "in": "query", "schema": { "type": "integer" } }
-        ],
-        "responses": {
-          "200": {
-            "description": "Search hits",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/SearchResponse" }
               }
             }
           }
@@ -790,73 +543,7 @@ pub const OPENAPI_JSON: &str = r##"{
       "PrDetailResponse": {
         "type": "object",
         "properties": {
-          "pr": { "$ref": "#/components/schemas/PullRequest" },
-          "reviews": { "type": "array", "items": { "$ref": "#/components/schemas/Review" } }
-        }
-      },
-      "Review": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "integer" },
-          "pr_id": { "type": "integer", "nullable": true },
-          "repo_id": { "type": "integer" },
-          "commit_sha": { "type": "string" },
-          "status": { "type": "string" },
-          "risk_score": { "type": "integer" },
-          "summary": { "type": "string" },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" },
-          "comments": { "type": "array", "items": { "$ref": "#/components/schemas/ReviewComment" } }
-        }
-      },
-      "ReviewComment": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "integer" },
-          "review_id": { "type": "integer" },
-          "file_path": { "type": "string" },
-          "line": { "type": "integer", "nullable": true },
-          "severity": { "type": "string", "enum": ["info", "warning", "error"] },
-          "message": { "type": "string" },
-          "suggestion": { "type": "string" },
-          "created_at": { "type": "string", "format": "date-time" },
-          "resolved": { "type": "boolean" },
-          "resolved_by": { "type": "integer", "nullable": true },
-          "resolved_at": { "type": "string", "format": "date-time", "nullable": true }
-        }
-      },
-      "ReviewDiscussionComment": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "integer" },
-          "review_id": { "type": "integer" },
-          "author_id": { "type": "integer" },
-          "author_name": { "type": "string" },
-          "body": { "type": "string" },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" },
-          "deleted_at": { "type": "string", "format": "date-time", "nullable": true }
-        }
-      },
-      "CreateDiscussionCommentRequest": {
-        "type": "object",
-        "required": ["body"],
-        "properties": {
-          "body": { "type": "string" }
-        }
-      },
-      "UpdateDiscussionCommentRequest": {
-        "type": "object",
-        "required": ["body"],
-        "properties": {
-          "body": { "type": "string" }
-        }
-      },
-      "UpdateReviewRequest": {
-        "type": "object",
-        "properties": {
-          "summary": { "type": "string" },
-          "risk_score": { "type": "integer", "minimum": 0, "maximum": 100 }
+          "pr": { "$ref": "#/components/schemas/PullRequest" }
         }
       },
       "CreateIssueRequest": {
@@ -877,23 +564,6 @@ pub const OPENAPI_JSON: &str = r##"{
           "status": { "type": "string", "enum": ["open", "closed"] },
           "author": { "type": "string" },
           "created_at": { "type": "string", "format": "date-time" }
-        }
-      },
-      "SearchResponse": {
-        "type": "object",
-        "properties": {
-          "query": { "type": "string" },
-          "hits": { "type": "array", "items": { "$ref": "#/components/schemas/SearchHit" } }
-        }
-      },
-      "SearchHit": {
-        "type": "object",
-        "properties": {
-          "repo_id": { "type": "integer" },
-          "repo_name": { "type": "string" },
-          "file_path": { "type": "string" },
-          "content": { "type": "string" },
-          "score": { "type": "number", "format": "float" }
         }
       },
       "Event": {

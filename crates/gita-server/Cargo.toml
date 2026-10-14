@@ -24,6 +24,4 @@ gita-git = { path = "../gita-git" }
 gita-events = { path = "../gita-events" }
 gita-http = { path = "../gita-http" }
 gita-api = { path = "../gita-api" }
-gita-ai = { path = "../gita-ai" }
-gita-mcp = { path = "../gita-mcp" }
 gita-web = { path = "../gita-web" }

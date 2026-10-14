@@ -4,9 +4,6 @@ import {
   type Commit,
   type FileContent,
   type PullRequest,
-  type Review,
-  type ReviewComment,
-  type ReviewDiscussionComment,
   type Issue,
   type TreeEntry,
 } from '../lib/api'
@@ -19,18 +16,13 @@ import {
   GitCommitIcon,
   GitPullRequestIcon,
   CircleDotIcon,
-  SparklesIcon,
-  SearchIcon,
-  ShieldAlertIcon,
   ChevronRightIcon,
   PlusIcon,
   XIcon,
   CheckIcon,
-  AlertTriangleIcon,
-  InfoIcon,
 } from './Icons'
 
-type Tab = 'files' | 'commits' | 'prs' | 'issues' | 'reviews' | 'search'
+type Tab = 'files' | 'commits' | 'prs' | 'issues'
 
 const NAV_TO_TAB: Record<NavTarget, Tab | null> = {
   home: null,
@@ -38,8 +30,6 @@ const NAV_TO_TAB: Record<NavTarget, Tab | null> = {
   commits: 'commits',
   prs: 'prs',
   issues: 'issues',
-  reviews: 'reviews',
-  search: 'search',
 }
 
 const TAB_TO_NAV: Record<Tab, NavTarget> = {
@@ -47,8 +37,6 @@ const TAB_TO_NAV: Record<Tab, NavTarget> = {
   commits: 'commits',
   prs: 'prs',
   issues: 'issues',
-  reviews: 'reviews',
-  search: 'search',
 }
 
 export function RepoDetail({
@@ -69,7 +57,6 @@ export function RepoDetail({
   const [commits, setCommits] = useState<Commit[]>([])
   const [prs, setPrs] = useState<PullRequest[]>([])
   const [issues, setIssues] = useState<Issue[]>([])
-  const [reviews, setReviews] = useState<Review[]>([])
   const [error, setError] = useState('')
 
   const loadBranches = useCallback(async () => {
@@ -119,16 +106,6 @@ export function RepoDetail({
     }
   }, [owner, name])
 
-  const loadReviews = useCallback(async () => {
-    try {
-      const res = await api.listReviews()
-      const filtered = res.reviews.filter((r) => r.repo_id >= 0)
-      setReviews(filtered)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }, [])
-
   useEffect(() => {
     void loadBranches()
   }, [loadBranches])
@@ -147,13 +124,10 @@ export function RepoDetail({
       case 'issues':
         void loadIssues()
         break
-      case 'reviews':
-        void loadReviews()
-        break
       default:
         break
     }
-  }, [tab, loadTree, loadCommits, loadPrs, loadIssues, loadReviews])
+  }, [tab, loadTree, loadCommits, loadPrs, loadIssues])
 
   async function openEntry(entry: TreeEntry) {
     if (entry.kind === 'tree') {
@@ -222,8 +196,6 @@ export function RepoDetail({
       {tab === 'commits' && <CommitsPanel commits={commits} />}
       {tab === 'prs' && <PrPanel owner={owner} name={name} prs={prs} onChanged={() => void loadPrs()} />}
       {tab === 'issues' && <IssuePanel owner={owner} name={name} issues={issues} onChanged={() => void loadIssues()} />}
-      {tab === 'reviews' && <ReviewsPanel reviews={reviews} owner={owner} />}
-      {tab === 'search' && <SearchPanel owner={owner} name={name} />}
     </AppLayout>
   )
 }
@@ -345,7 +317,7 @@ function CommitsPanel({ commits }: { commits: Commit[] }) {
         <EmptyState
           icon={<GitCommitIcon size={22} />}
           title="还没有提交"
-          description="通过 git push 推送第一个提交，Gita 会自动触发 AI 评审。"
+          description="通过 git push 推送第一个提交。"
         />
       ) : (
         <div className="commit-list">
@@ -391,7 +363,7 @@ function PrPanel({
   const [source, setSource] = useState('')
   const [target, setTarget] = useState('main')
   const [selected, setSelected] = useState<PullRequest | null>(null)
-  const [detail, setDetail] = useState<{ pr: PullRequest; reviews: Review[] } | null>(null)
+  const [detail, setDetail] = useState<PullRequest | null>(null)
   const [error, setError] = useState('')
 
   async function createPr() {
@@ -413,7 +385,7 @@ function PrPanel({
     setDetail(null)
     try {
       const res = await api.getPr(owner, name, pr.number)
-      setDetail(res)
+      setDetail(res.pr)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -445,27 +417,13 @@ function PrPanel({
     }
   }
 
-  async function runReview() {
-    if (!selected) return
-    setError('')
-    try {
-      await api.triggerReview(owner, name, selected.number)
-      const res = await api.getPr(owner, name, selected.number)
-      setDetail(res)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
   if (selected && detail) {
     return (
       <PrDetail
-        pr={detail.pr}
-        reviews={detail.reviews}
+        pr={detail}
         onBack={() => { setSelected(null); setDetail(null) }}
         onMerge={() => void mergePr()}
         onClose={() => void closePr()}
-        onReview={() => void runReview()}
       />
     )
   }
@@ -515,7 +473,7 @@ function PrPanel({
         <EmptyState
           icon={<GitPullRequestIcon size={22} />}
           title="还没有合并请求"
-          description="创建 PR 来发起代码合并和 AI 评审。"
+          description="创建 PR 来发起代码合并。"
         />
       ) : (
         <div className="row-list">
@@ -543,18 +501,14 @@ function PrPanel({
 
 function PrDetail({
   pr,
-  reviews,
   onBack,
   onMerge,
   onClose,
-  onReview,
 }: {
   pr: PullRequest
-  reviews: Review[]
   onBack: () => void
   onMerge: () => void
   onClose: () => void
-  onReview: () => void
 }) {
   return (
     <>
@@ -595,86 +549,7 @@ function PrDetail({
       </div>
 
       <p className="pr-body">{pr.body || '（无描述）'}</p>
-
-      <div className="section-header">
-        <h3>
-          <SparklesIcon size={16} />
-          AI 评审
-        </h3>
-        <button className="btn btn-sm" onClick={onReview} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          <SparklesIcon size={14} />
-          触发 AI 评审
-        </button>
-      </div>
-
-      {reviews.length === 0 ? (
-        <EmptyState
-          icon={<SparklesIcon size={22} />}
-          title="还没有 AI 评审"
-          description="点击「触发 AI 评审」让 Gita 分析这个 PR 的代码变更。"
-        />
-      ) : (
-        reviews.map((r) => (
-          <div key={r.id} className="box review-card">
-            <div className="box-header">
-              <div className="risk-indicator">
-                <span className={`risk-score-text ${riskClass(r.risk_score)}`}>{r.risk_score}</span>
-                <span className="risk-meter"><span className="risk-meter-fill" style={{ width: `${Math.min(100, r.risk_score)}%` }} /></span>
-              </div>
-              <span style={{ fontWeight: 400, color: 'var(--fg-muted)', fontSize: 12 }}>
-                {new Date(r.created_at).toLocaleString()}
-              </span>
-            </div>
-            <div className="box-body">
-              <p style={{ margin: '0 0 12px', color: 'var(--fg-muted)', fontSize: 14 }}>{r.summary}</p>
-              {r.comments.map((c) => (
-                <ReviewCommentRow key={c.id} comment={c} />
-              ))}
-            </div>
-          </div>
-        ))
-      )}
     </>
-  )
-}
-
-function riskClass(score: number): string {
-  if (score < 40) return 'risk-low'
-  if (score < 70) return 'risk-mid'
-  return 'risk-high'
-}
-
-function ReviewCommentRow({
-  comment,
-  isOwner = false,
-  onResolvedChange,
-}: {
-  comment: ReviewComment
-  isOwner?: boolean
-  onResolvedChange?: () => void
-}) {
-  const SeverityIcon =
-    comment.severity === 'error' ? ShieldAlertIcon : comment.severity === 'warning' ? AlertTriangleIcon : InfoIcon
-  return (
-    <div className={`review-comment severity-${comment.severity}${comment.resolved ? ' resolved' : ''}`}>
-      <div className="review-comment-body">
-        <div className="review-comment-header">
-          <span className={`severity-badge severity-${comment.severity}`}>
-            <SeverityIcon size={11} />
-            {comment.severity}
-          </span>
-          <span className="file-ref">{comment.file_path}{comment.line ? `:${comment.line}` : ''}</span>
-          {comment.resolved && <span className="resolved-badge"><CheckIcon size={11} /> 已解决</span>}
-          {isOwner && onResolvedChange && (
-            <button className="btn btn-ghost btn-xs" onClick={onResolvedChange} style={{ marginLeft: 'auto' }}>
-              {comment.resolved ? '取消解决' : '标记解决'}
-            </button>
-          )}
-        </div>
-        <p>{comment.message}</p>
-        {comment.suggestion && <pre className="suggestion">{comment.suggestion}</pre>}
-      </div>
-    </div>
   )
 }
 
@@ -785,333 +660,6 @@ function IssuePanel({
             </div>
           ))}
         </div>
-      )}
-    </>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Reviews panel
-// ---------------------------------------------------------------------------
-
-function ReviewsPanel({
-  reviews,
-  owner,
-}: {
-  reviews: Review[]
-  owner: string
-}) {
-  const [currentUser, setCurrentUser] = useState<{ id: number; username: string } | null>(null)
-
-  useEffect(() => {
-    api.me().then(setCurrentUser).catch(() => setCurrentUser(null))
-  }, [])
-
-  const isOwner = currentUser?.username === owner
-
-  return (
-    <>
-      <PageHeader
-        icon={<SparklesIcon size={18} />}
-        title="AI 评审"
-        subtitle={`共 ${reviews.length} 条评审记录`}
-      />
-      {reviews.length === 0 ? (
-        <EmptyState
-          icon={<SparklesIcon size={22} />}
-          title="暂无 AI 评审"
-          description="推送代码或触发 PR 评审后，Gita 会自动生成 AI 评审。"
-        />
-      ) : (
-        reviews.map((r) => (
-          <ReviewCard
-            key={r.id}
-            review={r}
-            isOwner={isOwner}
-            currentUserId={currentUser?.id ?? null}
-          />
-        ))
-      )}
-    </>
-  )
-}
-
-function ReviewCard({
-  review,
-  isOwner,
-  currentUserId,
-}: {
-  review: Review
-  isOwner: boolean
-  currentUserId: number | null
-}) {
-  const [comments, setComments] = useState<ReviewDiscussionComment[]>([])
-  const [newComment, setNewComment] = useState('')
-  const [editingCommentId, setEditingCommentId] = useState<number | null>(null)
-  const [editBody, setEditBody] = useState('')
-  const [editingReview, setEditingReview] = useState(false)
-  const [summary, setSummary] = useState(review.summary)
-  const [riskScore, setRiskScore] = useState(review.risk_score)
-  const [error, setError] = useState('')
-
-  const loadComments = useCallback(async () => {
-    try {
-      const res = await api.listReviewComments(review.id)
-      setComments(res.comments)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }, [review.id])
-
-  useEffect(() => {
-    void loadComments()
-  }, [loadComments])
-
-  async function addComment() {
-    setError('')
-    const body = newComment.trim()
-    if (!body) return
-    try {
-      await api.addReviewComment(review.id, body)
-      setNewComment('')
-      await loadComments()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  async function saveEdit(commentId: number) {
-    setError('')
-    try {
-      await api.editReviewComment(commentId, editBody)
-      setEditingCommentId(null)
-      setEditBody('')
-      await loadComments()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  async function deleteComment(commentId: number) {
-    setError('')
-    try {
-      await api.deleteReviewComment(commentId)
-      await loadComments()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  async function saveReview() {
-    setError('')
-    try {
-      const updated = await api.updateReview(review.id, summary, riskScore)
-      review.summary = updated.summary
-      review.risk_score = updated.risk_score
-      setEditingReview(false)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  async function toggleResolved(commentId: number, resolved: boolean) {
-    setError('')
-    try {
-      if (resolved) {
-        await api.unresolveReviewComment(commentId)
-      } else {
-        await api.resolveReviewComment(commentId)
-      }
-      const updated = await api.getReview(review.id)
-      review.comments = updated.comments
-      review.risk_score = updated.risk_score
-      review.summary = updated.summary
-      setSummary(updated.summary)
-      setRiskScore(updated.risk_score)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  return (
-    <div className="box review-card">
-      <div className="box-header">
-        <div className="risk-indicator">
-          <span className={`risk-score-text ${riskClass(review.risk_score)}`}>{review.risk_score}</span>
-          <span className="risk-meter"><span className="risk-meter-fill" style={{ width: `${Math.min(100, review.risk_score)}%` }} /></span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <code style={{ color: 'var(--fg-accent)' }}>{review.commit_sha.slice(0, 10)}</code>
-          <span style={{ fontWeight: 400, color: 'var(--fg-muted)', fontSize: 12 }}>
-            {new Date(review.created_at).toLocaleString()}
-          </span>
-          {isOwner && (
-            <button className="btn btn-ghost btn-sm" onClick={() => setEditingReview(!editingReview)}>
-              {editingReview ? '取消' : '编辑'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="box-body">
-        {editingReview && isOwner ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-            <textarea
-              className="textarea"
-              placeholder="评审摘要"
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-            />
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input
-                className="input"
-                type="number"
-                min={0}
-                max={100}
-                placeholder="风险分 (0-100)"
-                value={riskScore}
-                onChange={(e) => setRiskScore(Number(e.target.value))}
-                style={{ maxWidth: 140 }}
-              />
-              <button className="btn btn-primary btn-sm" onClick={() => void saveReview()}>保存</button>
-            </div>
-          </div>
-        ) : (
-          <p style={{ margin: '0 0 12px', color: 'var(--fg-muted)', fontSize: 14 }}>{review.summary}</p>
-        )}
-
-        {review.comments.map((c) => (
-          <ReviewCommentRow
-            key={c.id}
-            comment={c}
-            isOwner={isOwner}
-            onResolvedChange={
-              isOwner ? () => void toggleResolved(c.id, c.resolved) : undefined
-            }
-          />
-        ))}
-
-        {error && <Alert type="error">{error}</Alert>}
-
-        {comments.length > 0 && (
-          <div className="discussion-list">
-            <h4>讨论</h4>
-            {comments.map((c) => (
-              <div key={c.id} className="discussion-comment">
-                <div className="discussion-comment-header">
-                  <b>{c.author_name}</b>
-                  <span>{new Date(c.created_at).toLocaleString()}</span>
-                  {currentUserId === c.author_id && (
-                    <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4 }}>
-                      <button
-                        className="btn btn-ghost btn-xs"
-                        onClick={() => {
-                          setEditingCommentId(c.id)
-                          setEditBody(c.body)
-                        }}
-                      >
-                        编辑
-                      </button>
-                      <button
-                        className="btn btn-danger btn-xs"
-                        onClick={() => void deleteComment(c.id)}
-                      >
-                        删除
-                      </button>
-                    </span>
-                  )}
-                </div>
-                {editingCommentId === c.id ? (
-                  <div className="discussion-edit" style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginTop: 4 }}>
-                    <textarea className="textarea" value={editBody} onChange={(e) => setEditBody(e.target.value)} style={{ flex: 1, minHeight: 40 }} />
-                    <button className="btn btn-primary btn-sm" onClick={() => void saveEdit(c.id)}>保存</button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => setEditingCommentId(null)}>取消</button>
-                  </div>
-                ) : (
-                  <p>{c.body}</p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="discussion-input">
-          <input
-            className="input"
-            placeholder="发表评论…"
-            value={newComment}
-            onChange={(e) => setNewComment(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void addComment()}
-          />
-          <button className="btn btn-primary btn-sm" onClick={() => void addComment()}>评论</button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Search panel
-// ---------------------------------------------------------------------------
-
-function SearchPanel({ owner, name }: { owner: string; name: string }) {
-  const [q, setQ] = useState('')
-  const [hits, setHits] = useState<{ repo_name: string; file_path: string; content: string; score: number }[]>([])
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  async function doSearch() {
-    setError('')
-    setBusy(true)
-    try {
-      const res = await api.search(q, `${owner}/${name}`)
-      setHits(res.hits)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <>
-      <PageHeader
-        icon={<SearchIcon size={18} />}
-        title="代码搜索"
-        subtitle="搜索该仓库中的代码内容"
-      />
-      <div className="search-bar" style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <input
-          className="input"
-          placeholder="输入关键词或自然语言查询…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && void doSearch()}
-        />
-        <button className="btn btn-primary" onClick={() => void doSearch()} disabled={busy}>
-          <SearchIcon size={14} />
-          {busy ? '搜索中…' : '搜索'}
-        </button>
-      </div>
-
-      {error && <Alert type="error">{error}</Alert>}
-
-      {hits.length === 0 ? (
-        <EmptyState
-          icon={<SearchIcon size={22} />}
-          title={q ? '没有匹配结果' : '输入关键词搜索代码'}
-          description={q ? '试试其他关键词或自然语言描述。' : '支持关键词匹配和自然语言查询。'}
-        />
-      ) : (
-        hits.map((hit, idx) => (
-          <div key={idx} className="search-hit">
-            <div className="search-hit-header">
-              <code>{hit.repo_name}/{hit.file_path}</code>
-              <span>score: {hit.score.toFixed(2)}</span>
-            </div>
-            <pre className="search-hit-content">{hit.content}</pre>
-          </div>
-        ))
       )}
     </>
   )

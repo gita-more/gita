@@ -2,7 +2,7 @@
 //!
 //! These types are shared across all crates. They describe the
 //! fundamental entities of an AI-native git server: users, repositories,
-//! commits, pull requests, issues, AI reviews and events.
+//! commits, pull requests, issues and events.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -96,81 +96,6 @@ pub struct PullRequest {
     pub merged_at: Option<DateTime<Utc>>,
 }
 
-/// Severity of an AI review comment.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Info,
-    Warning,
-    Error,
-}
-
-impl fmt::Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Severity::Info => write!(f, "info"),
-            Severity::Warning => write!(f, "warning"),
-            Severity::Error => write!(f, "error"),
-        }
-    }
-}
-
-/// A single line-level comment produced by the AI reviewer.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReviewComment {
-    pub id: i64,
-    pub review_id: i64,
-    pub file_path: String,
-    /// 1-based line number in the diff. `None` for whole-file comments.
-    pub line: Option<i64>,
-    pub severity: Severity,
-    pub message: String,
-    pub suggestion: String,
-    pub created_at: DateTime<Utc>,
-    /// Whether the repository owner has marked this comment as resolved.
-    pub resolved: bool,
-    /// The user who resolved this comment, if any.
-    pub resolved_by: Option<i64>,
-    /// When the comment was resolved, if at all.
-    pub resolved_at: Option<DateTime<Utc>>,
-}
-
-/// An AI review of a pull request (or of a push).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Review {
-    pub id: i64,
-    /// PR id, or `None` if the review is for a bare push.
-    pub pr_id: Option<i64>,
-    pub repo_id: i64,
-    /// The commit SHA that was reviewed.
-    pub commit_sha: String,
-    pub status: String,
-    /// 0-100 risk score.
-    pub risk_score: i64,
-    pub summary: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub comments: Vec<ReviewComment>,
-}
-
-/// A user comment on an AI review (discussion thread).
-///
-/// Unlike [`ReviewComment`] (which is an AI-generated, line-level finding),
-/// this type represents a human comment posted in the review discussion,
-/// similar to a GitHub PR review thread. Deletion is a soft delete.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReviewDiscussionComment {
-    pub id: i64,
-    pub review_id: i64,
-    pub author_id: i64,
-    pub author_name: String,
-    pub body: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    /// Soft-delete marker; `None` means the comment is visible.
-    pub deleted_at: Option<DateTime<Utc>>,
-}
-
 /// Status of an issue.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -214,12 +139,10 @@ pub enum EventType {
     PullRequestOpened,
     PullRequestMerged,
     PullRequestClosed,
-    ReviewCompleted,
     IssueCreated,
     IssueClosed,
     AgentRunStarted,
     AgentRunCompleted,
-    CommentAdded,
 }
 
 impl fmt::Display for EventType {
@@ -231,12 +154,10 @@ impl fmt::Display for EventType {
             EventType::PullRequestOpened => "pull_request_opened",
             EventType::PullRequestMerged => "pull_request_merged",
             EventType::PullRequestClosed => "pull_request_closed",
-            EventType::ReviewCompleted => "review_completed",
             EventType::IssueCreated => "issue_created",
             EventType::IssueClosed => "issue_closed",
             EventType::AgentRunStarted => "agent_run_started",
             EventType::AgentRunCompleted => "agent_run_completed",
-            EventType::CommentAdded => "comment_added",
         };
         write!(f, "{s}")
     }

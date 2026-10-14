@@ -1,10 +1,10 @@
 //! Repository routes: create, list, get, delete, browse tree/files/commits.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{AuthUserExtractor, OptionalAuthUser};
+use crate::extract::AuthUserExtractor;
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use gita_core::{EventType, Repository};
 use serde::{Deserialize, Serialize};

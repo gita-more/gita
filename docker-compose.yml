@@ -6,7 +6,7 @@
 #
 # Services:
 #   - gita: main application (Rust backend + React frontend)
-#   - postgres: PostgreSQL with pgvector for relational data + semantic search
+#   - postgres: PostgreSQL for relational data
 #
 # Notes:
 #   - Host port 3000 is often occupied; the default maps 3100 -> 3000.
@@ -32,11 +32,6 @@ services:
       - GITA_SERVER_DATABASE_URL=${DATABASE_URL:-sqlite:///data/gita.db}
       # CHANGE THIS IN PRODUCTION! Use a strong random string (64+ chars)
       - GITA_SERVER_JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
-      # LLM (optional - leave empty for stub reviews)
-      - GITA_LLM_BASE_URL=${LLM_BASE_URL:-}
-      - GITA_LLM_API_KEY=${LLM_API_KEY:-}
-      - GITA_LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
-      - GITA_LLM_TIMEOUT_SECS=60
     volumes:
       # Persist repositories and the SQLite database
       - gita-data:/data

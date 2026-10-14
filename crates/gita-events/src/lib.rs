@@ -1,7 +1,7 @@
 //! Event bus for Gita.
 //!
 //! The event bus is the nervous system of the AI-native design. Every
-//! meaningful activity (push, PR opened, review completed, ...) is
+//! meaningful activity (push, PR opened, issue created, ...) is
 //! published as a structured event. AI agents and internal modules can
 //! subscribe to the stream and react.
 

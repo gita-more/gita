@@ -41,44 +41,6 @@ export interface FileContent {
   sha: string
 }
 
-export interface ReviewComment {
-  id: number
-  review_id: number
-  file_path: string
-  line: number | null
-  severity: 'info' | 'warning' | 'error'
-  message: string
-  suggestion: string
-  created_at: string
-  resolved: boolean
-  resolved_by: number | null
-  resolved_at: string | null
-}
-
-export interface Review {
-  id: number
-  pr_id: number | null
-  repo_id: number
-  commit_sha: string
-  status: string
-  risk_score: number
-  summary: string
-  created_at: string
-  updated_at: string
-  comments: ReviewComment[]
-}
-
-export interface ReviewDiscussionComment {
-  id: number
-  review_id: number
-  author_id: number
-  author_name: string
-  body: string
-  created_at: string
-  updated_at: string
-  deleted_at: string | null
-}
-
 export interface PullRequest {
   id: number
   number: number
@@ -102,14 +64,6 @@ export interface Issue {
   status: 'open' | 'closed'
   author: string
   created_at: string
-}
-
-export interface SearchHit {
-  repo_id: number
-  repo_name: string
-  file_path: string
-  content: string
-  score: number
 }
 
 export interface EventItem {
@@ -205,7 +159,7 @@ export const api = {
       `/api/repos/${owner}/${name}/prs${status ? `?status=${status}` : ''}`,
     ),
   getPr: (owner: string, name: string, number: number) =>
-    request<{ pr: PullRequest; reviews: Review[] }>(`/api/repos/${owner}/${name}/prs/${number}`),
+    request<{ pr: PullRequest }>(`/api/repos/${owner}/${name}/prs/${number}`),
   mergePr: (owner: string, name: string, number: number) =>
     request<{ message: string }>(`/api/repos/${owner}/${name}/prs/${number}/merge`, {
       method: 'POST',
@@ -214,40 +168,6 @@ export const api = {
     request<{ message: string }>(`/api/repos/${owner}/${name}/prs/${number}/close`, {
       method: 'POST',
     }),
-  triggerReview: (owner: string, name: string, number: number) =>
-    request<Review>(`/api/repos/${owner}/${name}/prs/${number}/review`, { method: 'POST' }),
-
-  // reviews
-  listReviews: () =>
-    request<{ reviews: Review[] }>('/api/reviews'),
-  getReview: (id: number) => request<Review>(`/api/reviews/${id}`),
-
-  // review discussion comments
-  listReviewComments: (reviewId: number) =>
-    request<{ review_id: number; comments: ReviewDiscussionComment[] }>(`/api/reviews/${reviewId}/comments`),
-  addReviewComment: (reviewId: number, body: string) =>
-    request<ReviewDiscussionComment>(`/api/reviews/${reviewId}/comments`, {
-      method: 'POST',
-      body: JSON.stringify({ body }),
-    }),
-  editReviewComment: (commentId: number, body: string) =>
-    request<ReviewDiscussionComment>(`/api/reviews/comments/${commentId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ body }),
-    }),
-  deleteReviewComment: (commentId: number) =>
-    request<{ message: string }>(`/api/reviews/comments/${commentId}`, { method: 'DELETE' }),
-
-  // review modification (owner only)
-  updateReview: (id: number, summary?: string, riskScore?: number) =>
-    request<Review>(`/api/reviews/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ summary, risk_score: riskScore }),
-    }),
-  resolveReviewComment: (commentId: number) =>
-    request<{ message: string }>(`/api/reviews/comments/${commentId}/resolve`, { method: 'POST' }),
-  unresolveReviewComment: (commentId: number) =>
-    request<{ message: string }>(`/api/reviews/comments/${commentId}/unresolve`, { method: 'POST' }),
 
   // issues
   createIssue: (owner: string, name: string, title: string, body: string) =>
@@ -264,16 +184,10 @@ export const api = {
       method: 'POST',
     }),
 
-  // search
-  search: (q: string, repo?: string) =>
-    request<{ query: string; hits: SearchHit[] }>(
-      `/api/search?q=${encodeURIComponent(q)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`,
-    ),
-
   // events
   listEvents: (limit = 50) =>
     request<{ events: EventItem[] }>(`/api/events?limit=${limit}`),
 
   // health
-  health: () => request<{ status: string; db: string; ai_configured: boolean; git: string }>('/api/health'),
+  health: () => request<{ status: string; db: string; git: string }>('/api/health'),
 }

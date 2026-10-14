@@ -23,12 +23,6 @@ port = ${GITA_SERVER_PORT:-3000}
 data_dir = "${GITA_SERVER_DATA_DIR:-/data}"
 database_url = "${GITA_SERVER_DATABASE_URL:-sqlite:///data/gita.db}"
 jwt_secret = "${jwt_secret}"
-
-[llm]
-base_url = "${GITA_LLM_BASE_URL:-}"
-api_key = "${GITA_LLM_API_KEY:-}"
-model = "${GITA_LLM_MODEL:-gpt-4o-mini}"
-timeout_secs = ${GITA_LLM_TIMEOUT_SECS:-60}
 EOF
 
 echo "Generated config at ${CONFIG_FILE}:"

@@ -8,7 +8,6 @@
 FROM docker.io/library/debian:bookworm-slim
 
 # Install runtime dependencies:
-# - ca-certificates: HTTPS calls to LLM APIs
 # - git: git CLI for git protocol backend
 # - libssl3: OpenSSL for reqwest/rustls
 # - curl: healthchecks
@@ -60,11 +59,7 @@ ENV GITA_SERVER_HOST=0.0.0.0 \
     GITA_SERVER_PORT=3000 \
     GITA_SERVER_DATA_DIR=/data \
     GITA_SERVER_DATABASE_URL=sqlite:///data/gita.db \
-    GITA_SERVER_JWT_SECRET=dev-secret-change-me \
-    GITA_LLM_BASE_URL="" \
-    GITA_LLM_API_KEY="" \
-    GITA_LLM_MODEL=gpt-4o-mini \
-    GITA_LLM_TIMEOUT_SECS=60
+    GITA_SERVER_JWT_SECRET=dev-secret-change-me
 
 # Entry point: generate config from env, then run server
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

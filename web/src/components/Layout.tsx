@@ -1,15 +1,15 @@
-import { useState, type ReactNode } from 'react'
+import { useState, type ReactNode, useRef, useEffect } from 'react'
 import {
+  AlertTriangleIcon,
   BookIcon,
   CircleCheckIcon,
   CircleDotIcon,
   GitCommitIcon,
   GitPullRequestIcon,
   HomeIcon,
-  LogOutIcon,
+  PersonIcon,
   RefreshIcon,
-  SearchIcon,
-  SparklesIcon,
+  SettingsIcon,
   ShieldAlertIcon,
   XIcon,
 } from './Icons'
@@ -21,8 +21,6 @@ export type NavTarget =
   | 'commits'
   | 'prs'
   | 'issues'
-  | 'reviews'
-  | 'search'
 
 const SIDEBAR_NAV: { key: NavTarget; label: string; icon: typeof HomeIcon; countKey?: 'prs' | 'issues' }[] = [
   { key: 'home', label: '仓库', icon: HomeIcon },
@@ -30,8 +28,6 @@ const SIDEBAR_NAV: { key: NavTarget; label: string; icon: typeof HomeIcon; count
   { key: 'commits', label: '提交', icon: GitCommitIcon },
   { key: 'prs', label: '合并请求', icon: GitPullRequestIcon, countKey: 'prs' },
   { key: 'issues', label: 'Issue', icon: CircleDotIcon, countKey: 'issues' },
-  { key: 'reviews', label: 'AI 评审', icon: SparklesIcon },
-  { key: 'search', label: '代码搜索', icon: SearchIcon },
 ]
 
 export function Brand({ compact = false }: { compact?: boolean }) {
@@ -54,6 +50,44 @@ function Avatar({ username }: { username: string }) {
   return <span className="user-avatar">{username.slice(0, 1).toUpperCase()}</span>
 }
 
+function UserMenu({ user, onClose }: { user: { username: string; email: string } | null; onClose: () => void }) {
+  const handleLogout = () => {
+    onClose()
+    // 这里使用 setTimeout 让菜单先关闭，再执行登出
+    setTimeout(() => {
+      const event = new CustomEvent('gita:logout')
+      window.dispatchEvent(event)
+    }, 0)
+  }
+
+  return (
+    <div className="user-menu" role="menu" aria-label="用户菜单">
+      <div className="user-menu-header">
+        <Avatar username={user?.username ?? 'U'} />
+        <div className="user-menu-info">
+          <span className="user-menu-name">{user?.username ?? '未登录'}</span>
+          <span className="user-menu-email">{user?.email ?? ''}</span>
+        </div>
+      </div>
+      <hr className="user-menu-divider" />
+      <ul className="user-menu-list">
+        <li>
+          <button className="user-menu-item" onClick={() => { onClose(); window.location.href = '/settings' }}>
+            <SettingsIcon size={16} />
+            <span>设置</span>
+          </button>
+        </li>
+        <li>
+          <button className="user-menu-item" onClick={handleLogout}>
+            <PersonIcon size={16} />
+            <span>退出登录</span>
+          </button>
+        </li>
+      </ul>
+    </div>
+  )
+}
+
 export function Topbar({
   repo,
   actions,
@@ -65,19 +99,46 @@ export function Topbar({
   onToggleSidebar?: () => void
   sidebarOpen?: boolean
 }) {
+  const { user, logout } = useAuth()
+  const [showUserMenu, setShowUserMenu] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleLogout() {
+      logout()
+    }
+    window.addEventListener('gita:logout', handleLogout)
+    return () => window.removeEventListener('gita:logout', handleLogout)
+  }, [logout])
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setShowUserMenu(false)
+      }
+    }
+    if (showUserMenu) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showUserMenu])
+
   return (
     <header className="topbar">
-      {onToggleSidebar && (
-        <button
-          className="sidebar-toggle"
-          onClick={onToggleSidebar}
-          title="切换菜单"
-          aria-label="切换菜单"
-          aria-expanded={sidebarOpen}
-        >
-          {sidebarOpen ? <XIcon size={16} /> : <MenuIcon size={16} />}
-        </button>
-      )}
+      <div className="topbar-left">
+        {onToggleSidebar && (
+          <button
+            className="sidebar-toggle"
+            onClick={onToggleSidebar}
+            title="切换菜单"
+            aria-label="切换菜单"
+            aria-expanded={sidebarOpen}
+          >
+            {sidebarOpen ? <XIcon size={16} /> : <MenuIcon size={16} />}
+          </button>
+        )}
+        <Brand />
+      </div>
       {repo ? (
         <nav className="breadcrumbs" aria-label="Breadcrumb">
           <ol className="breadcrumb-list">
@@ -101,6 +162,19 @@ export function Topbar({
       <div className="topbar-spacer" />
       <div className="topbar-actions">
         {actions}
+        <div className="user-menu-container" ref={userMenuRef}>
+          <button
+            className="topbar-user-btn"
+            onClick={(e) => { e.stopPropagation(); setShowUserMenu(!showUserMenu); }}
+            title="用户菜单"
+            aria-label="用户菜单"
+            aria-expanded={showUserMenu}
+            aria-haspopup="true"
+          >
+            <Avatar username={user?.username ?? 'U'} />
+          </button>
+          {showUserMenu && <UserMenu user={user} onClose={() => setShowUserMenu(false)} />}
+        </div>
       </div>
     </header>
   )
@@ -120,42 +194,14 @@ export function Sidebar({
   active,
   onNavigate,
   counts,
-  onToggleCollapse,
-  collapsed,
 }: {
   active: NavTarget
   onNavigate: (target: NavTarget) => void
   counts?: Partial<Record<'prs' | 'issues', number>>
-  onToggleCollapse?: () => void
-  collapsed?: boolean
 }) {
-  const { user, logout } = useAuth()
-
   return (
     <aside className="sidebar">
-      {/* GitLab Super Sidebar 顶部用户区：Logo + 折叠图标 + 新建按钮 */}
-      <div className="sidebar-user-bar">
-        <Brand compact />
-        <button
-          className="btn btn-ghost btn-sm sidebar-toggle-btn"
-          onClick={onToggleCollapse}
-          title={collapsed ? '展开侧边栏' : '折叠侧边栏'}
-          aria-label={collapsed ? '展开侧边栏' : '折叠侧边栏'}
-        >
-          <PanelLeftIcon size={15} />
-        </button>
-        <button
-          className="btn btn-ghost btn-sm sidebar-new-btn"
-          title="新建仓库"
-          aria-label="新建仓库"
-          onClick={() => onNavigate('home')}
-        >
-          <PlusIcon size={15} />
-        </button>
-      </div>
-
       <nav className="sidebar-nav" aria-label="主导航">
-        <div className="sidebar-group-label">导航</div>
         {SIDEBAR_NAV.map((item) => {
           const Icon = item.icon
           const isActive = active === item.key
@@ -175,18 +221,6 @@ export function Sidebar({
           )
         })}
       </nav>
-
-      {/* 底部用户区：头像 + 用户名 + 退出 + ^ */}
-      <div className="sidebar-user-bottom">
-        <button className="sidebar-user-bottom-btn" onClick={logout} title="退出登录">
-          <Avatar username={user?.username ?? 'U'} />
-          <span className="sidebar-user-name">{user?.username ?? '未登录'}</span>
-          <LogOutIcon size={13} className="sidebar-user-bottom-logout" />
-        </button>
-        <button className="sidebar-user-bottom-caret" title="帮助" aria-label="帮助">
-          <ChevronUpIcon size={14} />
-        </button>
-      </div>
     </aside>
   )
 }
@@ -239,8 +273,6 @@ export function AppLayout({
             active={active}
             onNavigate={handleNavigate}
             counts={counts}
-            collapsed={collapsed}
-            onToggleCollapse={handleToggleSidebar}
           />
         </div>
         <main className="main">
@@ -257,32 +289,6 @@ function MenuIcon({ size = 16 }: { size?: number }) {
       <line x1="3" y1="6" x2="21" y2="6" />
       <line x1="3" y1="12" x2="21" y2="12" />
       <line x1="3" y1="18" x2="21" y2="18" />
-    </svg>
-  )
-}
-
-function PlusIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <line x1="12" y1="5" x2="12" y2="19" />
-      <line x1="5" y1="12" x2="19" y2="12" />
-    </svg>
-  )
-}
-
-function PanelLeftIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <line x1="9" y1="3" x2="9" y2="21" />
-    </svg>
-  )
-}
-
-function ChevronUpIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polyline points="18 15 12 9 6 15" />
     </svg>
   )
 }
@@ -320,7 +326,7 @@ export function Alert({
   children: ReactNode
 }) {
   const Icon =
-    type === 'error' ? ShieldAlertIcon : type === 'warning' ? SparklesIcon : type === 'success' ? CircleCheckIcon : RefreshIcon
+    type === 'error' ? ShieldAlertIcon : type === 'warning' ? AlertTriangleIcon : type === 'success' ? CircleCheckIcon : RefreshIcon
   return (
     <div className={`alert alert-${type}`}>
       <Icon size={14} />

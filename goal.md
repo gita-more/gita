@@ -33,7 +33,7 @@
 | Git 库 | **gitoxide（gix）** | 纯 Rust、高性能、无 C 依赖；`gix` 0.89 / `gix-protocol` 0.67 持续活跃更新 |
 | HTTP 框架 | **axum** | tokio 生态、路由清晰、中间件丰富、与 tower 完美配合 |
 | Web 前端 | **TUI/纯前端**：React + TypeScript（Vite）+ 轻量 UI 库，或先做服务端渲染的轻量页面 | 先 API 优先，UI 可迭代 |
-| 数据库 | **PostgreSQL + SQLx** | 关系数据（用户/仓库/PR/评审）+ `pgvector` 扩展做向量检索，一站式 |
+| 数据库 | **PostgreSQL + SQLx** | 关系数据（用户/仓库/PR/Issue）+ `pgvector` 扩展做向量检索，一站式 |
 | 向量检索 | **pgvector**（PostgreSQL 扩展） | 避免引入独立向量库，运维简单；`pgvector` crate 0.4 成熟 |
 | 对象存储 | 本地文件系统（裸仓库目录） | 自托管第一版优先简单；后续可抽象 S3 |
 | MCP Server | **mcp-server**（官方 Rust SDK） | crates.io `mcp-server` 0.1.0 是官方 SDK，支持 stdio/streamable HTTP |
@@ -63,7 +63,7 @@
            ▼                              ▼
 ┌──────────────────────┐   ┌─────────────────────────────────┐
 │      Git 服务层       │   │          应用服务层              │
-│  gix-repository 读写   │   │  仓库/PR/Issue/评审/用户/权限     │
+│  gix-repository 读写   │   │  仓库/PR/Issue/用户/权限         │
 │  裸仓库存储 / 对象库    │   │  事件发布 (Event Bus)           │
 │  引用管理 / 打包       │   │                                 │
 └──────────┬───────────┘   └──────────┬──────────────────────┘
@@ -87,14 +87,12 @@
 ```
 gita/
 ├── crates/
-│   ├── gita-core/          # 领域模型：仓库、PR、Issue、评审、事件、用户
+│   ├── gita-core/          # 领域模型：仓库、PR、Issue、事件、用户
 │   ├── gita-git/           # gitoxide 封装：裸仓库管理、协议服务端
 │   ├── gita-db/            # SQLx 数据访问 + 迁移（含 pgvector schema）
 │   ├── gita-api/           # REST API 路由 + 鉴权 + DTO
 │   ├── gita-http/          # Smart HTTP Git 协议端点（/git/*）
 │   ├── gita-events/        # 事件总线（发布/订阅，驱动 AI 任务）
-│   ├── gita-ai/            # AI 编排：评审、embedding、agent 调度
-│   ├── gita-mcp/           # MCP Server（stdio + streamable HTTP）
 │   ├── gita-web/           # 静态资源 + Web UI 服务
 │   └── gita-server/        # 入口：axum app 组装、配置、启动
 └── web/                    # React + TS 前端（Vite）
@@ -108,20 +106,19 @@ gita/
 - [x] 仓库的创建/删除/列表、裸仓库管理
 - [x] Smart HTTP 协议：clone / push / pull（`git-http-backend` 等价实现）
 - [x] 用户注册/登录、JWT 认证、PAT
-- [x] 基本 Web UI：仓库浏览、提交历史、文件树
-- [x] **基础 AI 代码评审**：push 触发，LLM 分析 diff，产出行级评论 + 风险分
-- [x] 评审结果展示在 Web UI
-- [x] REST API 基础版（仓库、提交、评审）
+- [x] 基本 Web UI 仓库浏览、提交历史、文件树
+- [x] REST API 基础版（仓库、提交、PR、Issue）
+
+> 注：AI 评审与语义代码搜索功能已于 v0.0.1 后期移除，后续 AI 能力将以新的方式重新引入。
 
 ### v0.2 —— 语义搜索 + PR 工作流
 - [x] PR（Pull Request）模型：分支对比、合并、冲突检测（创建/合并/关闭已实现；冲突检测未做，仅支持 fast-forward 合并）
 - [ ] **语义代码搜索**：代码分块 → embedding → pgvector 检索
 - [ ] 自然语言搜索 UI（"哪里处理了 JWT 过期？"）
 - [x] Issue 系统（基础版）
-- [x] 评审结果可 comment / 可修改
 
 ### v0.3 —— Agent 自动化 + MCP
-- [x] **MCP Server**：stdio 传输已实现（streamable HTTP 未做），暴露 `list_repositories` / `read_file` / `search_code` / `create_pull_request` / `get_pull_request` / `get_review` / `create_issue` / `list_events` 等
+- [x] **MCP Server**：stdio 传输已实现（streamable HTTP 未做），暴露 `list_repositories` / `read_file` / `list_commits` / `create_pull_request` / `get_pull_request` / `create_issue` / `list_events` 等
 - [ ] **Agent 沙箱执行**：bubblewrap 隔离、安全文件写入、git commit 能力
 - [ ] **自动化工作流**：issue → agent 建分支 → 实现 → 提交 → 开 PR
 - [ ] 工作流事件通知（webhook / 站内信）
@@ -157,16 +154,18 @@ repositories(id, owner_id, name, description, is_private, default_branch, create
 branches(id, repo_id, name, head_commit)
 commits(id, repo_id, sha, author_id, message, parent_shas, authored_at)
 pull_requests(id, repo_id, number, title, body, source_branch, target_branch, status, author_id, base_sha, head_sha, created_at, merged_at)
-reviews(id, pr_id, reviewer_agent_id, status, summary, risk_score, created_at)
-review_comments(id, review_id, file_path, line, severity, message, created_at)
 issues(id, repo_id, number, title, body, status, author_id, created_at)
 events(id, type, payload(jsonb), repo_id, actor_id, created_at)   -- 事件日志（AI 可读）
-code_embeddings(id, repo_id, blob_sha, file_path, chunk_index, content, embedding vector(1536), updated_at)
+code_embeddings(id, repo_id, blob_sha, file_path, chunk_index, content, embedding vector(1536), updated_at)   -- 预留
 ```
 
 **事件表是 AI 原生的核心**：所有 Git 活动都写成结构化事件，AI Agent 订阅事件流即可感知仓库动态。
 
-### 5.3 AI 评审引擎（crates/gita-ai）
+> 注：`reviews` / `review_comments` 表已随 AI 评审功能一并移除，后续 AI 能力引入时按新设计重新建表。
+
+### 5.3 AI 评审引擎（后续规划）
+
+> AI 评审引擎（原 crates/gita-ai）已移除。后续 AI 能力将以其他方式引入，届时再补充设计。
 
 - 触发：`PushEvent` / PR 创建 / PR 更新。
 - 流程：
@@ -178,31 +177,32 @@ code_embeddings(id, repo_id, blob_sha, file_path, chunk_index, content, embeddin
 - `LlmProvider` 抽象：OpenAI 兼容 API / Anthropic / Ollama 本地，通过配置切换。
 - 评审粒度可配置：按 push、按 PR、按文件。
 
-### 5.4 语义代码搜索
+### 5.4 语义代码搜索（后续规划）
 
 - 索引策略：push 后异步对变更 blob 分块（~200 tokens/块，保留函数边界）→ embedding → upsert 到 `code_embeddings`。
 - 查询：自然语言 → embedding → pgvector `<=>` 余弦距离检索 → 返回文件/行/代码片段。
 - 支持过滤（仓库、语言、路径）。
 - 模型默认 1536 维（OpenAI text-embedding-3-small）或本地 Ollama，维度在 schema 中可配置。
 
-### 5.5 MCP Server（crates/gita-mcp）
+### 5.5 MCP Server（后续规划）
 
 - 基于官方 `mcp-server` crate（0.1.0）。
 - 传输：**stdio**（本地开发）+ **streamable HTTP**（远程）。
 - 工具清单：
   | 工具 | 说明 |
   |---|---|
-  | `read_repo` | 列出仓库/读取文件树/读文件 |
-  | `search_code` | 语义代码搜索 |
-  | `get_commit` / `list_commits` | 提交历史 |
-  | `create_branch` / `list_branches` | 分支操作 |
-  | `create_pr` / `get_pr` / `merge_pr` | PR 工作流 |
-  | `create_issue` / `update_issue` | Issue 操作 |
-  | `get_pr_review` | 获取 AI 评审 |
-  | `apply_patch` | 通过补丁修改代码（配合沙箱） |
+  | `list_repositories` | 列出仓库 |
+  | `read_file` | 读取文件/文件树 |
+  | `list_commits` | 提交历史 |
+  | `create_pr` / `get_pr` | PR 工作流 |
+  | `create_issue` | Issue 操作 |
+  | `list_events` | AI 可读事件流 |
+  | `apply_patch` | 通过补丁修改代码（配合沙箱，后续） |
 - 鉴权：MCP 连接时携带 PAT。
 
-### 5.6 Agent 自动化工作流（crates/gita-ai）
+> 注：`search_code` / `get_review` 工具已随 AI 功能移除。当前 MCP crate 已从 workspace 移除，后续随 AI 能力一并重新引入。
+
+### 5.6 Agent 自动化工作流（后续规划）
 
 - **执行沙箱**：`bubblewrap`（bwrap）+ 专用低权限用户 + 只读挂载仓库 + 可写临时工作区。
 - 工作流引擎（基于事件 + 队列）：
@@ -227,12 +227,9 @@ GET    /api/repos/{owner}/{repo}/commits
 GET    /api/repos/{owner}/{repo}/commits/{sha}
 POST   /api/repos/{owner}/{repo}/prs
 GET    /api/repos/{owner}/{repo}/prs/{number}
-GET    /api/repos/{owner}/{repo}/prs/{number}/review
-POST   /api/repos/{owner}/{repo}/prs/{number}/review   (手动触发评审)
-GET    /api/repos/{owner}/{repo}/search?q=自然语言
 POST   /api/repos/{owner}/{repo}/issues
 GET    /api/events?repo=&type=        (AI 可读事件流)
-POST   /api/agents/run                 (触发 agent 任务)
+POST   /api/agents/run                 (触发 agent 任务，后续)
 ```
 
 统一响应格式、OpenAPI 文档（utoipa）、分页、错误码。
@@ -240,8 +237,8 @@ POST   /api/agents/run                 (触发 agent 任务)
 ### 5.8 Web UI（web/）
 
 - React + TypeScript + Vite。
-- 页面：登录/注册、仓库列表、仓库详情（文件树、提交、分支）、PR 列表/详情、Issue、AI 评审视图（行级评论 + 风险分）、语义搜索页、Agent 运行记录。
-- 与 API 通过 REST 通信；可后续加 WebSocket 推送评审完成事件。
+- 页面：登录/注册、仓库列表、仓库详情（文件树、提交、分支）、PR 列表/详情、Issue、Agent 运行记录（后续）。
+- 与 API 通过 REST 通信；可后续加 WebSocket 推送事件。
 
 ---
 
@@ -257,8 +254,6 @@ gita/
 │   ├── gita-api/
 │   ├── gita-http/
 │   ├── gita-events/
-│   ├── gita-ai/
-│   ├── gita-mcp/
 │   ├── gita-web/
 │   └── gita-server/
 ├── web/
@@ -301,27 +296,21 @@ gita/
 - [x] Web UI 基础页面
 - [x] 端到端：网页创建仓库 → git push → 网页看到提交
 
-### Phase 3：AI 评审（2-3 周）
-- [x] diff 计算 + 变更函数定位（diff 计算已完成；变更函数定位未做）
-- [x] `LlmProvider` 抽象 + OpenAI 兼容实现
-- [x] 评审引擎：结构化输出、行级评论落库
-- [x] 评审展示 UI
-- [x] 事件驱动：push 自动触发评审
+### Phase 3：AI 评审（已移除，后续重新规划）
+> AI 评审功能已于 v0.0.1 后期整体移除（前端 + 后端 + crates/gita-ai）。后续 AI 能力将以其他方式引入，此阶段届时重新规划。
 
-### Phase 4：语义搜索（2 周）
+### Phase 4：语义搜索（后续规划）
 - [ ] 代码分块 + 异步 embedding 索引
 - [ ] pgvector 检索
-- [x] 搜索 API + UI（当前基于 SQLite FTS5 关键词搜索，非语义搜索）
+- [ ] 搜索 API + UI
 - [ ] 增量索引（push 触发）
 
 ### Phase 5：PR 工作流（2-3 周）
 - [x] PR 模型、创建/合并/冲突检测（创建/合并/关闭已实现；冲突检测未做——合并仅支持 fast-forward）
-- [x] PR 评审集成
 - [x] PR UI
 
-### Phase 6：MCP + Agent（3-4 周）
-- [x] MCP Server（stdio + HTTP）（stdio 已实现，streamable HTTP 未做）
-- [x] MCP 工具实现（`apply_patch` 未实现）
+### Phase 6：MCP + Agent（后续规划）
+- [ ] MCP Server（stdio + HTTP）（当前 MCP crate 已移除，后续随 AI 能力重新引入）
 - [ ] 沙箱执行环境（bubblewrap）
 - [ ] Agent 工作流：issue→PR 闭环
 - [ ] 审计事件
@@ -339,7 +328,7 @@ gita/
 | 风险 | 影响 | 对策 |
 |---|---|---|
 | gitoxide 服务端 API 尚未完全稳定 | 协议层工作量可能偏大 | 用 `gix-protocol` 官方例程起步；协议层独立成 crate，便于替换 |
-| LLM 成本不可控 | AI 调用费用高 | 成本限额、只评审 diff、模型可配置、本地 Ollama 选项 |
+| LLM 成本不可控 | AI 调用费用高 | 后续引入 AI 时采用成本限额、只评审 diff、模型可配置、本地 Ollama 选项 |
 | Agent 沙箱执行有安全风险 | 恶意代码可能逃逸 | 默认无网络 + 低权限用户 + 只读仓库 + 超时 + 审计；后续支持容器隔离 |
 | embedding 维度变更 | 索引需重建 | 维度参数化，迁移脚本预留 |
 | 前端工作量分散精力 | UI 拖慢核心 | MVP 先做 API 优先，UI 保持极简 |
@@ -359,14 +348,14 @@ gita/
 
 **MVP 完成标准**：
 - [x] `git clone https://localhost/git/owner/repo` 可克隆
-- [x] `git push` 可推送，且触发 AI 评审
-- [x] Web UI 可查看仓库文件、提交、评审结果
+- [x] `git push` 可推送
+- [x] Web UI 可查看仓库文件、提交
 - [x] REST API 文档完整（OpenAPI）
 - [x] 全部用 `cargo test` 通过的集成测试
 
 **v0.3 完成标准**：
 - [ ] 语义搜索可回答自然语言代码问题
-- [x] MCP 客户端（如 Claude）可通过工具创建 PR
+- [ ] MCP 客户端（如 Claude）可通过工具创建 PR（MCP crate 已移除，后续重新引入）
 - [ ] Agent 可从 Issue 自动产出 PR
 
 ---

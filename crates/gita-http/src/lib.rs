@@ -11,9 +11,8 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Router, body::to_bytes};
 use base64::Engine as _;
-use gita_ai::AiEngine;
 use gita_api::auth::Auth;
-use gita_core::{Event, EventType};
+use gita_core::EventType;
 use gita_db::Db;
 use gita_events::EventBus;
 use gita_git::GitManager;
@@ -26,7 +25,6 @@ pub struct GitHttpState {
     pub git: Arc<GitManager>,
     pub db: Db,
     pub bus: EventBus,
-    pub ai: Arc<AiEngine>,
     pub auth: Arc<Auth>,
 }
 
@@ -151,22 +149,6 @@ async fn handle_git_request(
             });
             info!("push to {owner}/{repo_name}");
             state.bus.publish(EventType::Push, repo_id, None, payload);
-
-            // Automatically trigger an AI review of the pushed changes.
-            // Spawn a background task so the push response is not blocked.
-            if let (Some(repo), Some(repo_id)) = (repo, repo_id) {
-                let ai = state.ai.clone();
-                let git = state.git.clone();
-                let db = state.db.clone();
-                let bus = state.bus.clone();
-                let owner = owner.clone();
-                let repo_name = repo_name.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = run_auto_review(&db, &git, &ai, &bus, &owner, &repo_name, repo_id, repo.default_branch).await {
-                        warn!("auto review failed for {owner}/{repo_name}: {e}");
-                    }
-                });
-            }
         }
     }
 
@@ -331,74 +313,6 @@ async fn resolve_authed_user(
     None
 }
 
-/// Run an AI review of the changes pushed to `branch`.
-///
-/// The diff is computed between the latest previously-reviewed commit
-/// (if any) and the current HEAD of the branch. If no review exists yet,
-/// the diff is computed against the empty tree (initial full review).
-async fn run_auto_review(
-    db: &Db,
-    git: &GitManager,
-    ai: &AiEngine,
-    bus: &EventBus,
-    owner: &str,
-    repo_name: &str,
-    repo_id: i64,
-    branch: String,
-) -> anyhow::Result<()> {
-    // Resolve the current HEAD of the default branch.
-    let head_sha = git.head_sha(owner, repo_name, &branch)?;
-
-    // Find the latest previously-reviewed commit SHA for this repo.
-    let prev_sha = db
-        .list_reviews(Some(repo_id), None, 1)
-        .await?
-        .into_iter()
-        .next()
-        .map(|r| r.commit_sha);
-
-    // If the latest review already covers the current HEAD, skip.
-    if prev_sha.as_deref() == Some(head_sha.as_str()) {
-        debug!("no new commits since last review; skipping auto review");
-        return Ok(());
-    }
-
-    // Compute the diff: either from the last reviewed commit, or from the
-    // empty tree when this is the first review of the repository.
-    let base = prev_sha.unwrap_or_else(|| empty_tree_sha().to_string());
-    let diff = git.diff_between(owner, repo_name, &base, &head_sha)?;
-
-    // Run the LLM review.
-    let result = ai.review_diff(&diff, &format!("{owner}/{repo_name}")).await?;
-
-    // Persist the review.
-    let review = gita_ai::review_from_result(repo_id, None, &head_sha, result);
-    let review_id = db.insert_review(&review).await?;
-
-    info!(
-        "auto review {review_id} completed for {owner}/{repo_name} at {head_sha} (risk={})",
-        review.risk_score
-    );
-
-    bus.publish(
-        EventType::ReviewCompleted,
-        Some(repo_id),
-        None,
-        serde_json::json!({
-            "repo": repo_name,
-            "review_id": review_id,
-            "commit_sha": head_sha,
-            "risk_score": review.risk_score,
-        }),
-    );
-    Ok(())
-}
-
-/// The SHA of the empty git tree object.
-fn empty_tree_sha() -> &'static str {
-    "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-}
-
 /// A test helper to build the router with a stub database.
 #[cfg(test)]
 pub async fn test_state() -> GitHttpState {
@@ -411,7 +325,6 @@ pub async fn test_state() -> GitHttpState {
         git: Arc::new(git),
         db,
         bus: EventBus::default(),
-        ai: Arc::new(gita_ai::AiEngine::stub()),
         auth: Arc::new(gita_api::auth::Auth::new("test-secret".to_string())),
     }
 }
@@ -421,7 +334,6 @@ mod tests {
     use super::*;
     use gita_core::EventType;
     use std::path::PathBuf;
-    use std::process::Command;
 
     fn temp_root() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -435,132 +347,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    fn git_available() -> bool {
-        Command::new("git")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    /// Run a git command in `cwd`, panicking on failure.
-    fn git_run(cwd: &std::path::Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .expect("failed to spawn git");
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            panic!("git {:?} failed\nstdout: {}\nstderr: {}", args, stdout, stderr);
-        }
-    }
-
-    /// Push an initial commit to the bare repo so it has a `main` branch.
-    fn push_initial_commit(git: &GitManager, owner: &str, name: &str) {
-        let repo_path = git.repo_path(owner, name);
-        let work = repo_path.parent().unwrap().join("work");
-        let _ = std::fs::remove_dir_all(&work);
-        std::fs::create_dir_all(&work).unwrap();
-
-        git_run(&work, &["init", "-b", "main"]);
-        std::fs::write(work.join("README.md"), "# Demo\n\nAuto review test.\n").unwrap();
-        git_run(&work, &["add", "."]);
-        git_run(&work, &[
-            "-c", "user.email=test@example.com",
-            "-c", "user.name=Test",
-            "commit", "-m", "initial commit",
-        ]);
-        let url = format!("file://{}", repo_path.to_string_lossy());
-        git_run(&work, &["remote", "add", "origin", &url]);
-        git_run(&work, &["push", "-u", "origin", "main"]);
-        let _ = std::fs::remove_dir_all(&work);
-    }
-
-    #[tokio::test]
-    async fn push_auto_review_creates_review_and_event() {
-        if !git_available() {
-            eprintln!("git not available, skipping");
-            return;
-        }
-        let db = gita_db::new_test_db().await;
-        let user = db.create_user("alice", "a@b.c", "h").await.unwrap();
-        let repo = db
-            .create_repository(user.id, "alice", "demo", "d", false, "main")
-            .await
-            .unwrap();
-
-        let root = temp_root();
-        let git = GitManager::new(root.clone());
-        git.create_repo("alice", "demo", "main").await.unwrap();
-        push_initial_commit(&git, "alice", "demo");
-
-        let ai = gita_ai::AiEngine::stub();
-        let bus = EventBus::default();
-        let mut rx = bus.subscribe();
-
-        run_auto_review(&db, &git, &ai, &bus, "alice", "demo", repo.id, "main".to_string())
-            .await
-            .unwrap();
-
-        // The review should be persisted.
-        let reviews = db.list_reviews(Some(repo.id), None, 10).await.unwrap();
-        assert_eq!(reviews.len(), 1);
-        assert_eq!(reviews[0].repo_id, repo.id);
-        assert!(!reviews[0].commit_sha.is_empty());
-        assert!(reviews[0].risk_score >= 0);
-        assert_eq!(reviews[0].status, "completed");
-
-        // A ReviewCompleted event should be published.
-        let ev = rx.recv().await.expect("event should be published");
-        assert_eq!(ev.event_type, EventType::ReviewCompleted);
-        assert_eq!(ev.payload["review_id"].as_i64(), Some(reviews[0].id));
-        assert_eq!(ev.payload["commit_sha"].as_str(), Some(reviews[0].commit_sha.as_str()));
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[tokio::test]
-    async fn push_auto_review_skips_when_no_new_commits() {
-        if !git_available() {
-            eprintln!("git not available, skipping");
-            return;
-        }
-        let db = gita_db::new_test_db().await;
-        let user = db.create_user("bob", "b@b.c", "h").await.unwrap();
-        let repo = db
-            .create_repository(user.id, "bob", "demo2", "d", false, "main")
-            .await
-            .unwrap();
-
-        let root = temp_root();
-        let git = GitManager::new(root.clone());
-        git.create_repo("bob", "demo2", "main").await.unwrap();
-        push_initial_commit(&git, "bob", "demo2");
-
-        let ai = gita_ai::AiEngine::stub();
-        let bus = EventBus::default();
-
-        // First review.
-        run_auto_review(&db, &git, &ai, &bus, "bob", "demo2", repo.id, "main".to_string())
-            .await
-            .unwrap();
-        assert_eq!(db.list_reviews(Some(repo.id), None, 10).await.unwrap().len(), 1);
-
-        // Second call with no new commits: should be a no-op.
-        run_auto_review(&db, &git, &ai, &bus, "bob", "demo2", repo.id, "main".to_string())
-            .await
-            .unwrap();
-        assert_eq!(db.list_reviews(Some(repo.id), None, 10).await.unwrap().len(), 1);
-
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

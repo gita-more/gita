@@ -1,6 +1,6 @@
 //! Extractors for authenticated users.
 
-use crate::error::{ApiError, ApiResult};
+use crate::error::ApiError;
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;

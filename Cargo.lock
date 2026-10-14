@@ -895,26 +895,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gita-ai"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "gita-core",
- "gita-db",
- "gita-events",
- "gita-git",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "gita-api"
 version = "0.0.1"
 dependencies = [
@@ -923,7 +903,6 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
- "gita-ai",
  "gita-core",
  "gita-db",
  "gita-events",
@@ -1006,7 +985,6 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "gita-ai",
  "gita-api",
  "gita-core",
  "gita-db",
@@ -1035,22 +1013,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gita-mcp"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "gita-core",
- "gita-db",
- "gita-git",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "gita-server"
 version = "0.0.1"
 dependencies = [
@@ -1058,14 +1020,12 @@ dependencies = [
  "axum",
  "clap",
  "dotenvy",
- "gita-ai",
  "gita-api",
  "gita-core",
  "gita-db",
  "gita-events",
  "gita-git",
  "gita-http",
- "gita-mcp",
  "gita-web",
  "serde",
  "serde_json",

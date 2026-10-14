@@ -21,7 +21,7 @@ pub fn event_routes() -> Router<AppState> {
 
 async fn list_events(
     State(state): State<AppState>,
-    user: AuthUserExtractor,
+    _user: AuthUserExtractor,
     Query(q): Query<EventsQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let repo_id = if let Some(full_name) = &q.repo {
@@ -66,7 +66,6 @@ async fn health(State(state): State<AppState>) -> ApiResult<Json<serde_json::Val
     Ok(Json(serde_json::json!({
         "status": if db_ok { "ok" } else { "degraded" },
         "db": if db_ok { "ok" } else { "error" },
-        "ai_configured": state.ai.configured,
         "git": gita_git::git_version(),
     })))
 }
@@ -77,11 +76,9 @@ async fn list_mcp_tools(State(state): State<AppState>) -> ApiResult<Json<serde_j
         "tools": [
             {"name": "list_repositories", "description": "List all repositories"},
             {"name": "read_file", "description": "Read a file from a repository"},
-            {"name": "search_code", "description": "Semantic code search"},
             {"name": "list_commits", "description": "List commits of a repository"},
             {"name": "create_pull_request", "description": "Create a pull request"},
             {"name": "get_pull_request", "description": "Get a pull request"},
-            {"name": "get_review", "description": "Get an AI review"},
             {"name": "create_issue", "description": "Create an issue"},
             {"name": "list_events", "description": "List AI-readable events"}
         ]
