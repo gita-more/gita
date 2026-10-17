@@ -17,7 +17,10 @@
 services:
   gita:
     build:
-      context: .
+      # 本 compose 文件位于 docker/，故 context 取上一级（即项目根），
+      # 让 Dockerfile 里的 COPY target/ web/ config/ docker/ 都能解析。
+      # context: ..
+      context: ..
       dockerfile: docker/Dockerfile
     container_name: gita
     restart: unless-stopped
