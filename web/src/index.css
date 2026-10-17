@@ -1317,7 +1317,6 @@ select {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(1200px 600px at 50% -10%, #1b2a3a 0%, var(--bg-canvas) 60%);
   padding: 20px;
 }
 
