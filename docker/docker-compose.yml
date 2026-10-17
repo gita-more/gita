@@ -11,8 +11,9 @@
 # Notes:
 #   - Host port 3000 is often occupied; the default maps 3100 -> 3000.
 #     Override with GITA_PORT in .env if you want a different port.
-#   - By default the app uses SQLite (no DATABASE_URL set). To use Postgres,
-#     set DATABASE_URL=postgres://gita:gita@postgres:5432/gita in .env.
+#   - The app connects to the bundled `postgres` service. To use an external
+#     Postgres, override DATABASE_URL in .env (e.g.
+#     DATABASE_URL=postgres://gita:gita@localhost:55432/gita).
 
 services:
   gita:
@@ -31,12 +32,13 @@ services:
       - GITA_SERVER_HOST=0.0.0.0
       - GITA_SERVER_PORT=3000
       - GITA_SERVER_DATA_DIR=/data
-      # Default to SQLite; set DATABASE_URL in .env to use Postgres.
-      - GITA_SERVER_DATABASE_URL=${DATABASE_URL:-sqlite:///data/gita.db}
+      # Connect to the bundled postgres service. Override DATABASE_URL in .env
+      # to point at an external Postgres instead.
+      - GITA_SERVER_DATABASE_URL=${DATABASE_URL:-postgres://gita:gita@postgres:5432/gita}
       # CHANGE THIS IN PRODUCTION! Use a strong random string (64+ chars)
       - GITA_SERVER_JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
     volumes:
-      # Persist repositories and the SQLite database
+      # Persist repositories (database state lives in the postgres volume)
       - gita-data:/data
     depends_on:
       - postgres

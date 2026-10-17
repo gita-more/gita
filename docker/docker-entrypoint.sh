@@ -21,7 +21,7 @@ cat > "${CONFIG_FILE}" <<EOF
 host = "${GITA_SERVER_HOST:-0.0.0.0}"
 port = ${GITA_SERVER_PORT:-3000}
 data_dir = "${GITA_SERVER_DATA_DIR:-/data}"
-database_url = "${GITA_SERVER_DATABASE_URL:-sqlite:///data/gita.db}"
+database_url = "${GITA_SERVER_DATABASE_URL:-postgres://gita:gita@postgres:5432/gita}"
 jwt_secret = "${jwt_secret}"
 EOF
 

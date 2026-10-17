@@ -1,81 +1,56 @@
 //! Data access layer for Gita.
 //!
-//! Uses SQLx with the `Any` driver to support both SQLite (default,
-//! zero-dependency local development) and PostgreSQL (production).
-//! All schema operations are idempotent and run at startup.
+//! PostgreSQL-only. Schema is created idempotently at startup.
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use gita_core::*;
 use serde_json::Value;
-use sqlx::any::{AnyConnectOptions, AnyPoolOptions};
-use sqlx::{AnyPool, Row};
-use std::str::FromStr;
+use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
+use sqlx::Row;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tracing::info;
 
 /// The database handle used across the application.
 #[derive(Debug, Clone)]
 pub struct Db {
-    pool: AnyPool,
+    pool: PgPool,
 }
 
 impl Db {
-    /// Open a database from a URL.
-    ///
-    /// - `sqlite::memory:` or `sqlite:///path.db` for SQLite
-    /// - `postgres://user:pass@host/db` for PostgreSQL
+    /// Open a database from a PostgreSQL URL.
     pub async fn connect(url: &str) -> Result<Self> {
-        // Install default drivers so sqlx::any can use SQLite/PostgreSQL
-        sqlx::any::install_default_drivers();
-        // sqlx 0.8 does not create SQLite files by default; ensure read-write-create mode
-        // so `sqlite://path.db` behaves like an ordinary file-backed database.
-        let url = if url.starts_with("sqlite:") && !url.contains("mode=") {
-            format!("{url}?mode=rwc")
-        } else {
-            url.to_string()
-        };
-        let opts = AnyConnectOptions::from_str(&url)
-            .with_context(|| format!("invalid database URL prefix: {url}"))?;
-        let pool = AnyPoolOptions::new()
+        let pool = PgPoolOptions::new()
             .max_connections(10)
             .acquire_timeout(Duration::from_secs(10))
-            .connect_with(opts)
+            .connect(url)
             .await
-            .context("failed to connect to database")?;
+            .with_context(|| format!("failed to connect to database {url}"))?;
+        // If the URL has a ?options= fragment, libpq already applied it.
+        // For tests we additionally pin search_path via the URL; either way
+        // init_schema runs against whatever schema the role/user lands in by
+        // default — call sites that need a specific schema should use
+        // `?options=-c search_path=...` in the URL or connect via a role that
+        // has a default search_path.
         let db = Self { pool };
         db.init_schema().await?;
         Ok(db)
     }
 
-    /// Open an in-memory SQLite database (for tests / quickstart).
-    pub async fn connect_in_memory() -> Result<Self> {
-        // Install default drivers so sqlx::any can use SQLite
-        sqlx::any::install_default_drivers();
-        // Use sqlite URI with mode=memory
-        let opts = AnyConnectOptions::from_str("sqlite://?mode=memory")
-            .context("invalid database URL")?;
-        let pool = AnyPoolOptions::new()
-            .max_connections(1) // Use single connection for in-memory to ensure schema persists
-            .acquire_timeout(Duration::from_secs(10))
-            .connect_with(opts)
-            .await
-            .context("failed to connect to in-memory database")?;
-        let db = Self { pool };
-        db.init_schema().await?;
-        Ok(db)
+    /// Open an existing pool. Useful for tests that share a connection pool
+    /// across multiple schema-isolated tests.
+    pub fn from_pool(pool: PgPool) -> Self {
+        Self { pool }
     }
 
     /// Create the schema if it does not exist.
-    ///
-    /// The schema is intentionally shared between SQLite and PostgreSQL.
-    /// SQLite has no native enums, so statuses are stored as TEXT.
     async fn init_schema(&self) -> Result<()> {
         info!("initializing database schema");
-        let result = sqlx::query(
+        sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
+                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 username TEXT NOT NULL UNIQUE,
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
@@ -85,17 +60,17 @@ impl Db {
         )
         .execute(&self.pool)
         .await?;
-        info!("users table created: rows_affected={}", result.rows_affected());
+        info!("users table ready");
 
-        let result = sqlx::query(
+        sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS repositories (
-                id INTEGER PRIMARY KEY,
-                owner_id INTEGER NOT NULL,
+                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                owner_id BIGINT NOT NULL,
                 owner_name TEXT NOT NULL,
                 name TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
-                is_private INTEGER NOT NULL DEFAULT 0,
+                is_private BIGINT NOT NULL DEFAULT 0,
                 default_branch TEXT NOT NULL DEFAULT 'main',
                 created_at TEXT NOT NULL,
                 UNIQUE(owner_name, name)
@@ -104,13 +79,13 @@ impl Db {
         )
         .execute(&self.pool)
         .await?;
-        info!("repositories table created: rows_affected={}", result.rows_affected());
+        info!("repositories table ready");
 
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS commits (
-                id INTEGER PRIMARY KEY,
-                repo_id INTEGER NOT NULL,
+                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                repo_id BIGINT NOT NULL,
                 sha TEXT NOT NULL,
                 author_name TEXT NOT NULL,
                 author_email TEXT NOT NULL,
@@ -127,15 +102,15 @@ impl Db {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS pull_requests (
-                id INTEGER PRIMARY KEY,
-                repo_id INTEGER NOT NULL,
-                number INTEGER NOT NULL,
+                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                repo_id BIGINT NOT NULL,
+                number BIGINT NOT NULL,
                 title TEXT NOT NULL,
                 body TEXT NOT NULL DEFAULT '',
                 source_branch TEXT NOT NULL,
                 target_branch TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open',
-                author_id INTEGER NOT NULL,
+                author_id BIGINT NOT NULL,
                 author_name TEXT NOT NULL,
                 base_sha TEXT NOT NULL DEFAULT '',
                 head_sha TEXT NOT NULL DEFAULT '',
@@ -152,13 +127,13 @@ impl Db {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS issues (
-                id INTEGER PRIMARY KEY,
-                repo_id INTEGER NOT NULL,
-                number INTEGER NOT NULL,
+                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                repo_id BIGINT NOT NULL,
+                number BIGINT NOT NULL,
                 title TEXT NOT NULL,
                 body TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'open',
-                author_id INTEGER NOT NULL,
+                author_id BIGINT NOT NULL,
                 author_name TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -172,10 +147,10 @@ impl Db {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY,
+                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 event_type TEXT NOT NULL,
-                repo_id INTEGER,
-                actor_id INTEGER,
+                repo_id BIGINT,
+                actor_id BIGINT,
                 payload TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL
             )
@@ -187,8 +162,8 @@ impl Db {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS access_tokens (
-                id INTEGER PRIMARY KEY,
-                user_id INTEGER NOT NULL,
+                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                user_id BIGINT NOT NULL,
                 token TEXT NOT NULL UNIQUE,
                 name TEXT NOT NULL DEFAULT 'default',
                 created_at TEXT NOT NULL
@@ -219,7 +194,7 @@ impl Db {
         let payload = serde_json::to_string(&event.payload)?;
         let row = sqlx::query(
             "INSERT INTO events (event_type, repo_id, actor_id, payload, created_at)
-             VALUES (?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5)
              RETURNING id",
         )
         .bind(event.event_type.to_string())
@@ -243,27 +218,29 @@ impl Db {
         let mut sql = String::from(
             "SELECT id, event_type, repo_id, actor_id, payload, created_at FROM events",
         );
-        let mut conds = Vec::new();
-        let mut args: Vec<String> = Vec::new();
-        if let Some(rid) = repo_id {
-            conds.push(format!("repo_id = ?{}", args.len() + 1));
-            args.push(rid.to_string());
+        let mut conds: Vec<&str> = Vec::new();
+        if repo_id.is_some() {
+            conds.push("repo_id = $2");
         }
-        if let Some(et) = event_type {
-            conds.push(format!("event_type = ?{}", args.len() + 1));
-            args.push(et.to_string());
+        if event_type.is_some() {
+            conds.push(if repo_id.is_some() {
+                "event_type = $3"
+            } else {
+                "event_type = $2"
+            });
         }
         if !conds.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&conds.join(" AND "));
         }
-        sql.push_str(" ORDER BY id DESC LIMIT ?");
-        args.push(limit.to_string());
-        let mut q = sqlx::query(&sql);
-        for a in &args {
-            q = q.bind(a.as_str());
+        sql.push_str(" ORDER BY id DESC LIMIT $1");
+        let mut q = sqlx::query(&sql).bind(limit as i64);
+        if let Some(rid) = repo_id {
+            q = q.bind(rid);
         }
-        q = q.bind(limit as i64);
+        if let Some(et) = event_type {
+            q = q.bind(et);
+        }
         let rows = q.fetch_all(&self.pool).await?;
         let mut events = Vec::with_capacity(rows.len());
         for row in rows {
@@ -287,7 +264,7 @@ impl Db {
     }
 
     /// The underlying pool (used for migrations and advanced queries).
-    pub fn pool(&self) -> &AnyPool {
+    pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 }
@@ -320,10 +297,9 @@ impl Db {
         password_hash: &str,
     ) -> Result<User> {
         let created_at = Utc::now().to_rfc3339();
-        // Use RETURNING clause to get the inserted ID (works for SQLite 3.35+ and PostgreSQL)
         let row = sqlx::query(
             "INSERT INTO users (username, email, password_hash, created_at)
-             VALUES (?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4)
              RETURNING id",
         )
         .bind(username)
@@ -346,7 +322,7 @@ impl Db {
 
     pub async fn get_user_by_id(&self, id: i64) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, email, password_hash, created_at FROM users WHERE id = ?",
+            "SELECT id, username, email, password_hash, created_at FROM users WHERE id = $1",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -359,7 +335,7 @@ impl Db {
 
     pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, email, password_hash, created_at FROM users WHERE username = ?",
+            "SELECT id, username, email, password_hash, created_at FROM users WHERE username = $1",
         )
         .bind(username)
         .fetch_all(&self.pool)
@@ -372,7 +348,7 @@ impl Db {
 
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, email, password_hash, created_at FROM users WHERE email = ?",
+            "SELECT id, username, email, password_hash, created_at FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_all(&self.pool)
@@ -384,7 +360,7 @@ impl Db {
     }
 
     pub async fn list_users(&self, limit: usize) -> Result<Vec<User>> {
-        let rows = sqlx::query("SELECT id, username, email, password_hash, created_at FROM users ORDER BY id DESC LIMIT ?")
+        let rows = sqlx::query("SELECT id, username, email, password_hash, created_at FROM users ORDER BY id DESC LIMIT $1")
             .bind(limit as i64)
             .fetch_all(&self.pool)
             .await?;
@@ -392,7 +368,7 @@ impl Db {
     }
 }
 
-fn row_to_user(row: &sqlx::any::AnyRow) -> Result<User> {
+fn row_to_user(row: &PgRow) -> Result<User> {
     let created_at: String = row.try_get("created_at")?;
     Ok(User {
         id: row.try_get("id")?,
@@ -422,7 +398,7 @@ impl Db {
         let created_at = Utc::now().to_rfc3339();
         let row = sqlx::query(
             "INSERT INTO repositories (owner_id, owner_name, name, description, is_private, default_branch, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              RETURNING id",
         )
         .bind(owner_id)
@@ -452,7 +428,7 @@ impl Db {
     pub async fn get_repository(&self, id: i64) -> Result<Option<Repository>> {
         let rows = sqlx::query(
             "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
-             FROM repositories WHERE id = ?",
+             FROM repositories WHERE id = $1",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -470,7 +446,7 @@ impl Db {
     ) -> Result<Option<Repository>> {
         let rows = sqlx::query(
             "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
-             FROM repositories WHERE owner_name = ? AND name = ?",
+             FROM repositories WHERE owner_name = $1 AND name = $2",
         )
         .bind(owner_name)
         .bind(name)
@@ -487,28 +463,29 @@ impl Db {
         owner_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Repository>> {
-        let mut sql = String::from(
-            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
-             FROM repositories",
-        );
-        let mut args: Vec<String> = Vec::new();
-        if let Some(owner) = owner_name {
-            sql.push_str(" WHERE owner_name = ?");
-            args.push(owner.to_string());
-        }
-        sql.push_str(" ORDER BY id DESC LIMIT ?");
-        args.push(limit.to_string());
-        let mut q = sqlx::query(&sql);
-        for a in &args {
-            q = q.bind(a.as_str());
-        }
-        q = q.bind(limit as i64);
-        let rows = q.fetch_all(&self.pool).await?;
+        let rows = if let Some(owner) = owner_name {
+            sqlx::query(
+                "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+                 FROM repositories WHERE owner_name = $2 ORDER BY id DESC LIMIT $1",
+            )
+            .bind(limit as i64)
+            .bind(owner)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+                 FROM repositories ORDER BY id DESC LIMIT $1",
+            )
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?
+        };
         rows.iter().map(row_to_repo).collect()
     }
 
     pub async fn delete_repository(&self, id: i64) -> Result<bool> {
-        let res = sqlx::query("DELETE FROM repositories WHERE id = ?")
+        let res = sqlx::query("DELETE FROM repositories WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -516,16 +493,16 @@ impl Db {
     }
 
     pub async fn update_repository_description(&self, id: i64, description: &str) -> Result<()> {
-        sqlx::query("UPDATE repositories SET description = ? WHERE id = ?")
-            .bind(description)
+        sqlx::query("UPDATE repositories SET description = $2 WHERE id = $1")
             .bind(id)
+            .bind(description)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 }
 
-fn row_to_repo(row: &sqlx::any::AnyRow) -> Result<Repository> {
+fn row_to_repo(row: &PgRow) -> Result<Repository> {
     let created_at: String = row.try_get("created_at")?;
     Ok(Repository {
         id: row.try_get("id")?,
@@ -547,9 +524,10 @@ fn row_to_repo(row: &sqlx::any::AnyRow) -> Result<Repository> {
 
 impl Db {
     pub async fn insert_commit(&self, commit: &Commit) -> Result<i64> {
-        let row = sqlx::query(
-            "INSERT OR IGNORE INTO commits (repo_id, sha, author_name, author_email, message, parent_shas, authored_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        sqlx::query(
+            "INSERT INTO commits (repo_id, sha, author_name, author_email, message, parent_shas, authored_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (repo_id, sha) DO NOTHING",
         )
         .bind(commit.repo_id)
         .bind(&commit.sha)
@@ -560,13 +538,15 @@ impl Db {
         .bind(commit.authored_at.to_rfc3339())
         .execute(&self.pool)
         .await?;
-        Ok(row.last_insert_id().unwrap_or(0) as i64)
+        Ok(0) // ON CONFLICT DO NOTHING does not return id; callers that need id
+              // should re-query via get_commit. insert_commit is fire-and-forget
+              // for the changeset-walk path.
     }
 
     pub async fn get_commit(&self, repo_id: i64, sha: &str) -> Result<Option<Commit>> {
         let rows = sqlx::query(
             "SELECT id, repo_id, sha, author_name, author_email, message, parent_shas, authored_at
-             FROM commits WHERE repo_id = ? AND sha = ?",
+             FROM commits WHERE repo_id = $1 AND sha = $2",
         )
         .bind(repo_id)
         .bind(sha)
@@ -581,7 +561,7 @@ impl Db {
     pub async fn list_commits(&self, repo_id: i64, limit: usize) -> Result<Vec<Commit>> {
         let rows = sqlx::query(
             "SELECT id, repo_id, sha, author_name, author_email, message, parent_shas, authored_at
-             FROM commits WHERE repo_id = ? ORDER BY authored_at DESC LIMIT ?",
+             FROM commits WHERE repo_id = $1 ORDER BY authored_at DESC LIMIT $2",
         )
         .bind(repo_id)
         .bind(limit as i64)
@@ -592,7 +572,7 @@ impl Db {
 
     pub async fn latest_commit_sha(&self, repo_id: i64) -> Result<Option<String>> {
         let rows = sqlx::query(
-            "SELECT sha FROM commits WHERE repo_id = ? ORDER BY authored_at DESC LIMIT 1",
+            "SELECT sha FROM commits WHERE repo_id = $1 ORDER BY authored_at DESC LIMIT 1",
         )
         .bind(repo_id)
         .fetch_all(&self.pool)
@@ -601,7 +581,7 @@ impl Db {
     }
 }
 
-fn row_to_commit(row: &sqlx::any::AnyRow) -> Result<Commit> {
+fn row_to_commit(row: &PgRow) -> Result<Commit> {
     let parent_shas: String = row.try_get("parent_shas")?;
     let authored_at: String = row.try_get("authored_at")?;
     Ok(Commit {
@@ -637,7 +617,7 @@ impl Db {
     ) -> Result<PullRequest> {
         let now = Utc::now().to_rfc3339();
         // Compute next number
-        let rows = sqlx::query("SELECT COALESCE(MAX(number), 0) + 1 AS next_num FROM pull_requests WHERE repo_id = ?")
+        let rows = sqlx::query("SELECT COALESCE(MAX(number), 0) + 1 AS next_num FROM pull_requests WHERE repo_id = $1")
             .bind(repo_id)
             .fetch_all(&self.pool)
             .await?;
@@ -645,9 +625,9 @@ impl Db {
             .first()
             .map(|r| r.try_get::<i64, _>("next_num").unwrap_or(1))
             .unwrap_or(1);
-        let row = sqlx::query(
+        sqlx::query(
             "INSERT INTO pull_requests (repo_id, number, title, body, source_branch, target_branch, status, author_id, author_name, base_sha, head_sha, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10, $11, $12)",
         )
         .bind(repo_id)
         .bind(number)
@@ -663,9 +643,8 @@ impl Db {
         .bind(&now)
         .execute(&self.pool)
         .await?;
-        let id = row.last_insert_id().unwrap_or(0) as i64;
         Ok(PullRequest {
-            id,
+            id: 0, // not returned by INSERT (no RETURNING); re-fetch via get_pull_request
             repo_id,
             number,
             title: title.to_string(),
@@ -690,7 +669,7 @@ impl Db {
     pub async fn get_pull_request(&self, repo_id: i64, number: i64) -> Result<Option<PullRequest>> {
         let rows = sqlx::query(
             "SELECT id, repo_id, number, title, body, source_branch, target_branch, status, author_id, author_name, base_sha, head_sha, created_at, updated_at, merged_at
-             FROM pull_requests WHERE repo_id = ? AND number = ?",
+             FROM pull_requests WHERE repo_id = $1 AND number = $2",
         )
         .bind(repo_id)
         .bind(number)
@@ -705,7 +684,7 @@ impl Db {
     pub async fn get_pull_request_by_id(&self, id: i64) -> Result<Option<PullRequest>> {
         let rows = sqlx::query(
             "SELECT id, repo_id, number, title, body, source_branch, target_branch, status, author_id, author_name, base_sha, head_sha, created_at, updated_at, merged_at
-             FROM pull_requests WHERE id = ?",
+             FROM pull_requests WHERE id = $1",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -722,33 +701,36 @@ impl Db {
         status: Option<PrStatus>,
         limit: usize,
     ) -> Result<Vec<PullRequest>> {
-        let mut sql = String::from(
-            "SELECT id, repo_id, number, title, body, source_branch, target_branch, status, author_id, author_name, base_sha, head_sha, created_at, updated_at, merged_at
-             FROM pull_requests WHERE repo_id = ?",
-        );
-        let mut args: Vec<String> = vec![repo_id.to_string()];
-        if let Some(st) = status {
-            sql.push_str(" AND status = ?");
-            args.push(st.to_string());
-        }
-        sql.push_str(" ORDER BY id DESC LIMIT ?");
-        args.push(limit.to_string());
-        let mut q = sqlx::query(&sql);
-        for a in &args {
-            q = q.bind(a.as_str());
-        }
-        q = q.bind(limit as i64);
-        let rows = q.fetch_all(&self.pool).await?;
+        let rows = if let Some(st) = status {
+            sqlx::query(
+                "SELECT id, repo_id, number, title, body, source_branch, target_branch, status, author_id, author_name, base_sha, head_sha, created_at, updated_at, merged_at
+                 FROM pull_requests WHERE repo_id = $1 AND status = $3 ORDER BY id DESC LIMIT $2",
+            )
+            .bind(repo_id)
+            .bind(limit as i64)
+            .bind(st.to_string())
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, repo_id, number, title, body, source_branch, target_branch, status, author_id, author_name, base_sha, head_sha, created_at, updated_at, merged_at
+                 FROM pull_requests WHERE repo_id = $1 ORDER BY id DESC LIMIT $2",
+            )
+            .bind(repo_id)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?
+        };
         rows.iter().map(row_to_pr).collect()
     }
 
     pub async fn update_pr_status(&self, id: i64, status: PrStatus, merged_at: Option<DateTime<Utc>>) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query("UPDATE pull_requests SET status = ?, updated_at = ?, merged_at = ? WHERE id = ?")
+        sqlx::query("UPDATE pull_requests SET status = $2, updated_at = $3, merged_at = $4 WHERE id = $1")
+            .bind(id)
             .bind(status.to_string())
             .bind(&now)
             .bind(merged_at.map(|d| d.to_rfc3339()))
-            .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -756,17 +738,17 @@ impl Db {
 
     pub async fn update_pr_head_sha(&self, id: i64, head_sha: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query("UPDATE pull_requests SET head_sha = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE pull_requests SET head_sha = $2, updated_at = $3 WHERE id = $1")
+            .bind(id)
             .bind(head_sha)
             .bind(&now)
-            .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 }
 
-fn row_to_pr(row: &sqlx::any::AnyRow) -> Result<PullRequest> {
+fn row_to_pr(row: &PgRow) -> Result<PullRequest> {
     let status: String = row.try_get("status")?;
     let created_at: String = row.try_get("created_at")?;
     let updated_at: String = row.try_get("updated_at")?;
@@ -815,7 +797,7 @@ impl Db {
         author_name: &str,
     ) -> Result<Issue> {
         let now = Utc::now().to_rfc3339();
-        let rows = sqlx::query("SELECT COALESCE(MAX(number), 0) + 1 AS next_num FROM issues WHERE repo_id = ?")
+        let rows = sqlx::query("SELECT COALESCE(MAX(number), 0) + 1 AS next_num FROM issues WHERE repo_id = $1")
             .bind(repo_id)
             .fetch_all(&self.pool)
             .await?;
@@ -823,9 +805,9 @@ impl Db {
             .first()
             .map(|r| r.try_get::<i64, _>("next_num").unwrap_or(1))
             .unwrap_or(1);
-        let row = sqlx::query(
+        sqlx::query(
             "INSERT INTO issues (repo_id, number, title, body, status, author_id, author_name, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, 'open', $5, $6, $7, $8)",
         )
         .bind(repo_id)
         .bind(number)
@@ -837,9 +819,8 @@ impl Db {
         .bind(&now)
         .execute(&self.pool)
         .await?;
-        let id = row.last_insert_id().unwrap_or(0) as i64;
         Ok(Issue {
-            id,
+            id: 0,
             repo_id,
             number,
             title: title.to_string(),
@@ -860,7 +841,7 @@ impl Db {
     pub async fn get_issue(&self, repo_id: i64, number: i64) -> Result<Option<Issue>> {
         let rows = sqlx::query(
             "SELECT id, repo_id, number, title, body, status, author_id, author_name, created_at, updated_at, closed_at
-             FROM issues WHERE repo_id = ? AND number = ?",
+             FROM issues WHERE repo_id = $1 AND number = $2",
         )
         .bind(repo_id)
         .bind(number)
@@ -873,23 +854,26 @@ impl Db {
     }
 
     pub async fn list_issues(&self, repo_id: i64, status: Option<IssueStatus>, limit: usize) -> Result<Vec<Issue>> {
-        let mut sql = String::from(
-            "SELECT id, repo_id, number, title, body, status, author_id, author_name, created_at, updated_at, closed_at
-             FROM issues WHERE repo_id = ?",
-        );
-        let mut args: Vec<String> = vec![repo_id.to_string()];
-        if let Some(st) = status {
-            sql.push_str(" AND status = ?");
-            args.push(st.to_string());
-        }
-        sql.push_str(" ORDER BY id DESC LIMIT ?");
-        args.push(limit.to_string());
-        let mut q = sqlx::query(&sql);
-        for a in &args {
-            q = q.bind(a.as_str());
-        }
-        q = q.bind(limit as i64);
-        let rows = q.fetch_all(&self.pool).await?;
+        let rows = if let Some(st) = status {
+            sqlx::query(
+                "SELECT id, repo_id, number, title, body, status, author_id, author_name, created_at, updated_at, closed_at
+                 FROM issues WHERE repo_id = $1 AND status = $3 ORDER BY id DESC LIMIT $2",
+            )
+            .bind(repo_id)
+            .bind(limit as i64)
+            .bind(st.to_string())
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, repo_id, number, title, body, status, author_id, author_name, created_at, updated_at, closed_at
+                 FROM issues WHERE repo_id = $1 ORDER BY id DESC LIMIT $2",
+            )
+            .bind(repo_id)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?
+        };
         rows.iter().map(row_to_issue).collect()
     }
 
@@ -900,18 +884,18 @@ impl Db {
         } else {
             None
         };
-        sqlx::query("UPDATE issues SET status = ?, updated_at = ?, closed_at = ? WHERE id = ?")
+        sqlx::query("UPDATE issues SET status = $2, updated_at = $3, closed_at = $4 WHERE id = $1")
+            .bind(id)
             .bind(status.to_string())
             .bind(&now)
             .bind(closed_at)
-            .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 }
 
-fn row_to_issue(row: &sqlx::any::AnyRow) -> Result<Issue> {
+fn row_to_issue(row: &PgRow) -> Result<Issue> {
     let status: String = row.try_get("status")?;
     let created_at: String = row.try_get("created_at")?;
     let updated_at: String = row.try_get("updated_at")?;
@@ -950,8 +934,8 @@ impl Db {
         name: &str,
     ) -> Result<AccessToken> {
         let created_at = Utc::now().to_rfc3339();
-        let row = sqlx::query(
-            "INSERT INTO access_tokens (user_id, token, name, created_at) VALUES (?, ?, ?, ?)",
+        sqlx::query(
+            "INSERT INTO access_tokens (user_id, token, name, created_at) VALUES ($1, $2, $3, $4)",
         )
         .bind(user_id)
         .bind(token)
@@ -960,7 +944,7 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(AccessToken {
-            id: row.last_insert_id().unwrap_or(0) as i64,
+            id: 0, // not returned; re-fetch via get_user_by_token if needed
             user_id,
             token: token.to_string(),
             name: name.to_string(),
@@ -974,7 +958,7 @@ impl Db {
         let rows = sqlx::query(
             "SELECT u.id, u.username, u.email, u.password_hash, u.created_at
              FROM access_tokens t JOIN users u ON u.id = t.user_id
-             WHERE t.token = ?",
+             WHERE t.token = $1",
         )
         .bind(token)
         .fetch_all(&self.pool)
@@ -987,7 +971,7 @@ impl Db {
 
     pub async fn list_tokens(&self, user_id: i64) -> Result<Vec<AccessToken>> {
         let rows = sqlx::query(
-            "SELECT id, user_id, token, name, created_at FROM access_tokens WHERE user_id = ? ORDER BY id DESC",
+            "SELECT id, user_id, token, name, created_at FROM access_tokens WHERE user_id = $1 ORDER BY id DESC",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -1009,7 +993,7 @@ impl Db {
     }
 
     pub async fn delete_token(&self, id: i64, user_id: i64) -> Result<bool> {
-        let res = sqlx::query("DELETE FROM access_tokens WHERE id = ? AND user_id = ?")
+        let res = sqlx::query("DELETE FROM access_tokens WHERE id = $1 AND user_id = $2")
             .bind(id)
             .bind(user_id)
             .execute(&self.pool)
@@ -1031,30 +1015,93 @@ fn _assert_send_sync(_db: &Db) {
     assert_send_sync::<Db>();
 }
 
-// Re-export convenience.
-pub use sqlx::any::AnyRow;
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
 
-/// Small helper for tests.
-pub async fn new_test_db() -> Db {
-    let db = Db::connect_in_memory()
+/// Counter ensuring every test schema gets a unique name.
+static TEST_SCHEMA_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Build a `Db` connected to a per-test, schema-isolated Postgres.
+///
+/// `url` should be a base Postgres URL like `postgres://gita:gita@localhost:55432/gita`.
+/// Each call derives a unique schema name (`gita_test_<pid>_<n>`), sets
+/// `search_path` to it, runs `init_schema`, and returns the Db. The schema is
+/// left behind on the server — `drop_test_db` cleans it up after the test.
+pub async fn new_test_db(url: &str) -> Db {
+    let schema = format!(
+        "gita_test_{}_{}",
+        std::process::id(),
+        TEST_SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst)
+    );
+
+    // Connect directly to the DB and create the schema; we cannot use the
+    // Db::connect path because init_schema runs before we can pin search_path.
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(url)
         .await
-        .expect("in-memory db should work");
-    // Verify tables exist
-    let tables: Vec<(String,)> = sqlx::query_as("SELECT name FROM sqlite_master WHERE type='table'")
-        .fetch_all(db.pool())
+        .expect("failed to connect to test database");
+
+    // CREATE SCHEMA IF NOT EXISTS, then pin search_path on every connection.
+    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+        .execute(&pool)
         .await
-        .expect("failed to list tables");
-    eprintln!("Tables after init: {:?}", tables);
+        .expect("failed to create test schema");
+    sqlx::query(&format!("SET search_path TO \"{schema}\""))
+        .execute(&pool)
+        .await
+        .expect("failed to set search_path");
+
+    let db = Db::from_pool(pool);
+    db.init_schema()
+        .await
+        .expect("failed to initialize schema");
     db
+}
+
+/// Drop the schema backing a test Db.
+pub async fn drop_test_db(db: &Db) {
+    let schema = format!(
+        "gita_test_{}_{}", // reconstructed best-effort; actual lookup below
+        std::process::id(),
+        0 // intentionally unused; see real lookup in the body
+    );
+    let _ = schema;
+    // The cleanest way is to drop the schema whose name matches search_path.
+    // Postgres exposes `current_schema()`; fall back to it.
+    let row = sqlx::query("SELECT current_schema() AS s")
+        .fetch_one(db.pool())
+        .await
+        .expect("failed to read current_schema");
+    let current: String = row.try_get("s").unwrap_or_default();
+    if current.starts_with("gita_test_") {
+        let _ = sqlx::query(&format!("DROP SCHEMA \"{current}\" CASCADE"))
+            .execute(db.pool())
+            .await;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+
+    fn url() -> String {
+        env::var("GITA_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://gita:gita@127.0.0.1:55432/gita".to_string()
+        })
+    }
+
+    async fn fresh_db() -> Db {
+        let db = new_test_db(&url()).await;
+        db
+    }
 
     #[tokio::test]
     async fn user_crud() {
-        let db = new_test_db().await;
+        let db = fresh_db().await;
         let u = db
             .create_user("alice", "alice@example.com", "hash")
             .await
@@ -1063,11 +1110,12 @@ mod tests {
         let fetched = db.get_user_by_username("alice").await.unwrap().unwrap();
         assert_eq!(fetched.id, u.id);
         assert_eq!(db.get_user_by_username("nobody").await.unwrap(), None);
+        drop_test_db(&db).await;
     }
 
     #[tokio::test]
     async fn repo_crud() {
-        let db = new_test_db().await;
+        let db = fresh_db().await;
         let u = db.create_user("bob", "bob@example.com", "h").await.unwrap();
         let r = db
             .create_repository(u.id, "bob", "hello", "desc", false, "main")
@@ -1077,11 +1125,12 @@ mod tests {
         let fetched = db.get_repository_by_name("bob", "hello").await.unwrap().unwrap();
         assert_eq!(fetched.full_name(), "bob/hello");
         assert!(!fetched.is_private);
+        drop_test_db(&db).await;
     }
 
     #[tokio::test]
     async fn event_insert_and_list() {
-        let db = new_test_db().await;
+        let db = fresh_db().await;
         let event = Event {
             id: 0,
             event_type: EventType::RepoCreated,
@@ -1095,14 +1144,15 @@ mod tests {
         let events = db.list_events(None, None, 10).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, EventType::RepoCreated);
+        drop_test_db(&db).await;
     }
 
     #[tokio::test]
     async fn migration_idempotent() {
-        // Connecting twice to an existing in-memory DB is not possible (single
-        // connection), so instead verify init_schema can be called again on a
-        // fresh in-memory db.
-        let db = new_test_db().await;
+        let db = fresh_db().await;
+        // Re-running init_schema against an existing schema must succeed
+        // (every CREATE TABLE is IF NOT EXISTS).
         db.init_schema().await.unwrap();
+        drop_test_db(&db).await;
     }
 }

@@ -46,12 +46,22 @@ fn missing_config_falls_back_to_defaults() {
 // 应用初始化（不监听端口，仅验证装配）
 // ---------------------------------------------------------------------------
 
+/// Database URL for integration tests. Override via `GITA_TEST_DATABASE_URL`.
+fn test_db_url() -> String {
+    std::env::var("GITA_TEST_DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://gita:gita@127.0.0.1:55432/gita".to_string()
+    })
+}
+
 #[tokio::test]
 async fn app_build_creates_directories_and_router() {
     let tmp = TempDir::new().unwrap();
     let mut config = Config::default();
     config.server.data_dir = tmp.path().join("data");
-    config.server.database_url = format!("sqlite://{}", tmp.path().join("data/gita.db").display());
+    // Connect to the bundled PG instance. init_schema is idempotent across
+    // runs (CREATE TABLE IF NOT EXISTS), so concurrent test runs share the
+    // default `public` schema safely.
+    config.server.database_url = test_db_url();
 
     let app = App::build(config).await.unwrap();
     // 数据目录与仓库目录应被创建

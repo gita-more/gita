@@ -34,7 +34,7 @@ Cargo workspace with focused crates:
 ```
 crates/
 ├── gita-core    # domain models, events
-├── gita-db      # SQLx data access (SQLite default, PostgreSQL optional)
+├── gita-db      # SQLx data access (PostgreSQL)
 ├── gita-git      # bare repo management, git protocol via gix + git CLI
 ├── gita-events  # event bus (pushes, PRs, issues)
 ├── gita-http    # Smart HTTP Git protocol endpoint (/git/*)
@@ -79,7 +79,7 @@ Configuration is TOML:
 | `server.host` | `127.0.0.1` | Bind address (`0.0.0.0` to expose) |
 | `server.port` | `3000` | HTTP port |
 | `server.data_dir` | `data` | Repositories and database location |
-| `server.database_url` | `sqlite://data/gita.db` | SQLite or PostgreSQL URL |
+| `server.database_url` | `postgres://gita:gita@localhost:5432/gita` | PostgreSQL connection URL |
 | `server.jwt_secret` | `dev-secret-change-me` | **Change in production!** |
 
 **Security:** the default `jwt_secret` is a well-known development value.
@@ -125,9 +125,9 @@ Notes:
 - The app listens on port **3000** inside the container; the host port is
   mapped via `GITA_PORT` in `.env` (default `3100`) to avoid conflicts.
   Open <http://127.0.0.1:3100>.
-- By default (`DATABASE_URL` empty in `.env`) the app uses SQLite stored in
-  the `gita-data` volume. To use PostgreSQL, set
-  `DATABASE_URL=postgres://gita:gita@postgres:5432/gita` in `.env`.
+- The bundled `postgres` service is the default. Override `DATABASE_URL` in
+  `.env` to point at an external Postgres (for managed DBs or multi-node
+  setups).
 - If your host has no `docker compose` plugin (e.g. Podman 3.x), the
   standalone `docker-compose` v1 works with the same file:
 

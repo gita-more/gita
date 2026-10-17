@@ -58,7 +58,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENV GITA_SERVER_HOST=0.0.0.0 \
     GITA_SERVER_PORT=3000 \
     GITA_SERVER_DATA_DIR=/data \
-    GITA_SERVER_DATABASE_URL=sqlite:///data/gita.db \
+    GITA_SERVER_DATABASE_URL=postgres://gita:gita@postgres:5432/gita \
     GITA_SERVER_JWT_SECRET=dev-secret-change-me
 
 # Entry point: generate config from env, then run server

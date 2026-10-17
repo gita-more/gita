@@ -63,7 +63,7 @@ fn default_data_dir() -> PathBuf {
     PathBuf::from("data")
 }
 fn default_db_url() -> String {
-    "sqlite://data/gita.db".to_string()
+    "postgres://gita:gita@localhost:5432/gita".to_string()
 }
 fn default_jwt_secret() -> String {
     "dev-secret-change-me".to_string()
@@ -125,19 +125,12 @@ impl App {
         std::fs::create_dir_all(&repos_dir)
             .with_context(|| format!("create repos dir {}", repos_dir.display()))?;
 
-        // Resolve database URL relative to data_dir if it's a relative SQLite path.
-        let mut db_url = config.server.database_url.clone();
-        if let Some(path) = db_url.strip_prefix("sqlite://") {
-            if !path.starts_with('/') && !path.starts_with(':') {
-                let p = config.server.data_dir.join(path);
-                db_url = format!("sqlite://{}", p.display());
-            }
-        }
-
         info!("connecting to database");
-        let db = Db::connect(&db_url)
+        let db = Db::connect(&config.server.database_url)
             .await
-            .with_context(|| format!("connect to database {db_url}"))?;
+            .with_context(|| {
+                format!("connect to database {}", config.server.database_url)
+            })?;
 
         let git = Arc::new(GitManager::new(repos_dir));
         // Persist every published event to the database so the `/api/events`

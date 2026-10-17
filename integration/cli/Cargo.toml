@@ -15,3 +15,4 @@ tempfile = "3"
 clap = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres"] }

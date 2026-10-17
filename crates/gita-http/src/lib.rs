@@ -316,7 +316,10 @@ async fn resolve_authed_user(
 /// A test helper to build the router with a stub database.
 #[cfg(test)]
 pub async fn test_state() -> GitHttpState {
-    let db = gita_db::new_test_db().await;
+    let url = std::env::var("GITA_TEST_DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://gita:gita@127.0.0.1:55432/gita".to_string()
+    });
+    let db = gita_db::new_test_db(&url).await;
     let root = std::env::temp_dir().join(format!("gita-http-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
