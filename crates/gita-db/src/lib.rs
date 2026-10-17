@@ -34,6 +34,33 @@ impl Db {
         Ok(Self { pool })
     }
 
+    /// Open a database connection scoped to a specific Postgres schema.
+    ///
+    /// Useful for test isolation: each test gets its own schema
+    /// (`gita_test_<pid>_<n>`) and this method pins `search_path` to it on
+    /// every pooled connection *before* running migrations, so all tables
+    /// land in the test schema rather than `public`.
+    pub async fn connect_with_schema(url: &str, schema: &str) -> Result<Self> {
+        let schema = schema.to_string();
+        let pool = PgPoolOptions::new()
+            .max_connections(10)
+            .acquire_timeout(Duration::from_secs(10))
+            .after_connect(move |conn, _meta| {
+                let schema = schema.clone();
+                Box::pin(async move {
+                    sqlx::query(&format!("SET search_path TO \"{schema}\""))
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(url)
+            .await
+            .with_context(|| format!("failed to connect to database {url}"))?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        Ok(Self { pool })
+    }
+
     /// Open an existing pool. Useful for tests that share a connection pool
     /// across multiple schema-isolated tests.
     pub fn from_pool(pool: PgPool) -> Self {

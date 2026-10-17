@@ -39,6 +39,10 @@ pub struct ServerConfig {
     pub database_url: String,
     #[serde(default = "default_jwt_secret")]
     pub jwt_secret: String,
+    /// Optional Postgres schema to pin `search_path` to. Used by tests for
+    /// per-test schema isolation.
+    #[serde(default)]
+    pub database_schema: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -49,6 +53,7 @@ impl Default for ServerConfig {
             data_dir: default_data_dir(),
             database_url: default_db_url(),
             jwt_secret: default_jwt_secret(),
+            database_schema: None,
         }
     }
 }
@@ -126,11 +131,21 @@ impl App {
             .with_context(|| format!("create repos dir {}", repos_dir.display()))?;
 
         info!("connecting to database");
-        let db = Db::connect(&config.server.database_url)
-            .await
-            .with_context(|| {
-                format!("connect to database {}", config.server.database_url)
-            })?;
+        let db = match &config.server.database_schema {
+            Some(schema) => Db::connect_with_schema(&config.server.database_url, schema)
+                .await
+                .with_context(|| {
+                    format!(
+                        "connect to database {} (schema {})",
+                        config.server.database_url, schema
+                    )
+                })?,
+            None => Db::connect(&config.server.database_url)
+                .await
+                .with_context(|| {
+                    format!("connect to database {}", config.server.database_url)
+                })?,
+        };
 
         let git = Arc::new(GitManager::new(repos_dir));
         // Persist every published event to the database so the `/api/events`

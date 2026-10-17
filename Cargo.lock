@@ -1000,6 +1000,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "gita-integration-api"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "gita-core",
+ "gita-db",
+ "gita-server",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "gita-integration-cli"
 version = "0.0.1"
 dependencies = [

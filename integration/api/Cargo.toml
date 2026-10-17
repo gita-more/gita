@@ -1,0 +1,20 @@
+[package]
+name = "gita-integration-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+gita-server = { path = "../../crates/gita-server" }
+gita-db = { path = "../../crates/gita-db" }
+gita-core = { path = "../../crates/gita-core" }
+
+[dev-dependencies]
+axum = { workspace = true }
+tower = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = "3"
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres"] }

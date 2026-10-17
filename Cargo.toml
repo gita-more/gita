@@ -10,6 +10,7 @@ members = [
     "crates/gita-server",
     "crates/gita-web",
     "integration/cli",
+    "integration/api",
 ]
 
 [workspace.package]
