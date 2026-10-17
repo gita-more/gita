@@ -10,7 +10,6 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-use tracing::info;
 
 /// The database handle used across the application.
 #[derive(Debug, Clone)]
@@ -27,154 +26,18 @@ impl Db {
             .connect(url)
             .await
             .with_context(|| format!("failed to connect to database {url}"))?;
-        // If the URL has a ?options= fragment, libpq already applied it.
-        // For tests we additionally pin search_path via the URL; either way
-        // init_schema runs against whatever schema the role/user lands in by
-        // default — call sites that need a specific schema should use
-        // `?options=-c search_path=...` in the URL or connect via a role that
-        // has a default search_path.
-        let db = Self { pool };
-        db.init_schema().await?;
-        Ok(db)
+        // sqlx::migrate! tracks applied versions in `_sqlx_migrations`. Each
+        // subsequent schema change should land in crates/gita-db/migrations/
+        // as a new <timestamp>_<name>.sql file rather than being patched
+        // in-code.
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        Ok(Self { pool })
     }
 
     /// Open an existing pool. Useful for tests that share a connection pool
     /// across multiple schema-isolated tests.
     pub fn from_pool(pool: PgPool) -> Self {
         Self { pool }
-    }
-
-    /// Create the schema if it does not exist.
-    async fn init_schema(&self) -> Result<()> {
-        info!("initializing database schema");
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS users (
-                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                username TEXT NOT NULL UNIQUE,
-                email TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-        info!("users table ready");
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS repositories (
-                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                owner_id BIGINT NOT NULL,
-                owner_name TEXT NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL DEFAULT '',
-                is_private BIGINT NOT NULL DEFAULT 0,
-                default_branch TEXT NOT NULL DEFAULT 'main',
-                created_at TEXT NOT NULL,
-                UNIQUE(owner_name, name)
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-        info!("repositories table ready");
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS commits (
-                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                repo_id BIGINT NOT NULL,
-                sha TEXT NOT NULL,
-                author_name TEXT NOT NULL,
-                author_email TEXT NOT NULL,
-                message TEXT NOT NULL,
-                parent_shas TEXT NOT NULL DEFAULT '[]',
-                authored_at TEXT NOT NULL,
-                UNIQUE(repo_id, sha)
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS pull_requests (
-                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                repo_id BIGINT NOT NULL,
-                number BIGINT NOT NULL,
-                title TEXT NOT NULL,
-                body TEXT NOT NULL DEFAULT '',
-                source_branch TEXT NOT NULL,
-                target_branch TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'open',
-                author_id BIGINT NOT NULL,
-                author_name TEXT NOT NULL,
-                base_sha TEXT NOT NULL DEFAULT '',
-                head_sha TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                merged_at TEXT,
-                UNIQUE(repo_id, number)
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS issues (
-                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                repo_id BIGINT NOT NULL,
-                number BIGINT NOT NULL,
-                title TEXT NOT NULL,
-                body TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'open',
-                author_id BIGINT NOT NULL,
-                author_name TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                closed_at TEXT
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS events (
-                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                event_type TEXT NOT NULL,
-                repo_id BIGINT,
-                actor_id BIGINT,
-                payload TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS access_tokens (
-                id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                token TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL DEFAULT 'default',
-                created_at TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        info!("database schema ready");
-        Ok(())
     }
 
     /// Run a migration for adding new tables in future versions.
@@ -1026,7 +889,7 @@ static TEST_SCHEMA_COUNTER: AtomicU32 = AtomicU32::new(0);
 ///
 /// `url` should be a base Postgres URL like `postgres://gita:gita@localhost:55432/gita`.
 /// Each call derives a unique schema name (`gita_test_<pid>_<n>`), sets
-/// `search_path` to it, runs `init_schema`, and returns the Db. The schema is
+/// `search_path` to it, runs `sqlx::migrate!`, and returns the Db. The schema is
 /// left behind on the server — `drop_test_db` cleans it up after the test.
 pub async fn new_test_db(url: &str) -> Db {
     let schema = format!(
@@ -1035,8 +898,7 @@ pub async fn new_test_db(url: &str) -> Db {
         TEST_SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst)
     );
 
-    // Connect directly to the DB and create the schema; we cannot use the
-    // Db::connect path because init_schema runs before we can pin search_path.
+    // Connect with a tiny pool; we need a regular PgPool for sqlx::migrate.
     let pool = PgPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(Duration::from_secs(10))
@@ -1044,7 +906,9 @@ pub async fn new_test_db(url: &str) -> Db {
         .await
         .expect("failed to connect to test database");
 
-    // CREATE SCHEMA IF NOT EXISTS, then pin search_path on every connection.
+    // CREATE SCHEMA then pin search_path. We use `current_schemas(true)`-friendly
+    // approach: every migration runs against the dedicated schema because the
+    // pool only ever checks out connections whose search_path points there.
     sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
         .execute(&pool)
         .await
@@ -1055,9 +919,10 @@ pub async fn new_test_db(url: &str) -> Db {
         .expect("failed to set search_path");
 
     let db = Db::from_pool(pool);
-    db.init_schema()
+    sqlx::migrate!("./migrations")
+        .run(db.pool())
         .await
-        .expect("failed to initialize schema");
+        .expect("failed to run migrations");
     db
 }
 
@@ -1150,9 +1015,20 @@ mod tests {
     #[tokio::test]
     async fn migration_idempotent() {
         let db = fresh_db().await;
-        // Re-running init_schema against an existing schema must succeed
-        // (every CREATE TABLE is IF NOT EXISTS).
-        db.init_schema().await.unwrap();
+        // Re-running migrations against an already-applied schema must succeed
+        // (sqlx::migrate! skips applied versions).
+        sqlx::migrate!("./migrations")
+            .run(db.pool())
+            .await
+            .unwrap();
+        // _sqlx_migrations must contain exactly one entry: 20260101000000_init.
+        let rows: Vec<(i64, String)> =
+            sqlx::query_as("SELECT version, description FROM _sqlx_migrations ORDER BY version")
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 1, "expected exactly one applied migration");
+        assert_eq!(rows[0].1, "init");
         drop_test_db(&db).await;
     }
 }
