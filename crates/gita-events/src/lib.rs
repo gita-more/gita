@@ -122,8 +122,11 @@ impl EventLogSubscriber {
     }
 
     pub fn spawn_listener(bus: EventBus, log: Arc<InMemoryEventLog>) -> tokio::task::JoinHandle<()> {
+        // Subscribe synchronously *before* spawning the task so that events
+        // published immediately after this call are not missed (broadcast
+        // drops messages when no receiver is registered yet).
+        let mut rx = bus.subscribe();
         tokio::spawn(async move {
-            let mut rx = bus.subscribe();
             loop {
                 match rx.recv().await {
                     Ok(event) => log.push(event),
@@ -137,3 +140,102 @@ impl EventLogSubscriber {
 
 /// A simple typed event map used for routing in tests.
 pub type EventMap = HashMap<EventType, Vec<Event>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn test_event() -> Event {
+        Event {
+            id: 0,
+            event_type: EventType::Push,
+            repo_id: Some(1),
+            actor_id: Some(2),
+            payload: serde_json::json!({"branch": "main"}),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn publish_and_subscribe_receives_event() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+
+        bus.publish(EventType::Push, Some(1), Some(2), serde_json::json!({}));
+
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received.event_type, EventType::Push);
+        assert_eq!(received.repo_id, Some(1));
+        assert_eq!(received.actor_id, Some(2));
+    }
+
+    #[test]
+    fn publish_calls_persist_hook() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let bus = EventBus::new(Some(Arc::new(move |_e: Event| {
+            calls2.fetch_add(1, Ordering::SeqCst);
+        })));
+
+        bus.publish(EventType::IssueCreated, None, None, serde_json::json!({}));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn publish_without_subscribers_does_not_panic() {
+        let bus = EventBus::default();
+        bus.publish(EventType::RepoCreated, Some(1), None, serde_json::json!({}));
+        // no panic = pass
+    }
+
+    #[tokio::test]
+    async fn in_memory_log_pushes_and_returns_recent() {
+        let log = Arc::new(InMemoryEventLog::default());
+        let bus = EventBus::default();
+        let _handle = EventLogSubscriber::spawn_listener(bus.clone(), log.clone());
+
+        for i in 0..3 {
+            bus.publish(
+                EventType::Push,
+                Some(i),
+                Some(i),
+                serde_json::json!({"i": i}),
+            );
+        }
+
+        // Wait until the spawned listener has drained all three events.
+        for _ in 0..100 {
+            if log.len() == 3 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let recent = log.recent(10);
+        assert_eq!(recent.len(), 3);
+        assert_eq!(recent[0].repo_id, Some(2)); // newest first
+        assert_eq!(recent[2].repo_id, Some(0)); // oldest last
+    }
+
+    #[test]
+    fn recent_snapshot_returns_empty_without_persist() {
+        let bus = EventBus::default();
+        assert!(bus.recent_snapshot(10).is_empty());
+    }
+
+    // Use a helper to avoid a flaky test in slow CI: the broadcast channel
+    // keeps at most 1024 events; verify the log bound is respected.
+    #[test]
+    fn in_memory_log_bounds_length() {
+        let log = Arc::new(InMemoryEventLog::default());
+        let bus = EventBus::new(Some(Arc::new({
+            let log = log.clone();
+            move |e: Event| log.push(e)
+        })));
+        for i in 0..20_000 {
+            bus.publish(EventType::Push, Some(i), None, serde_json::json!({}));
+        }
+        assert!(log.len() <= 10_000);
+    }
+}

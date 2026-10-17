@@ -25,3 +25,7 @@ gita-events = { path = "../gita-events" }
 gita-http = { path = "../gita-http" }
 gita-api = { path = "../gita-api" }
 gita-web = { path = "../gita-web" }
+
+[dev-dependencies]
+tempfile = "3"
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres"] }

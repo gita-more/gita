@@ -13,3 +13,8 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 gita-core = { path = "../gita-core" }
+
+[dev-dependencies]
+tower = { workspace = true }
+tokio = { workspace = true }
+tempfile = "3"

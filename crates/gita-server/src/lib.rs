@@ -233,3 +233,54 @@ pub async fn run(config: Config) -> Result<()> {
 
     axum::serve(listener, router).await.context("axum serve error")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_load_missing_file_falls_back_to_defaults() {
+        let missing = PathBuf::from("/nonexistent/gita.toml");
+        let config = Config::load(&missing).unwrap();
+        assert_eq!(config.server.port, 3000);
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.jwt_secret, "dev-secret-change-me");
+        assert!(config.server.database_url.contains("postgres://"));
+    }
+
+    #[test]
+    fn config_load_merges_toml_values() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [server]
+            host = "0.0.0.0"
+            port = 9000
+            "#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 9000);
+        // Non-overridden fields keep defaults.
+        assert_eq!(config.server.jwt_secret, "dev-secret-change-me");
+        assert!(config.server.database_url.contains("postgres://"));
+    }
+
+    #[test]
+    fn config_does_not_override_jwt_secret_with_default_value() {
+        // If the TOML literally sets jwt_secret to the default string,
+        // Config::load must NOT treat that as an override (it skips it).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
+        std::fs::write(
+            &path,
+            "[server]\njwt_secret = \"dev-secret-change-me\"\n",
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.server.jwt_secret, "dev-secret-change-me");
+    }
+}

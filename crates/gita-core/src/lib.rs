@@ -206,3 +206,114 @@ pub struct FileContent {
     pub content: String,
     pub sha: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn user() -> User {
+        User {
+            id: 1,
+            username: "alice".to_string(),
+            email: "alice@example.com".to_string(),
+            password_hash: "hash".to_string(),
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn repository_full_name() {
+        let repo = Repository {
+            id: 1,
+            owner_id: 1,
+            owner_name: "alice".to_string(),
+            name: "hello".to_string(),
+            description: "desc".to_string(),
+            is_private: false,
+            default_branch: "main".to_string(),
+            created_at: Utc::now(),
+        };
+        assert_eq!(repo.full_name(), "alice/hello");
+    }
+
+    #[test]
+    fn pr_status_serde_roundtrip() {
+        assert_eq!(serde_json::to_string(&PrStatus::Open).unwrap(), "\"open\"");
+        assert_eq!(serde_json::to_string(&PrStatus::Merged).unwrap(), "\"merged\"");
+        assert_eq!(serde_json::to_string(&PrStatus::Closed).unwrap(), "\"closed\"");
+        assert_eq!(
+            serde_json::from_str::<PrStatus>("\"open\"").unwrap(),
+            PrStatus::Open
+        );
+        assert_eq!(PrStatus::Merged.to_string(), "merged");
+    }
+
+    #[test]
+    fn issue_status_serde_roundtrip() {
+        assert_eq!(serde_json::to_string(&IssueStatus::Open).unwrap(), "\"open\"");
+        assert_eq!(serde_json::to_string(&IssueStatus::Closed).unwrap(), "\"closed\"");
+        assert_eq!(
+            serde_json::from_str::<IssueStatus>("\"closed\"").unwrap(),
+            IssueStatus::Closed
+        );
+        assert_eq!(IssueStatus::Open.to_string(), "open");
+    }
+
+    #[test]
+    fn event_type_display() {
+        assert_eq!(EventType::RepoCreated.to_string(), "repo_created");
+        assert_eq!(EventType::Push.to_string(), "push");
+        assert_eq!(EventType::PullRequestMerged.to_string(), "pull_request_merged");
+        assert_eq!(EventType::AgentRunCompleted.to_string(), "agent_run_completed");
+    }
+
+    #[test]
+    fn event_type_serde_roundtrip() {
+        assert_eq!(
+            serde_json::from_str::<EventType>("\"issue_created\"").unwrap(),
+            EventType::IssueCreated
+        );
+        assert_eq!(
+            serde_json::to_string(&EventType::RepoDeleted).unwrap(),
+            "\"repo_deleted\""
+        );
+    }
+
+    #[test]
+    fn user_serde_roundtrip() {
+        let u = user();
+        let json = serde_json::to_value(&u).unwrap();
+        assert_eq!(json["username"], "alice");
+        let back: User = serde_json::from_value(json).unwrap();
+        assert_eq!(back, u);
+    }
+
+    #[test]
+    fn event_serde_roundtrip() {
+        let e = Event {
+            id: 1,
+            event_type: EventType::Push,
+            repo_id: Some(10),
+            actor_id: Some(2),
+            payload: json!({"branch": "main"}),
+            created_at: Utc::now(),
+        };
+        let json = serde_json::to_value(&e).unwrap();
+        let back: Event = serde_json::from_value(json).unwrap();
+        assert_eq!(back, e);
+    }
+
+    #[test]
+    fn access_token_serde_roundtrip() {
+        let t = AccessToken {
+            id: 1,
+            user_id: 1,
+            token: "abc".to_string(),
+            name: "default".to_string(),
+            created_at: Utc::now(),
+        };
+        let back: AccessToken = serde_json::from_value(serde_json::to_value(&t).unwrap()).unwrap();
+        assert_eq!(back, t);
+    }
+}

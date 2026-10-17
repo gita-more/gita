@@ -1031,4 +1031,29 @@ mod tests {
         assert_eq!(rows[0].1, "init");
         drop_test_db(&db).await;
     }
+
+    #[tokio::test]
+    async fn all_tables_exist_after_migration() {
+        let db = fresh_db().await;
+        let expected: &[&str] = &[
+            "users",
+            "repositories",
+            "commits",
+            "pull_requests",
+            "issues",
+            "events",
+            "access_tokens",
+        ];
+        for table in expected {
+            let row: (i64,) = sqlx::query_as(&format!(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1"
+            ))
+            .bind(table)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+            assert_eq!(row.0, 1, "table {table} should exist");
+        }
+        drop_test_db(&db).await;
+    }
 }

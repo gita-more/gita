@@ -80,3 +80,66 @@ async fn landing_page() -> Html<&'static str> {
 </html>"#,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn fallback_router_serves_landing_page() {
+        let app = web_router(None);
+        let res = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(html.contains("Gita"));
+    }
+
+    #[tokio::test]
+    async fn with_dist_serves_index_html() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<!DOCTYPE html><html><body>Hello dist</body></html>",
+        )
+        .unwrap();
+
+        let app = web_router(Some(dir.path().to_path_buf()));
+        let res = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(html.contains("Hello dist"));
+    }
+
+    #[tokio::test]
+    async fn dist_without_index_falls_back_to_landing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // dist dir exists but has no index.html
+        let app = web_router(Some(dir.path().to_path_buf()));
+        let res = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(html.contains("Gita"));
+    }
+}
