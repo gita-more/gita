@@ -30,7 +30,7 @@ integration/
 
 ```bash
 # 启动服务（若未运行）
-cd <repo-root> && ./deploy.sh start
+cd <repo-root> && ./scripts/run_dev.sh start
 
 # 运行 web E2E
 cd integration/web

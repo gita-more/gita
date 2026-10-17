@@ -105,16 +105,19 @@ git push -u origin main
 
 ### Docker deployment (optional)
 
-Gita ships with a `Dockerfile` and `docker-compose.yml` for containerized
-deployment. This is the easiest way to run with PostgreSQL.
+Gita ships with a `Dockerfile` and `docker-compose.yml` (both in `docker/`).
+This is the easiest way to run with PostgreSQL.
 
 ```bash
 # 1. Prepare environment variables
 cp .env.example .env
 #    edit .env — at minimum change JWT_SECRET!
 
-# 2. Build and start
-docker-compose up -d --build
+# 2. Build and start (the compose file now lives in docker/)
+docker compose -f docker/docker-compose.yml up -d --build \
+  --env-file .env
+# or the recommended wrapper:
+./scripts/run_dev.sh start
 ```
 
 Notes:
@@ -126,19 +129,25 @@ Notes:
   the `gita-data` volume. To use PostgreSQL, set
   `DATABASE_URL=postgres://gita:gita@postgres:5432/gita` in `.env`.
 - If your host has no `docker compose` plugin (e.g. Podman 3.x), the
-  standalone `docker-compose` v1 works with the same file.
+  standalone `docker-compose` v1 works with the same file:
+
+  ```bash
+  docker-compose -f docker/docker-compose.yml \
+    --env-file .env up -d --build
+  ```
 - On rootless Podman, point `docker-compose` at the user socket first:
 
   ```bash
   export DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock
-  docker-compose up -d
+  docker-compose -f docker/docker-compose.yml \
+    --env-file .env up -d
   ```
 
 To run the server directly instead of Docker, follow the Quick Start above
 and use PostgreSQL:
 
 ```bash
-docker-compose up -d postgres
+docker compose -f docker/docker-compose.yml --env-file .env up -d postgres
 # then in config/gita.toml:
 #   database_url = "postgres://gita:gita@localhost:5432/gita"
 ```

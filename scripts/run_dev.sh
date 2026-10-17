@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Gita 部署管理脚本
+# Gita 本地开发服务管理脚本
 #
-# 管理 Gita 的 Docker/Podman 部署生命周期：
+# 通过 Docker/Podman 在本地启动 Gita 完整栈（后端 + 前端 + Postgres）：
+#   start    启动服务（首次会自动构建；--build 强制重新构建）
+#   stop     停止服务
+#   restart  重启服务（--build 强制重新构建镜像）
+#   status   查看容器状态
+#   logs     跟踪查看日志（-f 跟随）
+#   rebuild  重新构建前端 + 后端 + Docker 镜像并重启
+#
+# 仅用于本地开发/集成测试环境；不替代 CI/CD 的正式部署流程。
+#
+# 兼容 Docker 与 rootless Podman：
 #   start    启动服务（首次会自动构建；--build 强制重新构建）
 #   stop     停止服务
 #   restart  重启服务（--build 强制重新构建镜像）
@@ -15,14 +25,14 @@
 #   - docker-compose v1 与 podman-compose 均可工作
 #
 # 用法示例：
-#   ./deploy.sh start
-#   ./deploy.sh start --build
-#   ./deploy.sh restart
-#   ./deploy.sh restart --build
-#   ./deploy.sh stop
-#   ./deploy.sh status
-#   ./deploy.sh logs -f
-#   ./deploy.sh rebuild
+#   ./scripts/run_dev.sh start
+#   ./scripts/run_dev.sh start --build
+#   ./scripts/run_dev.sh restart
+#   ./scripts/run_dev.sh restart --build
+#   ./scripts/run_dev.sh stop
+#   ./scripts/run_dev.sh status
+#   ./scripts/run_dev.sh logs -f
+#   ./scripts/run_dev.sh rebuild
 # =============================================================================
 
 set -euo pipefail
@@ -30,6 +40,9 @@ set -euo pipefail
 # 脚本所在目录（项目根目录）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}"
+
+# compose 文件固定在 docker/ 下，相对 build 上下文（项目根）保持 "./"
+COMPOSE_FILE="${SCRIPT_DIR}/docker/docker-compose.yml"
 
 # 颜色输出（仅 tty 时启用）
 if [[ -t 1 ]]; then
@@ -83,10 +96,20 @@ setup_podman_host() {
 }
 
 compose_cmd() {
+  # 子命令 list 形式（无选项前缀）：仅追加 -f。其余统一走 up 子命令风格：
+  # 对于 `up`/`down`/`logs`/`build`/`ps` 都需要 -f；
+  # 这里约定 compose_cmd 收到的 $@ 第一个是子命令，后续是参数 + flags。
+  #
+  # compose 文件在 docker/，但 .env 必须从项目根读（compose 不会跨目录找），
+  # 因此显式 --env-file。只有 .env 存在时才传，避免首次部署没建 .env 时报错。
+  local env_args=()
+  if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+    env_args=(--env-file "${SCRIPT_DIR}/.env")
+  fi
   if [[ "${COMPOSE}" == "docker compose" ]]; then
-    docker compose "$@"
+    docker compose -f "${COMPOSE_FILE}" "${env_args[@]}" "$@"
   else
-    "${COMPOSE}" "$@"
+    "${COMPOSE}" -f "${COMPOSE_FILE}" "${env_args[@]}" "$@"
   fi
 }
 
@@ -278,9 +301,9 @@ print_url() {
 
 usage() {
   cat <<EOF
-${C_BOLD}Gita 部署管理脚本${C_RESET}
+${C_BOLD}Gita 本地开发服务管理脚本${C_RESET}
 
-用法: ./deploy.sh <command> [options]
+用法: ./scripts/run_dev.sh <command> [options]
 
 命令:
   start [--build]    启动服务（--build 强制重新构建前端/后端/镜像）

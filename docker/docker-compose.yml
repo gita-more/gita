@@ -18,7 +18,7 @@ services:
   gita:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     container_name: gita
     restart: unless-stopped
     ports:

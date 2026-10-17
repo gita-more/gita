@@ -34,7 +34,7 @@ COPY web/dist /app/web/dist
 COPY config/config.example.toml /app/config.example.toml
 
 # Copy entrypoint script
-COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
 # Create data directory with correct ownership
