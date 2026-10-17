@@ -9,13 +9,30 @@ use predicates::prelude::*;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+/// Path to the gita-server binary. The standard `assert_cmd::cargo_bin`
+/// relies on `CARGO_BIN_EXE_<name>` being set when cargo builds an
+/// integration test, but we bind the binary through cargo's normal bin
+/// discovery (in `crates/gita-server`), not through the integration
+/// crate, so the env var is unset. Resolve the path relative to the
+/// workspace's `target/debug/` directory instead.
+fn gita_server_bin() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .ancestors()
+        .nth(2)
+        .expect("workspace root")
+        .join("target")
+        .join("debug")
+        .join("gita-server")
+}
+
 // ---------------------------------------------------------------------------
 // 二进制 CLI 行为
 // ---------------------------------------------------------------------------
 
 #[test]
 fn help_flag_shows_usage() {
-    let mut cmd = Command::cargo_bin("gita-server").unwrap();
+    let mut cmd = Command::new(gita_server_bin());
     cmd.arg("--help")
         .assert()
         .success()
@@ -25,7 +42,7 @@ fn help_flag_shows_usage() {
 
 #[test]
 fn version_flag_shows_version() {
-    let mut cmd = Command::cargo_bin("gita-server").unwrap();
+    let mut cmd = Command::new(gita_server_bin());
     cmd.arg("--version")
         .assert()
         .success()
