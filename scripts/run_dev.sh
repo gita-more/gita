@@ -37,8 +37,9 @@
 
 set -euo pipefail
 
-# 脚本所在目录（项目根目录）
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 脚本位于 scripts/，故项目根为其父目录。
+# 把工作目录与所有路径常量（compose / .env / 构建产物）都锚定到项目根。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${SCRIPT_DIR}"
 
 # compose 文件固定在 docker/ 下，相对 build 上下文（项目根）保持 "./"
