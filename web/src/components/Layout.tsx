@@ -32,7 +32,7 @@ const SIDEBAR_NAV: { key: NavTarget; label: string; icon: typeof HomeIcon; count
 
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
-    <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
+    <a className="brand" href="#" onClick={(e) => { e.preventDefault(); onNavigateHome() }}>
       <span className="brand-mark">
         <svg width={compact ? 20 : 18} height={compact ? 20 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M6 3v12" />
@@ -85,6 +85,20 @@ function UserMenu({ user, onClose }: { user: { username: string; email: string }
         </li>
       </ul>
     </div>
+  )
+}
+
+function SearchIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z" />
+    </svg>
   )
 }
 
@@ -160,6 +174,12 @@ export function Topbar({
         </nav>
       ) : null}
       <div className="topbar-spacer" />
+      {/* Search placeholder */}
+      <div className="search-box" role="search">
+        <SearchIcon size={14} />
+        <span>搜索</span>
+        <kbd>/</kbd>
+      </div>
       <div className="topbar-actions">
         {actions}
         <div className="user-menu-container" ref={userMenuRef}>
