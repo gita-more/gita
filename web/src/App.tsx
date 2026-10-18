@@ -19,7 +19,7 @@ export default function App() {
   const [globalTab, setGlobalTab] = useState<'projects' | 'groups' | 'issues'>('projects')
 
   if (!user) {
-    return <LoginPage onDone={() => {}} />
+    return <LoginPage onDone={() => setGlobalTab('projects')} />
   }
 
   if (view.kind === 'repo') {
