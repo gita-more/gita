@@ -258,7 +258,10 @@ impl GitManager {
             return Ok(None);
         };
         let tree = repo.find_commit(id)?.tree()?;
-        let entry = find_entry_by_path(&tree, path)?;
+        let entry = match find_entry_by_path(&tree, path) {
+            Ok(e) => e,
+            Err(_) => return Ok(None),
+        };
         let object = entry.object()?.into_blob();
         let content = String::from_utf8_lossy(&object.data).to_string();
         Ok(Some(FileContent {

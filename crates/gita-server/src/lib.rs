@@ -118,6 +118,11 @@ pub struct App {
     pub api_state: gita_api::AppState,
     pub git_http_state: GitHttpState,
     pub config: Config,
+    /// The data directory (config.server.data_dir). Mirrors
+    /// `config.server.data_dir` for convenient access from integration
+    /// tests that need to push real git commits into the repository
+    /// before exercising API endpoints that read git history.
+    pub data_dir: std::path::PathBuf,
 }
 
 impl App {
@@ -181,6 +186,7 @@ impl App {
             bus,
             api_state,
             git_http_state,
+            data_dir: config.server.data_dir.clone(),
             config,
         })
     }
