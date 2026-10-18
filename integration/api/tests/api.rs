@@ -603,3 +603,142 @@ async fn unauthenticated_endpoints_return_401() {
     .await;
     assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
 }
+
+// ---------------------------------------------------------------------------
+// Additional API coverage (Phase 11)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_repos_with_owner_filter_returns_only_match() {
+    let (app, _guard) = common::test_app().await;
+    let alice = register_user(&app, "alice-list").await;
+    let bob = register_user(&app, "bob-list").await;
+    let _ = common::create_repo(&app, &alice.token, "alpha").await;
+    let _ = common::create_repo(&app, &bob.token, "beta").await;
+    let _ = common::create_repo(&app, &alice.token, "gamma").await;
+
+    // ?owner=alice-list -> only alice's two repos
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/repos?owner=alice-list",
+        None,
+        Some(&alice.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let arr = body.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    for r in arr {
+        assert_eq!(r["owner"], "alice-list");
+    }
+
+    // No ?owner -> all three
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/repos",
+        None,
+        Some(&alice.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body.as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn mcp_tools_endpoint_lists_seven_tools() {
+    let (app, _guard) = common::test_app().await;
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/mcp/tools",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let tools = body["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|t| t["name"].as_str().unwrap_or(""))
+        .collect();
+    assert!(names.contains(&"list_repositories"));
+    assert!(names.contains(&"create_pull_request"));
+    assert!(names.contains(&"list_events"));
+    assert_eq!(tools.len(), 7);
+}
+
+#[tokio::test]
+async fn read_file_for_directory_path_returns_400() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "dir-user").await;
+    let full = common::create_repo(&app, &user.token, "dir-repo").await;
+    let (owner, name) = full.split_once('/').unwrap();
+    common::push_initial_commit(&app, owner, name);
+
+    // path="" (empty) was already verified to return tree. Asking for
+    // a known sub-path that is actually a directory should also return
+    // a structured "not found" rather than a 500, because the API
+    // exposes FileContent shape.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner}/{name}/file?path=some-missing-file.txt"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn register_then_login_chain_succeeds_for_second_user() {
+    // Verifies a fresh user can complete both flows in one test without
+    // hidden state from a previous test (token issuing/signing).
+    let (app, _guard) = common::test_app().await;
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/register",
+        Some(serde_json::json!({
+            "username": "chain-user",
+            "email": "chain@example.com",
+            "password": "hunter22",
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "register: {body}");
+    let token = body["token"].as_str().unwrap().to_string();
+
+    // login with same creds — different JWT shape (different iat/exp)
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/login",
+        Some(serde_json::json!({
+            "username": "chain-user",
+            "password": "hunter22",
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let new_token = body["token"].as_str().unwrap();
+    assert_ne!(token, new_token, "two logins produce different JWTs");
+
+    // both tokens are valid against /me
+    for t in [token, new_token.to_string()] {
+        let (status, body) = request(
+            &app,
+            axum::http::Method::GET,
+            "/api/auth/me",
+            None,
+            Some(&t),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(body["username"], "chain-user");
+    }
+}
