@@ -200,13 +200,28 @@ impl GitManager {
 
     /// The default branch (HEAD symbolic ref) of a repository.
     pub fn default_branch(&self, owner: &str, name: &str) -> Result<String> {
+        // Read HEAD directly via git CLI which always honours symbolic-ref.
+        let path = self.repo_path(owner, name);
+        let out = git_cmd()
+            .arg("--git-dir")
+            .arg(&path)
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .output()
+            .map_err(|e| anyhow!("run git symbolic-ref: {e}"))?;
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return Ok(s);
+            }
+        }
+        // Fallback: see what HEAD points at and find the matching branch.
         let repo = self.open(owner, name)?;
-        // Try branch_names() (available in gix 0.89) and pick the one matching HEAD.
         if let Ok(head) = repo.head() {
             if let Ok(head_id) = head.into_peeled_id() {
                 let branch_names = repo.branch_names();
                 for name in branch_names {
-                    let Ok(full) = gix::refs::FullName::try_from(format!("refs/heads/{name}")) else {
+                    let Ok(full) = gix::refs::FullName::try_from(format!("refs/heads/{name}"))
+                    else {
                         continue;
                     };
                     if let Ok(reference) = repo.find_reference(&full) {
@@ -585,5 +600,112 @@ mod tests {
         assert!(file.unwrap().content.contains("Hello"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn repo_path_concatenation() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let p = mgr.repo_path("alice", "widgets");
+        assert_eq!(p, root.join("alice").join("widgets.git"));
+    }
+
+    #[tokio::test]
+    async fn create_repo_then_repo_exists() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        assert!(!mgr.repo_exists("alice", "test"), "fresh repo should not exist");
+        mgr.create_repo("alice", "test", "main").await.unwrap();
+        assert!(mgr.repo_exists("alice", "test"));
+    }
+
+    #[tokio::test]
+    async fn create_repo_duplicate_is_an_error() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        mgr.create_repo("alice", "test", "main").await.unwrap();
+        let err = mgr
+            .create_repo("alice", "test", "main")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("repository already exists"));
+    }
+
+    #[tokio::test]
+    async fn delete_repo_makes_repo_missing() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        mgr.create_repo("alice", "test", "main").await.unwrap();
+        assert!(mgr.repo_exists("alice", "test"));
+        mgr.delete_repo("alice", "test").unwrap();
+        assert!(!mgr.repo_exists("alice", "test"));
+    }
+
+    #[tokio::test]
+    async fn default_branch_reflects_what_we_set() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        mgr.create_repo("alice", "test", "develop").await.unwrap();
+        let head = mgr.default_branch("alice", "test").unwrap();
+        assert_eq!(head, "develop");
+    }
+
+    #[tokio::test]
+    async fn read_file_missing_returns_none() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        mgr.create_repo("alice", "test", "main").await.unwrap();
+        push_initial_commit(&mgr, "alice", "test", &mgr.repo_path("alice", "test"));
+        let res = mgr
+            .read_file("alice", "test", "main", "does-not-exist.txt")
+            .unwrap();
+        assert!(res.is_none(), "missing file should return Ok(None), got {res:?}");
+    }
+
+    #[tokio::test]
+    async fn head_sha_matches_pushed_commit() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let path = mgr.create_repo("alice", "test", "main").await.unwrap();
+        push_initial_commit(&mgr, "alice", "test", &path);
+        let sha = mgr.head_sha("alice", "test", "main").unwrap();
+        assert!(!sha.is_empty(), "head sha should not be empty");
+        // Create a second commit and verify head_sha advances.
+        let work = path.parent().unwrap().join("work2");
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        let run = |args: &[&str]| {
+            let out = git_cmd()
+                .args(args)
+                .current_dir(&work)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "t@e.io")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "t@e.io")
+                .output()
+                .expect("git");
+            assert!(out.status.success());
+        };
+        let bare_url = format!("file://{}", path.display());
+        run(&["clone", "-q", &bare_url, "."]);
+        std::fs::write(work.join("next.md"), "next").unwrap();
+        run(&["add", "next.md"]);
+        run(&["commit", "-q", "-m", "second"]);
+        run(&["push", "-q", "origin", "main"]);
+        let sha2 = mgr.head_sha("alice", "test", "main").unwrap();
+        assert_ne!(sha, sha2, "head_sha must advance after a push");
+    }
+
+    #[test]
+    fn git_available_and_version_helpers() {
+        // These should not panic and should at least identify whether
+        // git is present.
+        let _ = git_available();
+        let v = git_version();
+        if git_available() {
+            assert!(v.contains("git version"));
+        } else {
+            assert_eq!(v, "git not found");
+        }
     }
 }
