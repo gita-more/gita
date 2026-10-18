@@ -122,6 +122,7 @@ mod tests {
             email: "a@b.c".to_string(),
             password_hash: "x".to_string(),
             created_at: Utc::now(),
+            locale: "zh".to_string(),
         };
         let token = auth.sign_jwt(&user).unwrap();
         let claims = auth.verify_jwt(&token).unwrap();
@@ -138,6 +139,7 @@ mod tests {
             email: "y@z.io".to_string(),
             password_hash: "x".to_string(),
             created_at: Utc::now(),
+            locale: "zh".to_string(),
         };
         let token = signer.sign_jwt(&user).unwrap();
         let verifier = Auth::new("secret-B".to_string());

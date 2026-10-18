@@ -1,8 +1,11 @@
 import { type FormEvent, useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
+import { useI18n, useErrorTranslator } from '../i18n'
 
 export function LoginPage({ onDone }: { onDone: () => void }) {
   const { login, register } = useAuth()
+  const { t } = useI18n()
+  const translateError = useErrorTranslator()
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
@@ -22,7 +25,7 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
       }
       onDone()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     } finally {
       setBusy(false)
     }
@@ -52,11 +55,11 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
 
         <form className="auth-form" onSubmit={handleSubmit}>
           <div className="field">
-            <label className="field-label" htmlFor="username">用户名</label>
+            <label className="field-label" htmlFor="username">{t('auth.username')}</label>
             <input
               id="username"
               className="input"
-              placeholder="请输入用户名"
+              placeholder={t('auth.usernamePlaceholder')}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
@@ -66,12 +69,12 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
           </div>
           {mode === 'register' && (
             <div className="field">
-              <label className="field-label" htmlFor="email">邮箱</label>
+              <label className="field-label" htmlFor="email">{t('auth.email')}</label>
               <input
                 id="email"
                 className="input"
                 type="email"
-                placeholder="you@example.com"
+                placeholder={t('auth.emailPlaceholder')}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -80,12 +83,12 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
             </div>
           )}
           <div className="field">
-            <label className="field-label" htmlFor="password">密码</label>
+            <label className="field-label" htmlFor="password">{t('auth.password')}</label>
             <input
               id="password"
               className="input"
               type="password"
-              placeholder="至少 6 位"
+              placeholder={t('auth.passwordPlaceholder')}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -94,14 +97,14 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
             />
           </div>
           <button className="btn btn-primary btn-block" type="submit" disabled={busy}>
-            {busy ? '处理中…' : mode === 'login' ? '登录' : '注册'}
+            {busy ? t('auth.processing') : mode === 'login' ? t('auth.login') : t('auth.register')}
           </button>
         </form>
 
         <div className="auth-switch">
-          {mode === 'login' ? '还没有账号？' : '已有账号？'}
+          {mode === 'login' ? t('auth.switchToRegister') : t('auth.switchToLogin')}
           <button type="button" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
-            {mode === 'login' ? '立即注册' : '去登录'}
+            {mode === 'login' ? t('auth.registerNow') : t('auth.goLogin')}
           </button>
         </div>
       </div>

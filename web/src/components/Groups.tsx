@@ -8,6 +8,7 @@ import {
   type GlobalNavTarget,
 } from './Layout'
 import { PlusIcon, UsersIcon, XIcon } from './Icons'
+import { useI18n, useErrorTranslator } from '../i18n'
 
 export function Groups({
   onOpenGroup,
@@ -18,6 +19,8 @@ export function Groups({
   onNavigate: (target: GlobalNavTarget) => void
   activeTab: GlobalNavTarget
 }) {
+  const { t } = useI18n()
+  const translateError = useErrorTranslator()
   const [groups, setGroups] = useState<Group[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
@@ -30,9 +33,9 @@ export function Groups({
       const list = await api.listGroups()
       setGroups(list)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
-  }, [])
+  }, [translateError])
 
   useEffect(() => {
     void load()
@@ -49,7 +52,7 @@ export function Groups({
       setDescription('')
       onOpenGroup(g.name)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     } finally {
       setBusy(false)
     }
@@ -63,8 +66,8 @@ export function Groups({
     >
       <PageHeader
         icon={<UsersIcon size={18} />}
-        title="Groups"
-        subtitle={`共 ${groups.length} 个组`}
+        title={t('groups.title')}
+        subtitle={t('groups.subtitle', { n: groups.length })}
         actions={
           <button
             className="btn btn-primary"
@@ -72,7 +75,7 @@ export function Groups({
             style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
             {showCreate ? <XIcon size={14} /> : <PlusIcon size={14} />}
-            {showCreate ? '取消' : '新建 Group'}
+            {showCreate ? t('common.cancel') : t('groups.createGroup')}
           </button>
         }
       />
@@ -80,11 +83,11 @@ export function Groups({
       {showCreate && (
         <form className="create-form" onSubmit={handleCreate}>
           <div className="field">
-            <label className="field-label" htmlFor="group-name">组名</label>
+            <label className="field-label" htmlFor="group-name">{t('groups.groupName')}</label>
             <input
               id="group-name"
               className="input"
-              placeholder="如 acme"
+              placeholder={t('groups.groupNamePlaceholder')}
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
@@ -92,21 +95,21 @@ export function Groups({
             />
           </div>
           <div className="field field-full">
-            <label className="field-label" htmlFor="group-desc">描述（可选）</label>
+            <label className="field-label" htmlFor="group-desc">{t('groups.groupDescription')}</label>
             <input
               id="group-desc"
               className="input"
-              placeholder="组描述…"
+              placeholder={t('groups.groupDescriptionPlaceholder')}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>
           <div className="field-actions">
             <button className="btn btn-ghost" type="button" onClick={() => setShowCreate(false)}>
-              取消
+              {t('common.cancel')}
             </button>
             <button className="btn btn-primary" type="submit" disabled={busy}>
-              {busy ? '创建中…' : '创建组'}
+              {busy ? t('common.loading') : t('groups.createGroupTitle')}
             </button>
           </div>
         </form>
@@ -117,12 +120,12 @@ export function Groups({
       {groups.length === 0 ? (
         <EmptyState
           icon={<UsersIcon size={22} />}
-          title="还没有组"
-          description="创建一个组，把多个仓库归在同一 namespace 下。"
+          title={t('groups.emptyTitle')}
+          description={t('groups.emptyDescription')}
           action={
             <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
               <PlusIcon size={14} />
-              新建组
+              {t('groups.createGroupTitle')}
             </button>
           }
         />
@@ -137,7 +140,7 @@ export function Groups({
               </div>
               <div>
                 <div className="repo-card-name">{g.name}</div>
-                <div className="repo-card-desc">{g.description || '暂无描述'}</div>
+                <div className="repo-card-desc">{g.description || t('common.noDescription')}</div>
               </div>
             </button>
           ))}

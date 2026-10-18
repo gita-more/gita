@@ -21,6 +21,7 @@ import {
   XIcon,
   CheckIcon,
 } from './Icons'
+import { useI18n, useErrorTranslator } from '../i18n'
 
 type Tab = 'files' | 'commits' | 'prs' | 'issues'
 
@@ -48,6 +49,8 @@ export function RepoDetail({
   name: string
   onBack: () => void
 }) {
+  const { t } = useI18n()
+  const translateError = useErrorTranslator()
   const [tab, setTab] = useState<Tab>('files')
   const [path, setPath] = useState('')
   const [ref, setRef] = useState('main')
@@ -65,9 +68,9 @@ export function RepoDetail({
       setBranches(bs)
       if (bs.length > 0 && !bs.includes(ref)) setRef(bs[0])
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
-  }, [owner, name, ref])
+  }, [owner, name, ref, translateError])
 
   const loadTree = useCallback(async () => {
     try {
@@ -75,36 +78,36 @@ export function RepoDetail({
       const res = await api.getTree(owner, name, path, ref)
       setTree(res.entries)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
-  }, [owner, name, path, ref])
+  }, [owner, name, path, ref, translateError])
 
   const loadCommits = useCallback(async () => {
     try {
       const res = await api.getCommits(owner, name, ref, 50)
       setCommits(res.commits)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
-  }, [owner, name, ref])
+  }, [owner, name, ref, translateError])
 
   const loadPrs = useCallback(async () => {
     try {
       const res = await api.listPrs(owner, name, 'all')
       setPrs(res.prs)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
-  }, [owner, name])
+  }, [owner, name, translateError])
 
   const loadIssues = useCallback(async () => {
     try {
       const res = await api.listIssues(owner, name, 'all')
       setIssues(res.issues)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
-  }, [owner, name])
+  }, [owner, name, translateError])
 
   useEffect(() => {
     void loadBranches()
@@ -137,7 +140,7 @@ export function RepoDetail({
         const f = await api.getFile(owner, name, entry.path, ref)
         setFile(f)
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+        setError(translateError(err))
       }
     }
   }
@@ -179,9 +182,9 @@ export function RepoDetail({
           <div className="page-actions">
             <button className="btn btn-ghost" onClick={onBack} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <ChevronRightIcon size={14} style={{ transform: 'rotate(180deg)' }} />
-              仓库列表
+              {t('projects.backToList')}
             </button>
-            <select className="select" value={ref} onChange={(e) => setRef(e.target.value)} title="切换分支" style={{ width: 'auto' }}>
+            <select className="select" value={ref} onChange={(e) => setRef(e.target.value)} title={t('projects.defaultBranch')} style={{ width: 'auto' }}>
               {branches.map((b) => (
                 <option key={b} value={b}>{b}</option>
               ))}
@@ -219,6 +222,7 @@ function FilesPanel({
   setFile: (f: FileContent | null) => void
   openEntry: (entry: TreeEntry) => void
 }) {
+  const { t } = useI18n()
   const parts = path.split('/').filter(Boolean)
 
   const crumbParts = ['', ...parts.map((_, idx) => path.split('/').slice(0, idx + 1).join('/'))]
@@ -233,7 +237,7 @@ function FilesPanel({
               {file.path}
             </span>
             <button className="btn btn-ghost btn-sm" onClick={() => setFile(null)}>
-              ← 返回目录
+              ← {t('repo.backToDir')}
             </button>
           </div>
           <pre className="code-block">{file.content}</pre>
@@ -263,7 +267,7 @@ function FilesPanel({
             </div>
           </div>
           {tree.length === 0 ? (
-            <EmptyState icon={<FolderIcon size={22} />} title="目录为空" description="这个目录里还没有文件。" />
+            <EmptyState icon={<FolderIcon size={22} />} title={t('repo.emptyDirTitle')} description={t('repo.emptyDirDescription')} />
           ) : (
             <table className="tree-table">
               <tbody>
@@ -306,18 +310,19 @@ function formatSize(bytes: number): string {
 // ---------------------------------------------------------------------------
 
 function CommitsPanel({ commits }: { commits: Commit[] }) {
+  const { t } = useI18n()
   return (
     <>
       <PageHeader
         icon={<GitCommitIcon size={18} />}
-        title="提交历史"
-        subtitle={`共 ${commits.length} 条提交`}
+        title={t('repo.commitsTitle')}
+        subtitle={t('repo.commitsSubtitle', { n: commits.length })}
       />
       {commits.length === 0 ? (
         <EmptyState
           icon={<GitCommitIcon size={22} />}
-          title="还没有提交"
-          description="通过 git push 推送第一个提交。"
+          title={t('repo.emptyCommitsTitle')}
+          description={t('repo.emptyCommitsDescription')}
         />
       ) : (
         <div className="commit-list">
@@ -357,6 +362,8 @@ function PrPanel({
   prs: PullRequest[]
   onChanged: () => void
 }) {
+  const { t } = useI18n()
+  const translateError = useErrorTranslator()
   const [creating, setCreating] = useState(false)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -376,7 +383,7 @@ function PrPanel({
       setSource('')
       onChanged()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
   }
 
@@ -387,7 +394,7 @@ function PrPanel({
       const res = await api.getPr(owner, name, pr.number)
       setDetail(res.pr)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
   }
 
@@ -400,7 +407,7 @@ function PrPanel({
       setSelected(null)
       onChanged()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
   }
 
@@ -413,7 +420,7 @@ function PrPanel({
       setSelected(null)
       onChanged()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
   }
 
@@ -432,12 +439,15 @@ function PrPanel({
     <>
       <PageHeader
         icon={<GitPullRequestIcon size={18} />}
-        title="合并请求"
-        subtitle={`${prs.filter((p) => p.status === 'open').length} 个打开 · ${prs.filter((p) => p.status === 'merged').length} 个已合并`}
+        title={t('repo.prsTitle')}
+        subtitle={t('repo.prsSubtitle', {
+          open: prs.filter((p) => p.status === 'open').length,
+          merged: prs.filter((p) => p.status === 'merged').length,
+        })}
         actions={
           <button className="btn btn-primary" onClick={() => setCreating((v) => !v)}>
             {creating ? <XIcon size={14} /> : <PlusIcon size={14} />}
-            {creating ? '取消' : '新建 PR'}
+            {creating ? t('common.cancel') : t('repo.createPr')}
           </button>
         }
       />
@@ -445,24 +455,24 @@ function PrPanel({
       {creating && (
         <div className="create-form">
           <div className="field field-full">
-            <label className="field-label" htmlFor="pr-title">标题</label>
-            <input id="pr-title" className="input" placeholder="PR 标题" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <label className="field-label" htmlFor="pr-title">{t('repo.prTitle')}</label>
+            <input id="pr-title" className="input" placeholder={t('repo.prTitlePlaceholder')} value={title} onChange={(e) => setTitle(e.target.value)} />
           </div>
           <div className="field field-full">
-            <label className="field-label" htmlFor="pr-body">描述</label>
-            <textarea id="pr-body" className="textarea" placeholder="描述这个 PR 做了什么…" value={body} onChange={(e) => setBody(e.target.value)} />
+            <label className="field-label" htmlFor="pr-body">{t('repo.prBody')}</label>
+            <textarea id="pr-body" className="textarea" placeholder={t('repo.prBodyPlaceholder')} value={body} onChange={(e) => setBody(e.target.value)} />
           </div>
           <div className="field">
-            <label className="field-label" htmlFor="pr-source">源分支</label>
-            <input id="pr-source" className="input" placeholder="feature/xxx" value={source} onChange={(e) => setSource(e.target.value)} />
+            <label className="field-label" htmlFor="pr-source">{t('repo.sourceBranch')}</label>
+            <input id="pr-source" className="input" placeholder={t('repo.sourceBranchPlaceholder')} value={source} onChange={(e) => setSource(e.target.value)} />
           </div>
           <div className="field">
-            <label className="field-label" htmlFor="pr-target">目标分支</label>
-            <input id="pr-target" className="input" placeholder="main" value={target} onChange={(e) => setTarget(e.target.value)} />
+            <label className="field-label" htmlFor="pr-target">{t('repo.targetBranch')}</label>
+            <input id="pr-target" className="input" placeholder={t('repo.targetBranchPlaceholder')} value={target} onChange={(e) => setTarget(e.target.value)} />
           </div>
           <div className="field-actions">
-            <button className="btn btn-ghost" onClick={() => setCreating(false)}>取消</button>
-            <button className="btn btn-primary" onClick={() => void createPr()}>创建 PR</button>
+            <button className="btn btn-ghost" onClick={() => setCreating(false)}>{t('common.cancel')}</button>
+            <button className="btn btn-primary" onClick={() => void createPr()}>{t('repo.createPrSubmit')}</button>
           </div>
         </div>
       )}
@@ -472,8 +482,8 @@ function PrPanel({
       {prs.length === 0 ? (
         <EmptyState
           icon={<GitPullRequestIcon size={22} />}
-          title="还没有合并请求"
-          description="创建 PR 来发起代码合并。"
+          title={t('repo.emptyPrsTitle')}
+          description={t('repo.emptyPrsDescription')}
         />
       ) : (
         <div className="row-list">
@@ -486,7 +496,7 @@ function PrPanel({
                 <div className="row-title">{pr.title}</div>
                 <div className="row-meta">
                   <span className="row-number">#{pr.number}</span>
-                  <span>由 {pr.author} 提交</span>
+                  <span>{t('repo.prAuthor', { name: pr.author })}</span>
                   <span>{pr.source_branch} → {pr.target_branch}</span>
                 </div>
               </div>
@@ -510,6 +520,7 @@ function PrDetail({
   onMerge: () => void
   onClose: () => void
 }) {
+  const { t } = useI18n()
   return (
     <>
       <div className="pr-detail-header">
@@ -519,11 +530,11 @@ function PrDetail({
           <StatusLabel status={pr.status} />
         </div>
         <div className="page-actions">
-          <button className="btn btn-ghost" onClick={onBack}>返回列表</button>
+          <button className="btn btn-ghost" onClick={onBack}>{t('repo.backToList')}</button>
           {pr.status === 'open' && (
             <>
-              <button className="btn btn-primary" onClick={onMerge}>合并</button>
-              <button className="btn btn-danger" onClick={onClose}>关闭</button>
+              <button className="btn btn-primary" onClick={onMerge}>{t('repo.merge')}</button>
+              <button className="btn btn-danger" onClick={onClose}>{t('repo.close')}</button>
             </>
           )}
         </div>
@@ -531,24 +542,24 @@ function PrDetail({
 
       <div className="pr-meta-grid">
         <div className="pr-meta-item">
-          <span className="label">作者</span>
+          <span className="label">{t('repo.author')}</span>
           <span className="value">{pr.author}</span>
         </div>
         <div className="pr-meta-item">
-          <span className="label">源分支</span>
+          <span className="label">{t('repo.sourceBranch')}</span>
           <span className="value">{pr.source_branch}</span>
         </div>
         <div className="pr-meta-item">
-          <span className="label">目标分支</span>
+          <span className="label">{t('repo.targetBranch')}</span>
           <span className="value">{pr.target_branch}</span>
         </div>
         <div className="pr-meta-item">
-          <span className="label">创建时间</span>
+          <span className="label">{t('repo.createdTime')}</span>
           <span className="value">{new Date(pr.created_at).toLocaleString()}</span>
         </div>
       </div>
 
-      <p className="pr-body">{pr.body || '（无描述）'}</p>
+      <p className="pr-body">{pr.body || t('repo.noBody')}</p>
     </>
   )
 }
@@ -568,6 +579,8 @@ function IssuePanel({
   issues: Issue[]
   onChanged: () => void
 }) {
+  const { t } = useI18n()
+  const translateError = useErrorTranslator()
   const [creating, setCreating] = useState(false)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -582,7 +595,7 @@ function IssuePanel({
       setBody('')
       onChanged()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
   }
 
@@ -592,7 +605,7 @@ function IssuePanel({
       await api.closeIssue(owner, name, number)
       onChanged()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
   }
 
@@ -600,12 +613,15 @@ function IssuePanel({
     <>
       <PageHeader
         icon={<CircleDotIcon size={18} />}
-        title="Issues"
-        subtitle={`${issues.filter((i) => i.status === 'open').length} 个打开 · ${issues.filter((i) => i.status === 'closed').length} 个已关闭`}
+        title={t('repo.issuesTitle')}
+        subtitle={t('repo.issuesSubtitle', {
+          open: issues.filter((i) => i.status === 'open').length,
+          closed: issues.filter((i) => i.status === 'closed').length,
+        })}
         actions={
           <button className="btn btn-primary" onClick={() => setCreating((v) => !v)}>
             {creating ? <XIcon size={14} /> : <PlusIcon size={14} />}
-            {creating ? '取消' : '新建 Issue'}
+            {creating ? t('common.cancel') : t('repo.createIssue')}
           </button>
         }
       />
@@ -613,16 +629,16 @@ function IssuePanel({
       {creating && (
         <div className="create-form">
           <div className="field field-full">
-            <label className="field-label" htmlFor="issue-title">标题</label>
-            <input id="issue-title" className="input" placeholder="Issue 标题" value={title} onChange={(e) => setTitle(e.target.value)} />
+            <label className="field-label" htmlFor="issue-title">{t('repo.issueTitle')}</label>
+            <input id="issue-title" className="input" placeholder={t('repo.issueTitlePlaceholder')} value={title} onChange={(e) => setTitle(e.target.value)} />
           </div>
           <div className="field field-full">
-            <label className="field-label" htmlFor="issue-body">描述</label>
-            <textarea id="issue-body" className="textarea" placeholder="描述问题或需求…" value={body} onChange={(e) => setBody(e.target.value)} />
+            <label className="field-label" htmlFor="issue-body">{t('repo.issueBody')}</label>
+            <textarea id="issue-body" className="textarea" placeholder={t('repo.issueBodyPlaceholder')} value={body} onChange={(e) => setBody(e.target.value)} />
           </div>
           <div className="field-actions">
-            <button className="btn btn-ghost" onClick={() => setCreating(false)}>取消</button>
-            <button className="btn btn-primary" onClick={() => void createIssue()}>创建 Issue</button>
+            <button className="btn btn-ghost" onClick={() => setCreating(false)}>{t('common.cancel')}</button>
+            <button className="btn btn-primary" onClick={() => void createIssue()}>{t('repo.createIssueSubmit')}</button>
           </div>
         </div>
       )}
@@ -632,8 +648,8 @@ function IssuePanel({
       {issues.length === 0 ? (
         <EmptyState
           icon={<CircleDotIcon size={22} />}
-          title="还没有 Issue"
-          description="创建一个 Issue 来跟踪问题或功能需求。"
+          title={t('repo.emptyIssuesTitle')}
+          description={t('repo.emptyIssuesDescription')}
         />
       ) : (
         <div className="row-list">
@@ -646,14 +662,14 @@ function IssuePanel({
                 <div className="row-title">{issue.title}</div>
                 <div className="row-meta">
                   <span className="row-number">#{issue.number}</span>
-                  <span>由 {issue.author} 提交</span>
+                  <span>{t('repo.prAuthor', { name: issue.author })}</span>
                 </div>
               </div>
               <StatusLabel status={issue.status} />
               {issue.status === 'open' && (
                 <div className="row-actions">
                   <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); void closeIssue(issue.number) }}>
-                    关闭
+                    {t('repo.close')}
                   </button>
                 </div>
               )}

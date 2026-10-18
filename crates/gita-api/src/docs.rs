@@ -441,7 +441,8 @@ pub const OPENAPI_JSON: &str = r##"{
         "properties": {
           "id": { "type": "integer" },
           "username": { "type": "string" },
-          "email": { "type": "string" }
+          "email": { "type": "string" },
+          "locale": { "type": "string", "enum": ["zh", "en"] }
         }
       },
       "CreateRepoRequest": {

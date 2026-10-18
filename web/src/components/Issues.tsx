@@ -9,6 +9,7 @@ import {
   type GlobalNavTarget,
 } from './Layout'
 import { CircleDotIcon, FolderIcon } from './Icons'
+import { useI18n, useErrorTranslator } from '../i18n'
 
 export function Issues({
   onOpenRepo,
@@ -19,6 +20,8 @@ export function Issues({
   onNavigate: (target: GlobalNavTarget) => void
   activeTab: GlobalNavTarget
 }) {
+  const { t } = useI18n()
+  const translateError = useErrorTranslator()
   const [issues, setIssues] = useState<GlobalIssueItem[]>([])
   const [error, setError] = useState('')
 
@@ -27,9 +30,9 @@ export function Issues({
       const res = await api.listGlobalIssues('all', 50)
       setIssues(res.issues)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
-  }, [])
+  }, [translateError])
 
   useEffect(() => {
     void load()
@@ -43,8 +46,8 @@ export function Issues({
     >
       <PageHeader
         icon={<FolderIcon size={18} />}
-        title="Issues"
-        subtitle={`共 ${issues.length} 个 issue`}
+        title={t('issues.title')}
+        subtitle={t('issues.subtitle', { n: issues.length })}
       />
 
       {error && <Alert type="error">{error}</Alert>}
@@ -52,8 +55,8 @@ export function Issues({
       {issues.length === 0 ? (
         <EmptyState
           icon={<FolderIcon size={22} />}
-          title="还没有 Issue"
-          description="所有仓库的 Issue 都会显示在这里。"
+          title={t('issues.emptyTitle')}
+          description={t('issues.emptyDescription')}
         />
       ) : (
         <div className="row-list">
@@ -76,7 +79,7 @@ export function Issues({
                   <span>
                     {it.full_name} #{it.number}
                   </span>
-                  <span>by {it.author}</span>
+                  <span>{t('issues.by')} {it.author}</span>
                 </div>
               </div>
               <StatusLabel status={it.status} />

@@ -15,6 +15,7 @@ import {
   XIcon,
 } from './Icons'
 import { useAuth } from '../hooks/useAuth'
+import { useI18n } from '../i18n'
 
 export type NavTarget =
   | 'home'
@@ -26,18 +27,18 @@ export type NavTarget =
 /** Top-level navigation targets shown on the global (home) sidebar. */
 export type GlobalNavTarget = 'projects' | 'groups' | 'issues'
 
-const GLOBAL_NAV: { key: GlobalNavTarget; label: string; icon: typeof HomeIcon }[] = [
-  { key: 'projects', label: 'Projects', icon: BookIcon },
-  { key: 'groups', label: 'Groups', icon: UsersIcon },
-  { key: 'issues', label: 'Issues', icon: CircleDotIcon },
+const GLOBAL_NAV: { key: GlobalNavTarget; labelKey: string; icon: typeof HomeIcon }[] = [
+  { key: 'projects', labelKey: 'nav.projects', icon: BookIcon },
+  { key: 'groups', labelKey: 'nav.groups', icon: UsersIcon },
+  { key: 'issues', labelKey: 'nav.issuesGlobal', icon: CircleDotIcon },
 ]
 
-const SIDEBAR_NAV: { key: NavTarget; label: string; icon: typeof HomeIcon; countKey?: 'prs' | 'issues' }[] = [
-  { key: 'home', label: '仓库', icon: HomeIcon },
-  { key: 'files', label: '代码', icon: BookIcon },
-  { key: 'commits', label: '提交', icon: GitCommitIcon },
-  { key: 'prs', label: '合并请求', icon: GitPullRequestIcon, countKey: 'prs' },
-  { key: 'issues', label: 'Issue', icon: CircleDotIcon, countKey: 'issues' },
+const SIDEBAR_NAV: { key: NavTarget; labelKey: string; icon: typeof HomeIcon; countKey?: 'prs' | 'issues' }[] = [
+  { key: 'home', labelKey: 'nav.home', icon: HomeIcon },
+  { key: 'files', labelKey: 'nav.files', icon: BookIcon },
+  { key: 'commits', labelKey: 'nav.commits', icon: GitCommitIcon },
+  { key: 'prs', labelKey: 'nav.prs', icon: GitPullRequestIcon, countKey: 'prs' },
+  { key: 'issues', labelKey: 'nav.issues', icon: CircleDotIcon, countKey: 'issues' },
 ]
 
 export function Brand({ compact = false }: { compact?: boolean }) {
@@ -61,6 +62,7 @@ function Avatar({ username }: { username: string }) {
 }
 
 function UserMenu({ user, onClose }: { user: { username: string; email: string } | null; onClose: () => void }) {
+  const { t } = useI18n()
   const handleLogout = () => {
     onClose()
     // 这里使用 setTimeout 让菜单先关闭，再执行登出
@@ -71,26 +73,26 @@ function UserMenu({ user, onClose }: { user: { username: string; email: string }
   }
 
   return (
-    <div className="user-menu" role="menu" aria-label="用户菜单">
+    <div className="user-menu" role="menu" aria-label={t('common.userMenu')}>
       <div className="user-menu-header">
         <Avatar username={user?.username ?? 'U'} />
         <div className="user-menu-info">
-          <span className="user-menu-name">{user?.username ?? '未登录'}</span>
+          <span className="user-menu-name">{user?.username ?? t('common.notLoggedIn')}</span>
           <span className="user-menu-email">{user?.email ?? ''}</span>
         </div>
       </div>
       <hr className="user-menu-divider" />
       <ul className="user-menu-list">
         <li>
-          <button className="user-menu-item" onClick={() => { onClose(); window.location.href = '/settings' }}>
+          <button className="user-menu-item" onClick={() => { onClose(); onOpenSettings() }}>
             <SettingsIcon size={16} />
-            <span>设置</span>
+            <span>{t('common.settings')}</span>
           </button>
         </li>
         <li>
           <button className="user-menu-item" onClick={handleLogout}>
             <PersonIcon size={16} />
-            <span>退出登录</span>
+            <span>{t('common.logout')}</span>
           </button>
         </li>
       </ul>
@@ -124,6 +126,7 @@ export function Topbar({
   sidebarOpen?: boolean
 }) {
   const { user, logout } = useAuth()
+  const { t } = useI18n()
   const [showUserMenu, setShowUserMenu] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
 
@@ -154,8 +157,8 @@ export function Topbar({
           <button
             className="sidebar-toggle"
             onClick={onToggleSidebar}
-            title="切换菜单"
-            aria-label="切换菜单"
+            title={t('common.toggleMenu')}
+            aria-label={t('common.toggleMenu')}
             aria-expanded={sidebarOpen}
           >
             {sidebarOpen ? <XIcon size={16} /> : <MenuIcon size={16} />}
@@ -169,7 +172,7 @@ export function Topbar({
             <li className="breadcrumb-item">
               <a href="#" onClick={(e) => { e.preventDefault(); onNavigateHome() }}>
                 <HomeIcon size={14} />
-                <span>仓库</span>
+                <span>{t('nav.home')}</span>
               </a>
             </li>
             <li className="breadcrumb-sep" aria-hidden="true">/</li>
@@ -187,7 +190,7 @@ export function Topbar({
       {/* Search placeholder */}
       <div className="search-box" role="search">
         <SearchIcon size={14} />
-        <span>搜索</span>
+        <span>{t('common.search')}</span>
         <kbd>/</kbd>
       </div>
       <div className="topbar-actions">
@@ -196,8 +199,8 @@ export function Topbar({
           <button
             className="topbar-user-btn"
             onClick={(e) => { e.stopPropagation(); setShowUserMenu(!showUserMenu); }}
-            title="用户菜单"
-            aria-label="用户菜单"
+            title={t('common.userMenu')}
+            aria-label={t('common.userMenu')}
             aria-expanded={showUserMenu}
             aria-haspopup="true"
           >
@@ -220,6 +223,16 @@ function onNavigateHome() {
   if (_onNavigateHome) _onNavigateHome()
 }
 
+// Helper used by the user menu "Settings" item — opens the settings page.
+// Implemented via a module-level callback registered by App.
+let _onOpenSettings: (() => void) | null = null
+export function setOpenSettings(fn: (() => void) | null) {
+  _onOpenSettings = fn
+}
+function onOpenSettings() {
+  if (_onOpenSettings) _onOpenSettings()
+}
+
 export type SidebarVariant = 'global' | 'repo'
 
 export function Sidebar({
@@ -237,9 +250,10 @@ export function Sidebar({
   onGlobalNavigate?: (target: GlobalNavTarget) => void
   counts?: Partial<Record<'prs' | 'issues', number>>
 }) {
+  const { t } = useI18n()
   return (
     <aside className="sidebar">
-      <nav className="sidebar-nav" aria-label="主导航">
+      <nav className="sidebar-nav" aria-label={t('common.mainNav')}>
         {variant === 'global' &&
           GLOBAL_NAV.map((item) => {
             const Icon = item.icon
@@ -249,10 +263,10 @@ export function Sidebar({
                 key={item.key}
                 className={`sidebar-link${isActive ? ' active' : ''}`}
                 onClick={() => onGlobalNavigate?.(item.key)}
-                title={item.label}
+                title={t(item.labelKey)}
               >
                 <Icon size={16} />
-                <span>{item.label}</span>
+                <span>{t(item.labelKey)}</span>
               </button>
             )
           })}
@@ -265,10 +279,10 @@ export function Sidebar({
                 key={item.key}
                 className={`sidebar-link${isActive ? ' active' : ''}`}
                 onClick={() => onNavigate?.(item.key)}
-                title={item.label}
+                title={t(item.labelKey)}
               >
                 <Icon size={16} />
-                <span>{item.label}</span>
+                <span>{t(item.labelKey)}</span>
                 {item.countKey && counts?.[item.countKey] != null && counts[item.countKey]! > 0 && (
                   <span className="count">{counts[item.countKey]}</span>
                 )}

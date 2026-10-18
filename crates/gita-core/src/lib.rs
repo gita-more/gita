@@ -17,6 +17,8 @@ pub struct User {
     /// Argon2 hash of the password (never the plain text).
     pub password_hash: String,
     pub created_at: DateTime<Utc>,
+    /// UI language preference ("zh" | "en").
+    pub locale: String,
 }
 
 /// A group (namespace) that can own repositories.
@@ -229,6 +231,7 @@ mod tests {
             email: "alice@example.com".to_string(),
             password_hash: "hash".to_string(),
             created_at: Utc::now(),
+            locale: "zh".to_string(),
         }
     }
 

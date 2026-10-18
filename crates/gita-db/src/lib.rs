@@ -186,16 +186,28 @@ impl Db {
         email: &str,
         password_hash: &str,
     ) -> Result<User> {
+        self.create_user_with_locale(username, email, password_hash, "zh")
+            .await
+    }
+
+    pub async fn create_user_with_locale(
+        &self,
+        username: &str,
+        email: &str,
+        password_hash: &str,
+        locale: &str,
+    ) -> Result<User> {
         let created_at = Utc::now().to_rfc3339();
         let row = sqlx::query(
-            "INSERT INTO users (username, email, password_hash, created_at)
-             VALUES ($1, $2, $3, $4)
+            "INSERT INTO users (username, email, password_hash, created_at, locale)
+             VALUES ($1, $2, $3, $4, $5)
              RETURNING id",
         )
         .bind(username)
         .bind(email)
         .bind(password_hash)
         .bind(&created_at)
+        .bind(locale)
         .fetch_one(&self.pool)
         .await?;
         let id: i64 = row.try_get("id").unwrap_or(0);
@@ -207,12 +219,28 @@ impl Db {
             created_at: DateTime::parse_from_rfc3339(&created_at)
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
+            locale: locale.to_string(),
         })
+    }
+
+    pub async fn update_user_locale(&self, user_id: i64, locale: &str) -> Result<Option<User>> {
+        let rows = sqlx::query(
+            "UPDATE users SET locale = $2 WHERE id = $1
+             RETURNING id, username, email, password_hash, created_at, locale",
+        )
+        .bind(user_id)
+        .bind(locale)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(row_to_user(&rows[0])?))
     }
 
     pub async fn get_user_by_id(&self, id: i64) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, email, password_hash, created_at FROM users WHERE id = $1",
+            "SELECT id, username, email, password_hash, created_at, locale FROM users WHERE id = $1",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -225,7 +253,7 @@ impl Db {
 
     pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, email, password_hash, created_at FROM users WHERE username = $1",
+            "SELECT id, username, email, password_hash, created_at, locale FROM users WHERE username = $1",
         )
         .bind(username)
         .fetch_all(&self.pool)
@@ -238,7 +266,7 @@ impl Db {
 
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, email, password_hash, created_at FROM users WHERE email = $1",
+            "SELECT id, username, email, password_hash, created_at, locale FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_all(&self.pool)
@@ -250,7 +278,7 @@ impl Db {
     }
 
     pub async fn list_users(&self, limit: usize) -> Result<Vec<User>> {
-        let rows = sqlx::query("SELECT id, username, email, password_hash, created_at FROM users ORDER BY id DESC LIMIT $1")
+        let rows = sqlx::query("SELECT id, username, email, password_hash, created_at, locale FROM users ORDER BY id DESC LIMIT $1")
             .bind(limit as i64)
             .fetch_all(&self.pool)
             .await?;
@@ -268,6 +296,7 @@ fn row_to_user(row: &PgRow) -> Result<User> {
         created_at: DateTime::parse_from_rfc3339(&created_at)
             .map(|d| d.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
+        locale: row.try_get("locale")?,
     })
 }
 
@@ -846,7 +875,7 @@ impl Db {
 
     pub async fn get_user_by_token(&self, token: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT u.id, u.username, u.email, u.password_hash, u.created_at
+            "SELECT u.id, u.username, u.email, u.password_hash, u.created_at, u.locale
              FROM access_tokens t JOIN users u ON u.id = t.user_id
              WHERE t.token = $1",
         )
@@ -1182,9 +1211,21 @@ mod tests {
             .await
             .unwrap();
         assert!(u.id > 0);
+        assert_eq!(u.locale, "zh", "default locale should be zh");
         let fetched = db.get_user_by_username("alice").await.unwrap().unwrap();
         assert_eq!(fetched.id, u.id);
+        assert_eq!(fetched.locale, "zh");
         assert_eq!(db.get_user_by_username("nobody").await.unwrap(), None);
+
+        // Update locale and verify it persists.
+        let updated = db
+            .update_user_locale(u.id, "en")
+            .await
+            .unwrap()
+            .expect("user exists");
+        assert_eq!(updated.locale, "en");
+        let fetched2 = db.get_user_by_username("alice").await.unwrap().unwrap();
+        assert_eq!(fetched2.locale, "en");
         drop_test_db(&db).await;
     }
 

@@ -8,6 +8,7 @@ import {
   StatusLabel,
 } from './Layout'
 import { BookIcon, FolderIcon, UsersIcon } from './Icons'
+import { useI18n, useErrorTranslator } from '../i18n'
 
 function repoStatus(repo: Repository): 'open' | 'merged' | 'closed' {
   return repo.is_private ? 'merged' : 'open'
@@ -22,6 +23,8 @@ export function GroupDetail({
   onBack: () => void
   onOpenRepo: (owner: string, name: string) => void
 }) {
+  const { t } = useI18n()
+  const translateError = useErrorTranslator()
   const [groupInfo, setGroupInfo] = useState<Group | null>(null)
   const [repos, setRepos] = useState<Repository[]>([])
   const [error, setError] = useState('')
@@ -32,9 +35,9 @@ export function GroupDetail({
       setGroupInfo(res.group)
       setRepos(res.repos)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(translateError(err))
     }
-  }, [group])
+  }, [group, translateError])
 
   useEffect(() => {
     void load()
@@ -52,7 +55,7 @@ export function GroupDetail({
       <PageHeader
         icon={<UsersIcon size={18} />}
         title={groupInfo?.name ?? group}
-        subtitle={groupInfo?.description || '组的详情页'}
+        subtitle={groupInfo?.description || t('groups.detailSubtitle')}
       />
 
       {error && <Alert type="error">{error}</Alert>}
@@ -60,8 +63,8 @@ export function GroupDetail({
       {repos.length === 0 ? (
         <EmptyState
           icon={<FolderIcon size={22} />}
-          title="组里还没有项目"
-          description="在组下创建项目后会显示在这里。"
+          title={t('groups.emptyReposTitle')}
+          description={t('groups.emptyReposDescription')}
         />
       ) : (
         <div className="repo-grid">
@@ -79,11 +82,11 @@ export function GroupDetail({
               </div>
               <div>
                 <div className="repo-card-name">{repo.full_name}</div>
-                <div className="repo-card-desc">{repo.description || '暂无描述'}</div>
+                <div className="repo-card-desc">{repo.description || t('common.noDescription')}</div>
               </div>
               <div className="repo-card-meta">
                 <span className="meta-item">{repo.default_branch}</span>
-                <span className="meta-item">{repo.is_private ? '私有' : '公开'}</span>
+                <span className="meta-item">{repo.is_private ? t('projects.private') : t('projects.public')}</span>
               </div>
             </button>
           ))}

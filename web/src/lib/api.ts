@@ -4,6 +4,8 @@ export interface User {
   id: number
   username: string
   email: string
+  /** UI language preference ("zh" | "en"). */
+  locale: string
 }
 
 export interface Repository {
@@ -108,6 +110,18 @@ export function getToken() {
   return token
 }
 
+export class ApiError extends Error {
+  /** The raw error message returned by the server (English). */
+  serverMessage: string
+  status: number
+
+  constructor(message: string, serverMessage: string, status: number) {
+    super(message)
+    this.serverMessage = serverMessage
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -116,13 +130,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...options, headers })
   if (!res.ok) {
     let message = `HTTP ${res.status}`
+    let serverMessage = message
+    let status = res.status
     try {
       const body = await res.json()
-      if (body?.error?.message) message = body.error.message
+      if (body?.error?.message) {
+        message = body.error.message
+        serverMessage = body.error.message
+        status = body.error.status ?? res.status
+      }
     } catch {
       // ignore parse errors
     }
-    throw new Error(message)
+    throw new ApiError(message, serverMessage, status)
   }
   return res.json() as Promise<T>
 }
@@ -140,6 +160,11 @@ export const api = {
       body: JSON.stringify({ username, password }),
     }),
   me: () => request<User>('/api/auth/me'),
+  updateLocale: (locale: string) =>
+    request<User>('/api/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify({ locale }),
+    }),
 
   // repos
   listRepos: (owner?: string) =>

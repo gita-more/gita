@@ -16,6 +16,9 @@ pub struct RegisterRequest {
     pub username: String,
     pub email: String,
     pub password: String,
+    /// Optional UI language preference ("zh" | "en"); defaults to "zh".
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -29,6 +32,7 @@ pub struct PublicUser {
     pub id: i64,
     pub username: String,
     pub email: String,
+    pub locale: String,
 }
 
 impl From<gita_core::User> for PublicUser {
@@ -37,8 +41,14 @@ impl From<gita_core::User> for PublicUser {
             id: u.id,
             username: u.username,
             email: u.email,
+            locale: u.locale,
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateLocaleRequest {
+    pub locale: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,7 +74,7 @@ pub fn auth_routes() -> Router<AppState> {
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
         .route("/api/auth/tokens", post(create_token).get(list_tokens))
-        .route("/api/auth/me", axum::routing::get(me))
+        .route("/api/auth/me", axum::routing::get(me).patch(update_me))
 }
 
 async fn register(
@@ -91,10 +101,16 @@ async fn register(
         return Err(ApiError::Conflict("email already registered".into()));
     }
 
+    // Validate locale if provided (default "zh").
+    let locale = req.locale.as_deref().unwrap_or("zh");
+    if locale != "zh" && locale != "en" {
+        return Err(ApiError::BadRequest("invalid locale".into()));
+    }
+
     let hash = Auth::hash_password(&req.password)?;
     let user = state
         .db
-        .create_user(&username, &email, &hash)
+        .create_user_with_locale(&username, &email, &hash, locale)
         .await?;
     let token = state.auth.sign_jwt(&user)?;
 
@@ -173,6 +189,23 @@ async fn me(State(state): State<AppState>, user: AuthUserExtractor) -> ApiResult
     let db_user = state
         .db
         .get_user_by_id(user.id)
+        .await?
+        .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    Ok(Json(PublicUser::from(db_user)))
+}
+
+async fn update_me(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Json(req): Json<UpdateLocaleRequest>,
+) -> ApiResult<Json<PublicUser>> {
+    let locale = req.locale.trim().to_string();
+    if locale != "zh" && locale != "en" {
+        return Err(ApiError::BadRequest("invalid locale".into()));
+    }
+    let db_user = state
+        .db
+        .update_user_locale(user.id, &locale)
         .await?
         .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
     Ok(Json(PublicUser::from(db_user)))

@@ -36,6 +36,7 @@ async fn register_then_login_then_me() {
     assert_eq!(status, axum::http::StatusCode::OK, "register: {body}");
     let token = body["token"].as_str().unwrap().to_string();
     assert_eq!(body["user"]["username"], "alice");
+    assert_eq!(body["user"]["locale"], "zh", "default locale should be zh");
 
     // duplicate username -> 409
     let (status, _) = request(
@@ -78,6 +79,30 @@ async fn register_then_login_then_me() {
     .await;
     assert_eq!(status, axum::http::StatusCode::OK, "me: {body}");
     assert_eq!(body["username"], "alice");
+    assert_eq!(body["locale"], "zh");
+
+    // PATCH locale -> en, then me reflects it
+    let (status, body) = request(
+        &app,
+        axum::http::Method::PATCH,
+        "/api/auth/me",
+        Some(serde_json::json!({ "locale": "en" })),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "patch locale: {body}");
+    assert_eq!(body["locale"], "en");
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/auth/me",
+        None,
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "me after patch: {body}");
+    assert_eq!(body["locale"], "en");
 }
 
 #[tokio::test]

@@ -1615,3 +1615,59 @@ select {
     grid-column: auto;
   }
 }
+
+/* ============================ Settings page ============================ */
+
+.settings-section {
+  margin-top: 16px;
+  padding: 16px;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.settings-section h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-default);
+}
+
+.settings-section p {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.settings-locale-options {
+  display: flex;
+  gap: 24px;
+}
+
+.settings-locale-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  color: var(--fg-default);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.settings-locale-options label:hover {
+  background: var(--bg-hover);
+}
+
+.settings-locale-options label.selected {
+  border-color: var(--accent-emphasis);
+  background: var(--accent-subtle);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.settings-locale-options input[type='radio'] {
+  accent-color: var(--accent-emphasis);
+}
