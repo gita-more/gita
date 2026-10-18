@@ -522,9 +522,27 @@ pub fn git_version() -> String {
 mod tests {
     use super::*;
 
+    /// Create a fresh, unique temp root per test invocation.
+    ///
+    /// `cargo test` runs tests concurrently by default, and the tests below
+    /// all create repositories at the same relative path (e.g. `alice/test.git`).
+    /// If they shared a single root directory they would race each other:
+    /// one test's `create_repo` would see a directory half-created by another
+    /// test and fail with `File exists (os error 17)` from gix::init_bare.
+    /// Returning a unique directory per call isolates every test.
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gita-git-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "gita-git-test-{}-{}-{}",
+            std::process::id(),
+            nanos,
+            COUNTER.fetch_add(1, Ordering::Relaxed),
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
