@@ -142,4 +142,54 @@ mod tests {
         let html = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(html.contains("Gita"));
     }
+
+    #[tokio::test]
+    async fn path_traversal_is_blocked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<!DOCTYPE html><html><body>Hello dist</body></html>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("assets/app.js"), "console.log('x')").unwrap();
+
+        let app = web_router(Some(dir.path().to_path_buf()));
+
+        // Attempt to escape the dist directory via path traversal.
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri("/../Cargo.toml").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        // ServeDir normalizes/denies traversal; should not be a 200 that
+        // leaks file content.
+        assert_ne!(
+            res.status(),
+            axum::http::StatusCode::OK,
+            "path traversal must not return file contents"
+        );
+        // A well-formed deep request still works.
+        let res = app
+            .oneshot(Request::builder().uri("/assets/app.js").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn missing_static_file_returns_404() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<!DOCTYPE html><html><body>Hi</body></html>",
+        )
+        .unwrap();
+        let app = web_router(Some(dir.path().to_path_buf()));
+        let res = app
+            .oneshot(Request::builder().uri("/nope.png").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
+    }
 }
