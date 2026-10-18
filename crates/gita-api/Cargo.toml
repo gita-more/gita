@@ -1,5 +1,6 @@
 [package]
 name = "gita-api"
+description = "REST API for Gita: registration, login, repos, commits, PR/issue endpoints, AI event stream"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,5 +1,6 @@
 [package]
 name = "gita-db"
+description = "PostgreSQL data access layer for Gita; ships sqlx migrations for schema versioning"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

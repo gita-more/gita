@@ -1,5 +1,6 @@
 [package]
 name = "gita-core"
+description = "Domain models for Gita: users, repositories, commits, pull requests, issues, and the AI-readable event stream"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

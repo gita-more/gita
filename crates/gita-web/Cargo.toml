@@ -1,5 +1,6 @@
 [package]
 name = "gita-web"
+description = "Static-file serving for the React frontend built into web/dist; embeds a fallback landing page when the bundle is missing"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

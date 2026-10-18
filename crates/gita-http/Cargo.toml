@@ -1,5 +1,6 @@
 [package]
 name = "gita-http"
+description = "Smart-HTTP git protocol endpoint for Gita: serves /git/<owner>/<repo>.git via git http-backend"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

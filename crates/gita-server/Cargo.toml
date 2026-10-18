@@ -1,5 +1,6 @@
 [package]
 name = "gita-server"
+description = "Gita server binary: glues gita-db, gita-git, gita-events, gita-api, gita-http, and gita-web behind a single axum router"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

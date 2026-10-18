@@ -1,5 +1,6 @@
 [package]
 name = "gita-git"
+description = "Bare git repository management for Gita: create/push/branch/tree/commit/file via gix plus the git CLI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
