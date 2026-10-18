@@ -1,4 +1,5 @@
 import { useState, type ReactNode, useRef, useEffect } from 'react'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangleIcon,
   BookIcon,
@@ -34,7 +35,6 @@ const GLOBAL_NAV: { key: GlobalNavTarget; labelKey: string; icon: typeof HomeIco
 ]
 
 const SIDEBAR_NAV: { key: NavTarget; labelKey: string; icon: typeof HomeIcon; countKey?: 'prs' | 'issues' }[] = [
-  { key: 'home', labelKey: 'nav.home', icon: HomeIcon },
   { key: 'files', labelKey: 'nav.files', icon: BookIcon },
   { key: 'commits', labelKey: 'nav.commits', icon: GitCommitIcon },
   { key: 'prs', labelKey: 'nav.prs', icon: GitPullRequestIcon, countKey: 'prs' },
@@ -43,7 +43,7 @@ const SIDEBAR_NAV: { key: NavTarget; labelKey: string; icon: typeof HomeIcon; co
 
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
-    <a className="brand" href="#" onClick={(e) => { e.preventDefault(); onNavigateHome() }}>
+    <Link className="brand" to="/">
       <span className="brand-mark">
         <svg width={compact ? 20 : 18} height={compact ? 20 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M6 3v12" />
@@ -53,7 +53,7 @@ export function Brand({ compact = false }: { compact?: boolean }) {
         </svg>
       </span>
       <span>Gita</span>
-    </a>
+    </Link>
   )
 }
 
@@ -63,13 +63,12 @@ function Avatar({ username }: { username: string }) {
 
 function UserMenu({ user, onClose }: { user: { username: string; email: string } | null; onClose: () => void }) {
   const { t } = useI18n()
+  const navigate = useNavigate()
+  const { logout } = useAuth()
   const handleLogout = () => {
+    logout()
     onClose()
-    // 这里使用 setTimeout 让菜单先关闭，再执行登出
-    setTimeout(() => {
-      const event = new CustomEvent('gita:logout')
-      window.dispatchEvent(event)
-    }, 0)
+    navigate('/login', { replace: true })
   }
 
   return (
@@ -84,10 +83,10 @@ function UserMenu({ user, onClose }: { user: { username: string; email: string }
       <hr className="user-menu-divider" />
       <ul className="user-menu-list">
         <li>
-          <button className="user-menu-item" onClick={() => { onClose(); onOpenSettings() }}>
+          <Link className="user-menu-item" to="/settings" onClick={onClose}>
             <SettingsIcon size={16} />
             <span>{t('common.settings')}</span>
-          </button>
+          </Link>
         </li>
         <li>
           <button className="user-menu-item" onClick={handleLogout}>
@@ -170,10 +169,10 @@ export function Topbar({
         <nav className="breadcrumbs" aria-label="Breadcrumb">
           <ol className="breadcrumb-list">
             <li className="breadcrumb-item">
-              <a href="#" onClick={(e) => { e.preventDefault(); onNavigateHome() }}>
+              <Link to="/">
                 <HomeIcon size={14} />
                 <span>{t('nav.home')}</span>
-              </a>
+              </Link>
             </li>
             <li className="breadcrumb-sep" aria-hidden="true">/</li>
             <li className="breadcrumb-item">
@@ -213,56 +212,55 @@ export function Topbar({
   )
 }
 
-// Helper used by Topbar breadcrumbs — navigates back to repo list.
-// Implemented via a module-level callback set by AppLayout.
-let _onNavigateHome: (() => void) | null = null
-export function setNavigateHome(fn: (() => void) | null) {
-  _onNavigateHome = fn
-}
-function onNavigateHome() {
-  if (_onNavigateHome) _onNavigateHome()
-}
-
-// Helper used by the user menu "Settings" item — opens the settings page.
-// Implemented via a module-level callback registered by App.
-let _onOpenSettings: (() => void) | null = null
-export function setOpenSettings(fn: (() => void) | null) {
-  _onOpenSettings = fn
-}
-function onOpenSettings() {
-  if (_onOpenSettings) _onOpenSettings()
-}
-
 export type SidebarVariant = 'global' | 'repo'
 
 export function Sidebar({
   variant,
   active,
-  onNavigate,
   globalActive,
   onGlobalNavigate,
   counts,
 }: {
   variant: SidebarVariant
   active?: NavTarget
-  onNavigate?: (target: NavTarget) => void
   globalActive?: GlobalNavTarget
   onGlobalNavigate?: (target: GlobalNavTarget) => void
   counts?: Partial<Record<'prs' | 'issues', number>>
 }) {
   const { t } = useI18n()
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+
+  // For the global sidebar, prefer the URL pathname over the deprecated
+  // globalActive/onGlobalNavigate props (kept for backwards compatibility).
+  const activeKey = (() => {
+    if (variant !== 'global') return null
+    const p = location.pathname
+    if (p === '/' ) return 'projects'
+    if (p.startsWith('/groups')) return 'groups'
+    if (p.startsWith('/issues')) return 'issues'
+    return globalActive ?? null
+  })()
+
   return (
     <aside className="sidebar">
       <nav className="sidebar-nav" aria-label={t('common.mainNav')}>
         {variant === 'global' &&
           GLOBAL_NAV.map((item) => {
             const Icon = item.icon
-            const isActive = globalActive === item.key
+            const isActive = activeKey === item.key
+            const handleClick = item.key === 'projects'
+              ? () => navigate('/')
+              : () => {
+                  onGlobalNavigate?.(item.key)
+                  navigate(item.key === 'groups' ? '/groups' : '/issues')
+                }
             return (
               <button
                 key={item.key}
                 className={`sidebar-link${isActive ? ' active' : ''}`}
-                onClick={() => onGlobalNavigate?.(item.key)}
+                onClick={handleClick}
                 title={t(item.labelKey)}
               >
                 <Icon size={16} />
@@ -273,12 +271,26 @@ export function Sidebar({
         {variant === 'repo' &&
           SIDEBAR_NAV.map((item) => {
             const Icon = item.icon
+            // Use ?tab= as the repo source-of-truth (RepoDetail reads it via
+            // useSearchParams). Sidebar reads the current value to highlight.
+            const currentTab = searchParams.get('tab') || 'files'
             const isActive = active === item.key
+              ? true
+              : (item.key === 'files' && currentTab === 'files') ||
+                (item.key === 'commits' && currentTab === 'commits') ||
+                (item.key === 'prs' && currentTab === 'prs') ||
+                (item.key === 'issues' && currentTab === 'issues')
             return (
               <button
                 key={item.key}
                 className={`sidebar-link${isActive ? ' active' : ''}`}
-                onClick={() => onNavigate?.(item.key)}
+                onClick={() => {
+                  // Repo tabs are owned by the URL (?tab=...); use the
+                  // absolute pathname to be robust against relative-search
+                  // resolution differences and replace so switching tabs
+                  // doesn't pollute history.
+                  navigate(`${location.pathname}?tab=${item.key}`, { replace: true })
+                }}
                 title={t(item.labelKey)}
               >
                 <Icon size={16} />
@@ -297,7 +309,6 @@ export function Sidebar({
 export function AppLayout({
   variant = 'repo',
   active,
-  onNavigate,
   globalActive,
   onGlobalNavigate,
   repo,
@@ -306,7 +317,6 @@ export function AppLayout({
 }: {
   variant?: SidebarVariant
   active?: NavTarget
-  onNavigate?: (target: NavTarget) => void
   globalActive?: GlobalNavTarget
   onGlobalNavigate?: (target: GlobalNavTarget) => void
   repo?: { owner: string; name: string }
@@ -326,18 +336,10 @@ export function AppLayout({
     }
   }
 
-  const handleNavigate = (target: NavTarget) => {
-    setSidebarOpen(false)
-    onNavigate?.(target)
-  }
-
   const handleGlobalNavigate = (target: GlobalNavTarget) => {
     setSidebarOpen(false)
     onGlobalNavigate?.(target)
   }
-
-  // 注册"返回全局首页"回调，供顶栏面包屑使用
-  setNavigateHome(() => onGlobalNavigate?.('projects'))
 
   return (
     <>
@@ -352,7 +354,6 @@ export function AppLayout({
           <Sidebar
             variant={variant}
             active={active}
-            onNavigate={handleNavigate}
             globalActive={globalActive}
             onGlobalNavigate={handleGlobalNavigate}
             counts={counts}

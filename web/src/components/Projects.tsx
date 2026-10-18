@@ -1,12 +1,11 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, type Repository } from '../lib/api'
 import {
-  AppLayout,
   PageHeader,
   Alert,
   EmptyState,
   StatusLabel,
-  type GlobalNavTarget,
 } from './Layout'
 import {
   BookIcon,
@@ -23,15 +22,14 @@ function repoStatus(repo: Repository): 'open' | 'merged' | 'closed' {
 
 export function Projects({
   onOpenRepo,
-  onNavigate,
-  activeTab,
 }: {
-  onOpenRepo: (owner: string, name: string) => void
-  onNavigate: (target: GlobalNavTarget) => void
-  activeTab: GlobalNavTarget
+  onOpenRepo?: (owner: string, name: string) => void
 }) {
   const { t } = useI18n()
   const translateError = useErrorTranslator()
+  const navigate = useNavigate()
+  const openRepo = (owner: string, name: string) =>
+    onOpenRepo ? onOpenRepo(owner, name) : navigate(`/${owner}/${name}`)
   const [repos, setRepos] = useState<Repository[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
@@ -63,7 +61,7 @@ export function Projects({
       setName('')
       setDescription('')
       setBranch('main')
-      onOpenRepo(repo.owner, repo.name)
+      openRepo(repo.owner, repo.name)
     } catch (err) {
       setError(translateError(err))
     } finally {
@@ -72,11 +70,7 @@ export function Projects({
   }
 
   return (
-    <AppLayout
-      variant="global"
-      globalActive={activeTab}
-      onGlobalNavigate={onNavigate}
-    >
+    <>
       <PageHeader
         icon={<FolderIcon size={18} />}
         title={t('projects.title')}
@@ -155,7 +149,7 @@ export function Projects({
       ) : (
         <div className="repo-grid">
           {repos.map((repo) => (
-            <button key={repo.id} className="repo-card" onClick={() => onOpenRepo(repo.owner, repo.name)}>
+            <button key={repo.id} className="repo-card" onClick={() => openRepo(repo.owner, repo.name)}>
               <div className="repo-card-top">
                 <span className="repo-card-icon">
                   <BookIcon size={18} />
@@ -179,6 +173,6 @@ export function Projects({
           ))}
         </div>
       )}
-    </AppLayout>
+    </>
   )
 }

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, type Group, type Repository } from '../lib/api'
 import {
-  AppLayout,
   PageHeader,
   Alert,
   EmptyState,
@@ -16,11 +15,9 @@ function repoStatus(repo: Repository): 'open' | 'merged' | 'closed' {
 
 export function GroupDetail({
   group,
-  onBack,
   onOpenRepo,
 }: {
   group: string
-  onBack: () => void
   onOpenRepo: (owner: string, name: string) => void
 }) {
   const { t } = useI18n()
@@ -44,14 +41,7 @@ export function GroupDetail({
   }, [load])
 
   return (
-    <AppLayout
-      variant="repo"
-      active="home"
-      onNavigate={(target) => {
-        if (target === 'home') onBack()
-      }}
-      repo={{ owner: group, name: '' }}
-    >
+    <>
       <PageHeader
         icon={<UsersIcon size={18} />}
         title={groupInfo?.name ?? group}
@@ -92,6 +82,6 @@ export function GroupDetail({
           ))}
         </div>
       )}
-    </AppLayout>
+    </>
   )
 }

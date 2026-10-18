@@ -1,27 +1,25 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, type GlobalIssueItem } from '../lib/api'
 import {
-  AppLayout,
   PageHeader,
   Alert,
   EmptyState,
   StatusLabel,
-  type GlobalNavTarget,
 } from './Layout'
 import { CircleDotIcon, FolderIcon } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
 
 export function Issues({
   onOpenRepo,
-  onNavigate,
-  activeTab,
 }: {
-  onOpenRepo: (owner: string, name: string) => void
-  onNavigate: (target: GlobalNavTarget) => void
-  activeTab: GlobalNavTarget
+  onOpenRepo?: (owner: string, name: string) => void
 }) {
   const { t } = useI18n()
   const translateError = useErrorTranslator()
+  const navigate = useNavigate()
+  const openRepo = (owner: string, name: string) =>
+    onOpenRepo ? onOpenRepo(owner, name) : navigate(`/${owner}/${name}`)
   const [issues, setIssues] = useState<GlobalIssueItem[]>([])
   const [error, setError] = useState('')
 
@@ -39,11 +37,7 @@ export function Issues({
   }, [load])
 
   return (
-    <AppLayout
-      variant="global"
-      globalActive={activeTab}
-      onGlobalNavigate={onNavigate}
-    >
+    <>
       <PageHeader
         icon={<FolderIcon size={18} />}
         title={t('issues.title')}
@@ -64,7 +58,7 @@ export function Issues({
             <button
               key={it.id}
               className="row-item"
-              onClick={() => onOpenRepo(it.repo_owner, it.repo_name)}
+              onClick={() => openRepo(it.repo_owner, it.repo_name)}
             >
               <span
                 className={`row-icon ${
@@ -87,6 +81,6 @@ export function Issues({
           ))}
         </div>
       )}
-    </AppLayout>
+    </>
   )
 }

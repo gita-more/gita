@@ -1,26 +1,24 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, type Group } from '../lib/api'
 import {
-  AppLayout,
   PageHeader,
   Alert,
   EmptyState,
-  type GlobalNavTarget,
 } from './Layout'
 import { PlusIcon, UsersIcon, XIcon } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
 
 export function Groups({
   onOpenGroup,
-  onNavigate,
-  activeTab,
 }: {
-  onOpenGroup: (group: string) => void
-  onNavigate: (target: GlobalNavTarget) => void
-  activeTab: GlobalNavTarget
+  onOpenGroup?: (group: string) => void
 }) {
   const { t } = useI18n()
   const translateError = useErrorTranslator()
+  const navigate = useNavigate()
+  const openGroup = (g: string) =>
+    onOpenGroup ? onOpenGroup(g) : navigate(`/groups/${g}`)
   const [groups, setGroups] = useState<Group[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
@@ -50,7 +48,7 @@ export function Groups({
       setShowCreate(false)
       setName('')
       setDescription('')
-      onOpenGroup(g.name)
+      openGroup(g.name)
     } catch (err) {
       setError(translateError(err))
     } finally {
@@ -59,11 +57,7 @@ export function Groups({
   }
 
   return (
-    <AppLayout
-      variant="global"
-      globalActive={activeTab}
-      onGlobalNavigate={onNavigate}
-    >
+    <>
       <PageHeader
         icon={<UsersIcon size={18} />}
         title={t('groups.title')}
@@ -132,7 +126,7 @@ export function Groups({
       ) : (
         <div className="repo-grid">
           {groups.map((g) => (
-            <button key={g.id} className="repo-card" onClick={() => onOpenGroup(g.name)}>
+            <button key={g.id} className="repo-card" onClick={() => openGroup(g.name)}>
               <div className="repo-card-top">
                 <span className="repo-card-icon">
                   <UsersIcon size={18} />
@@ -146,6 +140,6 @@ export function Groups({
           ))}
         </div>
       )}
-    </AppLayout>
+    </>
   )
 }

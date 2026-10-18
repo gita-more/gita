@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   api,
   type Commit,
@@ -7,7 +8,7 @@ import {
   type Issue,
   type TreeEntry,
 } from '../lib/api'
-import { AppLayout, PageHeader, Alert, EmptyState, StatusLabel, type NavTarget } from './Layout'
+import { PageHeader, Alert, EmptyState, StatusLabel } from './Layout'
 import {
   BookIcon,
   FolderIcon,
@@ -24,21 +25,7 @@ import {
 import { useI18n, useErrorTranslator } from '../i18n'
 
 type Tab = 'files' | 'commits' | 'prs' | 'issues'
-
-const NAV_TO_TAB: Record<NavTarget, Tab | null> = {
-  home: null,
-  files: 'files',
-  commits: 'commits',
-  prs: 'prs',
-  issues: 'issues',
-}
-
-const TAB_TO_NAV: Record<Tab, NavTarget> = {
-  files: 'files',
-  commits: 'commits',
-  prs: 'prs',
-  issues: 'issues',
-}
+const VALID_TABS: Tab[] = ['files', 'commits', 'prs', 'issues']
 
 export function RepoDetail({
   owner,
@@ -51,7 +38,17 @@ export function RepoDetail({
 }) {
   const { t } = useI18n()
   const translateError = useErrorTranslator()
-  const [tab, setTab] = useState<Tab>('files')
+  // Tab is owned by the URL: ?tab=files|commits|prs|issues. Default "files".
+  // The Sidebar writes ?tab=<key> with replace=true; RepoDetail reads it back.
+  const [searchParams] = useSearchParams()
+  const tabFromUrl = searchParams.get('tab')
+  const tab: Tab = (VALID_TABS as string[]).includes(tabFromUrl ?? '')
+    ? (tabFromUrl as Tab)
+    : 'files'
+  // When the tab changes, ensure the file preview is cleared if we land on files.
+  // (Mounted on tab transition rather than via a setter; URL is the source of truth.)
+  void tab
+
   const [path, setPath] = useState('')
   const [ref, setRef] = useState('main')
   const [branches, setBranches] = useState<string[]>([])
@@ -145,31 +142,8 @@ export function RepoDetail({
     }
   }
 
-  const handleNavigate = (target: NavTarget) => {
-    if (target === 'home') {
-      onBack()
-      return
-    }
-    const t = NAV_TO_TAB[target]
-    if (t) {
-      // When navigating to files from a file view, clear the file so the
-      // directory listing is shown again.
-      if (t === 'files') {
-        setFile(null)
-      }
-      setTab(t)
-    }
-  }
-
-  const navRepo = { owner, name }
-
   return (
-    <AppLayout
-      active={TAB_TO_NAV[tab]}
-      onNavigate={handleNavigate}
-      repo={navRepo}
-      counts={{ prs: prs.filter((p) => p.status === 'open').length, issues: issues.filter((i) => i.status === 'open').length }}
-    >
+    <>
       <PageHeader
         icon={<BookIcon size={18} />}
         title={
@@ -199,7 +173,7 @@ export function RepoDetail({
       {tab === 'commits' && <CommitsPanel commits={commits} />}
       {tab === 'prs' && <PrPanel owner={owner} name={name} prs={prs} onChanged={() => void loadPrs()} />}
       {tab === 'issues' && <IssuePanel owner={owner} name={name} issues={issues} onChanged={() => void loadIssues()} />}
-    </AppLayout>
+    </>
   )
 }
 

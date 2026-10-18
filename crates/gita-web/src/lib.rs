@@ -12,39 +12,51 @@ use std::fs;
 use std::path::PathBuf;
 use tower_http::services::ServeDir;
 
-/// Serves static files from `web/dist` and falls back to a landing page.
+/// Serves static files from `web/dist` with SPA fallback. Falls back to a
+/// landing page when the frontend hasn't been built yet.
 pub fn web_router(dist_dir: Option<PathBuf>) -> Router {
     if let Some(dist) = dist_dir {
         if dist.join("index.html").exists() {
-            // Serve the built frontend. Use ServeDir with precompressed support
-            // and explicit index.html for root path.
+            let index_path = dist.join("index.html");
+            // SPA mode: use ServeDir with a fallback that rewrites 404s for
+            // HTML routes to index.html so client-side routes (e.g.
+            // /groups, /:owner/:repo) work on direct navigation and page
+            // refresh. Static assets fall through ServeDir normally;
+            // non-HTML 404s still get a real 404.
             let serve_dir = ServeDir::new(&dist)
                 .append_index_html_on_directories(true)
                 .precompressed_gzip()
                 .precompressed_br()
                 .precompressed_deflate()
-                .precompressed_zstd();
-
-            return Router::new()
-                .route("/", get(move || async move {
-                    let index_path = dist.join("index.html");
-                    match fs::read_to_string(&index_path) {
-                        Ok(html) => Html(html).into_response(),
-                        Err(_) => (
-                            StatusCode::NOT_FOUND,
-                            "index.html not found",
-                        ).into_response(),
+                .precompressed_zstd()
+                .fallback(get(move |uri: axum::extract::OriginalUri| {
+                    let index_path = index_path.clone();
+                    async move {
+                        let path = uri.0.path();
+                        let looks_like_route = path
+                            .split('?')
+                            .next()
+                            .map(|p| !p.contains('.') || p.ends_with(".html"))
+                            .unwrap_or(false);
+                        if !looks_like_route {
+                            return (
+                                StatusCode::NOT_FOUND,
+                                "not found",
+                            )
+                                .into_response();
+                        }
+                        match fs::read_to_string(&index_path) {
+                            Ok(html) => Html(html).into_response(),
+                            Err(_) => (
+                                StatusCode::NOT_FOUND,
+                                "index.html not found",
+                            )
+                                .into_response(),
+                        }
                     }
-                }))
-                .fallback_service(
-                    get_service(serve_dir).handle_error(|_| async {
-                        (
-                            StatusCode::NOT_FOUND,
-                            "not found",
-                        )
-                            .into_response()
-                    }),
-                );
+                }));
+
+            return Router::new().fallback_service(get_service(serve_dir));
         }
     }
 
@@ -191,5 +203,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    /// SPA fallback: a path with no extension gets rewritten to index.html.
+    #[tokio::test]
+    async fn spa_fallback_serves_index_html_for_html_routes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<!DOCTYPE html><html><body>SPA Index</body></html>",
+        )
+        .unwrap();
+        let app = web_router(Some(dir.path().to_path_buf()));
+
+        // /groups has no static file and no extension → SPA fallback.
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri("/groups").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(html.contains("SPA Index"));
+
+        // /owner/repo also works.
+        let res = app
+            .oneshot(Request::builder().uri("/owner/repo").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(html.contains("SPA Index"));
     }
 }

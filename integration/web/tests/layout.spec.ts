@@ -48,7 +48,7 @@ async function ensureTestRepo(page: Page) {
 // 侧边栏布局测试
 // ---------------------------------------------------------------------------
 test.describe('侧边栏布局', () => {
-  test('顶栏包含品牌、折叠按钮、搜索框；侧边栏主导航齐全', async ({ page }) => {
+  test('顶栏包含品牌、折叠按钮、搜索框；侧边栏显示全局导航', async ({ page }) => {
     await loginViaApi(page)
     await page.goto('/')
 
@@ -58,9 +58,10 @@ test.describe('侧边栏布局', () => {
     await expect(page.locator('.brand')).toBeVisible()
     await expect(page.locator('.search-box')).toBeVisible()
 
-    // 侧边栏主导航项
+    // 全局视图侧边栏主导航：Projects / Groups / Issues。
+    // （仓库/代码/提交/合并请求/Issue 是仓库详情页的侧边栏，由下一个测试覆盖。）
     await expect(page.locator('.sidebar')).toBeVisible()
-    for (const label of ['仓库', '代码', '提交', '合并请求', 'Issue']) {
+    for (const label of ['Projects', 'Groups', 'Issues']) {
       await expect(page.locator('.sidebar-link', { hasText: label }).first()).toBeVisible()
     }
   })

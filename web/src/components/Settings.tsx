@@ -1,10 +1,12 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useI18n } from '../i18n'
-import { AppLayout, PageHeader, Alert } from './Layout'
+import { PageHeader, Alert } from './Layout'
 import { SettingsIcon } from './Icons'
 
-export function Settings({ onBack }: { onBack: () => void }) {
+export function Settings() {
   const { locale, setLocale, t } = useI18n()
+  const navigate = useNavigate()
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('')
 
@@ -20,11 +22,7 @@ export function Settings({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <AppLayout
-      variant="global"
-      globalActive="projects"
-      onGlobalNavigate={() => onBack()}
-    >
+    <>
       <PageHeader
         icon={<SettingsIcon size={18} />}
         title={t('settings.title')}
@@ -55,7 +53,12 @@ export function Settings({ onBack }: { onBack: () => void }) {
             {t('settings.english')}
           </label>
         </div>
+        <div style={{ marginTop: 16 }}>
+          <button className="btn btn-ghost" onClick={() => navigate('/')}>
+            {t('common.back')}
+          </button>
+        </div>
       </div>
-    </AppLayout>
+    </>
   )
 }
