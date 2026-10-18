@@ -9,6 +9,10 @@ export default defineConfig({
   testDir: './tests',
   timeout: 30_000,
   fullyParallel: false,
+  // Serial execution: tests share the same running gita-server and can
+  // create repos/users that later tests rely on; parallel files would
+  // race on repo visibility.
+  workers: 1,
   retries: 0,
   reporter: [['list']],
   use: {

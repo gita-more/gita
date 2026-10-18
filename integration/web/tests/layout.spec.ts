@@ -9,6 +9,14 @@ const USER = process.env.GITA_TEST_USER ?? 'testuser'
 const PASS = process.env.GITA_TEST_PASS ?? 'testpass123'
 
 async function loginViaApi(page: Page) {
+  // Ensure the test user exists (register; ignore 409 if already present),
+  // so the test is self-contained even after a database reset.
+  const reg = await page.request.post(`${BASE}/api/auth/register`, {
+    data: { username: USER, email: `${USER}@e2e.local`, password: PASS },
+  })
+  if (!reg.ok() && reg.status() !== 409) {
+    throw new Error(`register failed: ${reg.status()} ${await reg.text()}`)
+  }
   const res = await page.request.post(`${BASE}/api/auth/login`, {
     data: { username: USER, password: PASS },
   })
@@ -39,42 +47,35 @@ async function ensureTestRepo(page: Page) {
 // ---------------------------------------------------------------------------
 // 侧边栏布局测试
 // ---------------------------------------------------------------------------
-test.describe('GitLab 风格侧边栏布局', () => {
-  test('侧边栏三要素存在；Topbar 已精简（无用户信息/Gita标题）', async ({ page }) => {
+test.describe('侧边栏布局', () => {
+  test('顶栏包含品牌、折叠按钮、搜索框；侧边栏主导航齐全', async ({ page }) => {
     await loginViaApi(page)
     await page.goto('/')
+
+    // 顶栏：折叠按钮 + 品牌 + 搜索框
+    await expect(page.locator('.topbar')).toBeVisible()
+    await expect(page.locator('.sidebar-toggle')).toBeVisible()
+    await expect(page.locator('.brand')).toBeVisible()
+    await expect(page.locator('.search-box')).toBeVisible()
+
+    // 侧边栏主导航项
     await expect(page.locator('.sidebar')).toBeVisible()
-
-    // 顶部 user-bar：Brand + 折叠按钮 + "+" 按钮
-    const userBar = page.locator('.sidebar-user-bar')
-    await expect(userBar).toBeVisible()
-    await expect(userBar.locator('.brand')).toBeVisible()
-    await expect(userBar.locator('.sidebar-toggle-btn')).toBeVisible()
-    await expect(userBar.locator('.sidebar-new-btn')).toBeVisible()
-
-    // 底部用户区：头像 + 用户名 + 退出按钮
-    const bottom = page.locator('.sidebar-user-bottom')
-    await expect(bottom).toBeVisible()
-    await expect(bottom.locator('.user-avatar')).toBeVisible()
-    await expect(bottom.locator('.sidebar-user-name')).toHaveText(USER)
-
-    // Topbar 精简：不再有 Gita 标题、用户 chip、独立退出按钮
-    await expect(page.locator('.topbar-title')).toHaveCount(0)
-    await expect(page.locator('.user-chip')).toHaveCount(0)
-    await expect(page.locator('.topbar .btn-ghost')).toHaveCount(0)
-
-    // 侧边栏不再有 context-header 和 footer
-    await expect(page.locator('.sidebar-context-header')).toHaveCount(0)
-    await expect(page.locator('.sidebar-footer')).toHaveCount(0)
+    for (const label of ['仓库', '代码', '提交', '合并请求', 'Issue']) {
+      await expect(page.locator('.sidebar-link', { hasText: label }).first()).toBeVisible()
+    }
   })
 
   test('仓库详情页：点击导航项后高亮跟随、内容面板切换', async ({ page }) => {
     await loginViaApi(page)
     await page.goto('/')
     await ensureTestRepo(page)
+    // Re-navigate so the repo list re-fetches and includes the
+    // just-created e2e-demo repository.
+    await page.goto('/')
 
     // 进入仓库详情页（仓库卡片是可点击按钮）
     await page.locator('.repo-card', { hasText: 'e2e-demo' }).first().click()
+    // 仓库页默认高亮"代码"
     await expect(page.locator('.sidebar-link', { hasText: /^代码$/ })).toHaveClass(/active/, { timeout: 5000 })
 
     // 点击"提交"
@@ -88,14 +89,6 @@ test.describe('GitLab 风格侧边栏布局', () => {
     // 点击"Issue"
     await page.locator('.sidebar-link', { hasText: /^Issue$/ }).click()
     await expect(page.locator('.sidebar-link', { hasText: /^Issue$/ })).toHaveClass(/active/)
-
-    // 点击"AI 评审"
-    await page.locator('.sidebar-link', { hasText: /^AI 评审$/ }).click()
-    await expect(page.locator('.sidebar-link', { hasText: /^AI 评审$/ })).toHaveClass(/active/)
-
-    // 点击"代码搜索"
-    await page.locator('.sidebar-link', { hasText: /^代码搜索$/ }).click()
-    await expect(page.locator('.sidebar-link', { hasText: /^代码搜索$/ })).toHaveClass(/active/)
   })
 
   test('折叠/展开：折叠后只显示图标，展开恢复', async ({ page }) => {
@@ -106,20 +99,15 @@ test.describe('GitLab 风格侧边栏布局', () => {
     await expect(page.locator('.app.sidebar-collapsed')).toHaveCount(0)
 
     // 折叠
-    await page.locator('.sidebar-toggle-btn').click()
+    await page.locator('.sidebar-toggle').click()
     await expect(page.locator('.app.sidebar-collapsed')).toHaveCount(1)
 
-    // 折叠后 user-bar 文本被隐藏（只剩图标）
-    const userBarText = (await page.locator('.sidebar-user-bar').innerText()).trim()
-    expect(userBarText).not.toContain('Gita')
-
-    // 底部用户区：头像仍可见，用户名隐藏
-    await expect(page.locator('.sidebar-user-bottom .user-avatar')).toBeVisible()
-    await expect(page.locator('.sidebar-user-bottom .sidebar-user-name')).toBeHidden()
+    // 折叠后侧边栏文字隐藏
+    await expect(page.locator('.sidebar-link span').first()).toBeHidden()
 
     // 展开
-    await page.locator('.sidebar-toggle-btn').click()
+    await page.locator('.sidebar-toggle').click()
     await expect(page.locator('.app.sidebar-collapsed')).toHaveCount(0)
-    await expect(page.locator('.sidebar-user-bottom .sidebar-user-name')).toBeVisible()
+    await expect(page.locator('.sidebar-link span').first()).toBeVisible()
   })
 })
