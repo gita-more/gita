@@ -66,6 +66,31 @@ export interface Issue {
   created_at: string
 }
 
+export interface Group {
+  id: number
+  name: string
+  description: string
+  owner_id: number
+  created_at: string
+}
+
+/** Issue item as returned by the global /api/issues feed. */
+export interface GlobalIssueItem {
+  id: number
+  number: number
+  title: string
+  body: string
+  status: 'open' | 'closed'
+  author: string
+  /** Owner of the repository this issue belongs to (e.g. "acme" or a username). */
+  repo_owner: string
+  /** Repository name. */
+  repo_name: string
+  /** "owner/name" convenience field. */
+  full_name: string
+  created_at: string
+}
+
 export interface EventItem {
   id: number
   event_type: string
@@ -182,6 +207,33 @@ export const api = {
   closeIssue: (owner: string, name: string, number: number) =>
     request<{ message: string }>(`/api/repos/${owner}/${name}/issues/${number}/close`, {
       method: 'POST',
+    }),
+
+  // global
+  listGlobalIssues: (status?: 'open' | 'closed' | 'all', limit = 50) =>
+    request<{ issues: GlobalIssueItem[] }>(
+      `/api/issues${status ? `?status=${status}` : ''}&limit=${limit}`,
+    ),
+
+  // groups
+  listGroups: () => request<Group[]>('/api/groups'),
+  createGroup: (name: string, description: string) =>
+    request<Group>('/api/groups', {
+      method: 'POST',
+      body: JSON.stringify({ name, description }),
+    }),
+  getGroup: (name: string) =>
+    request<{ group: Group; repos: Repository[] }>(`/api/groups/${encodeURIComponent(name)}`),
+  createGroupRepo: (
+    group: string,
+    name: string,
+    description: string,
+    is_private: boolean,
+    default_branch: string,
+  ) =>
+    request<Repository>(`/api/groups/${encodeURIComponent(group)}/repos`, {
+      method: 'POST',
+      body: JSON.stringify({ name, description, is_private, default_branch }),
     }),
 
   // events

@@ -11,6 +11,7 @@ import {
   RefreshIcon,
   SettingsIcon,
   ShieldAlertIcon,
+  UsersIcon,
   XIcon,
 } from './Icons'
 import { useAuth } from '../hooks/useAuth'
@@ -21,6 +22,15 @@ export type NavTarget =
   | 'commits'
   | 'prs'
   | 'issues'
+
+/** Top-level navigation targets shown on the global (home) sidebar. */
+export type GlobalNavTarget = 'projects' | 'groups' | 'issues'
+
+const GLOBAL_NAV: { key: GlobalNavTarget; label: string; icon: typeof HomeIcon }[] = [
+  { key: 'projects', label: 'Projects', icon: BookIcon },
+  { key: 'groups', label: 'Groups', icon: UsersIcon },
+  { key: 'issues', label: 'Issues', icon: CircleDotIcon },
+]
 
 const SIDEBAR_NAV: { key: NavTarget; label: string; icon: typeof HomeIcon; countKey?: 'prs' | 'issues' }[] = [
   { key: 'home', label: '仓库', icon: HomeIcon },
@@ -210,50 +220,81 @@ function onNavigateHome() {
   if (_onNavigateHome) _onNavigateHome()
 }
 
+export type SidebarVariant = 'global' | 'repo'
+
 export function Sidebar({
+  variant,
   active,
   onNavigate,
+  globalActive,
+  onGlobalNavigate,
   counts,
 }: {
-  active: NavTarget
-  onNavigate: (target: NavTarget) => void
+  variant: SidebarVariant
+  active?: NavTarget
+  onNavigate?: (target: NavTarget) => void
+  globalActive?: GlobalNavTarget
+  onGlobalNavigate?: (target: GlobalNavTarget) => void
   counts?: Partial<Record<'prs' | 'issues', number>>
 }) {
   return (
     <aside className="sidebar">
       <nav className="sidebar-nav" aria-label="主导航">
-        {SIDEBAR_NAV.map((item) => {
-          const Icon = item.icon
-          const isActive = active === item.key
-          return (
-            <button
-              key={item.key}
-              className={`sidebar-link${isActive ? ' active' : ''}`}
-              onClick={() => onNavigate(item.key)}
-              title={item.label}
-            >
-              <Icon size={16} />
-              <span>{item.label}</span>
-              {item.countKey && counts?.[item.countKey] != null && counts[item.countKey]! > 0 && (
-                <span className="count">{counts[item.countKey]}</span>
-              )}
-            </button>
-          )
-        })}
+        {variant === 'global' &&
+          GLOBAL_NAV.map((item) => {
+            const Icon = item.icon
+            const isActive = globalActive === item.key
+            return (
+              <button
+                key={item.key}
+                className={`sidebar-link${isActive ? ' active' : ''}`}
+                onClick={() => onGlobalNavigate?.(item.key)}
+                title={item.label}
+              >
+                <Icon size={16} />
+                <span>{item.label}</span>
+              </button>
+            )
+          })}
+        {variant === 'repo' &&
+          SIDEBAR_NAV.map((item) => {
+            const Icon = item.icon
+            const isActive = active === item.key
+            return (
+              <button
+                key={item.key}
+                className={`sidebar-link${isActive ? ' active' : ''}`}
+                onClick={() => onNavigate?.(item.key)}
+                title={item.label}
+              >
+                <Icon size={16} />
+                <span>{item.label}</span>
+                {item.countKey && counts?.[item.countKey] != null && counts[item.countKey]! > 0 && (
+                  <span className="count">{counts[item.countKey]}</span>
+                )}
+              </button>
+            )
+          })}
       </nav>
     </aside>
   )
 }
 
 export function AppLayout({
+  variant = 'repo',
   active,
   onNavigate,
+  globalActive,
+  onGlobalNavigate,
   repo,
   counts,
   children,
 }: {
-  active: NavTarget
-  onNavigate: (target: NavTarget) => void
+  variant?: SidebarVariant
+  active?: NavTarget
+  onNavigate?: (target: NavTarget) => void
+  globalActive?: GlobalNavTarget
+  onGlobalNavigate?: (target: GlobalNavTarget) => void
   repo?: { owner: string; name: string }
   counts?: Partial<Record<'prs' | 'issues', number>>
   children: ReactNode
@@ -273,11 +314,16 @@ export function AppLayout({
 
   const handleNavigate = (target: NavTarget) => {
     setSidebarOpen(false)
-    onNavigate(target)
+    onNavigate?.(target)
   }
 
-  // 注册"返回仓库列表"回调，供顶栏面包屑使用
-  setNavigateHome(() => onNavigate('home'))
+  const handleGlobalNavigate = (target: GlobalNavTarget) => {
+    setSidebarOpen(false)
+    onGlobalNavigate?.(target)
+  }
+
+  // 注册"返回全局首页"回调，供顶栏面包屑使用
+  setNavigateHome(() => onGlobalNavigate?.('projects'))
 
   return (
     <>
@@ -290,8 +336,11 @@ export function AppLayout({
         <div className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
         <div className={`sidebar-shell${sidebarOpen ? ' open' : ''}`}>
           <Sidebar
+            variant={variant}
             active={active}
             onNavigate={handleNavigate}
+            globalActive={globalActive}
+            onGlobalNavigate={handleGlobalNavigate}
             counts={counts}
           />
         </div>

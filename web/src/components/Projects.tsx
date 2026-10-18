@@ -6,7 +6,7 @@ import {
   Alert,
   EmptyState,
   StatusLabel,
-  type NavTarget,
+  type GlobalNavTarget,
 } from './Layout'
 import {
   BookIcon,
@@ -20,7 +20,15 @@ function repoStatus(repo: Repository): 'open' | 'merged' | 'closed' {
   return repo.is_private ? 'merged' : 'open'
 }
 
-export function RepoList({ onOpen }: { onOpen: (owner: string, name: string) => void }) {
+export function Projects({
+  onOpenRepo,
+  onNavigate,
+  activeTab,
+}: {
+  onOpenRepo: (owner: string, name: string) => void
+  onNavigate: (target: GlobalNavTarget) => void
+  activeTab: GlobalNavTarget
+}) {
   const [repos, setRepos] = useState<Repository[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
@@ -28,7 +36,6 @@ export function RepoList({ onOpen }: { onOpen: (owner: string, name: string) => 
   const [branch, setBranch] = useState('main')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [active, setActive] = useState<NavTarget>('home')
 
   const load = useCallback(async () => {
     try {
@@ -53,7 +60,7 @@ export function RepoList({ onOpen }: { onOpen: (owner: string, name: string) => 
       setName('')
       setDescription('')
       setBranch('main')
-      onOpen(repo.owner, repo.name)
+      onOpenRepo(repo.owner, repo.name)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -61,17 +68,15 @@ export function RepoList({ onOpen }: { onOpen: (owner: string, name: string) => 
     }
   }
 
-  const handleNavigate = (_target: NavTarget) => {
-    // On the repo list page, all sidebar items lead back to the repository
-    // overview (the only view available at this level).
-    setActive('home')
-  }
-
   return (
-    <AppLayout active={active} onNavigate={handleNavigate}>
+    <AppLayout
+      variant="global"
+      globalActive={activeTab}
+      onGlobalNavigate={onNavigate}
+    >
       <PageHeader
         icon={<FolderIcon size={18} />}
-        title="仓库"
+        title="Projects"
         subtitle={`共 ${repos.length} 个仓库`}
         actions={
           <button
@@ -147,7 +152,7 @@ export function RepoList({ onOpen }: { onOpen: (owner: string, name: string) => 
       ) : (
         <div className="repo-grid">
           {repos.map((repo) => (
-            <button key={repo.id} className="repo-card" onClick={() => onOpen(repo.owner, repo.name)}>
+            <button key={repo.id} className="repo-card" onClick={() => onOpenRepo(repo.owner, repo.name)}>
               <div className="repo-card-top">
                 <span className="repo-card-icon">
                   <BookIcon size={18} />
