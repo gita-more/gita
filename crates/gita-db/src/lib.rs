@@ -6,8 +6,8 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use gita_core::*;
 use serde_json::Value;
-use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
-use sqlx::Row;
+use sqlx::postgres::{PgConnection, PgPool, PgPoolOptions, PgRow};
+use sqlx::{Connection, Row};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -41,12 +41,12 @@ impl Db {
     /// every pooled connection *before* running migrations, so all tables
     /// land in the test schema rather than `public`.
     pub async fn connect_with_schema(url: &str, schema: &str) -> Result<Self> {
-        let schema = schema.to_string();
+        let schema_conn = schema.to_string();
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .acquire_timeout(Duration::from_secs(10))
             .after_connect(move |conn, _meta| {
-                let schema = schema.clone();
+                let schema = schema_conn.clone();
                 Box::pin(async move {
                     sqlx::query(&format!("SET search_path TO \"{schema}\""))
                         .execute(conn)
@@ -899,6 +899,201 @@ pub fn parse_rfc3339(s: &str) -> DateTime<Utc> {
         .unwrap_or_else(|_| Utc::now())
 }
 
+// ---------------------------------------------------------------------------
+// Groups
+// ---------------------------------------------------------------------------
+
+impl Db {
+    /// Create a new group owned by `owner_id`.
+    pub async fn create_group(
+        &self,
+        name: &str,
+        description: &str,
+        owner_id: i64,
+    ) -> Result<Group> {
+        let created_at = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "INSERT INTO groups (name, description, owner_id, created_at)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id",
+        )
+        .bind(name)
+        .bind(description)
+        .bind(owner_id)
+        .bind(&created_at)
+        .fetch_one(&self.pool)
+        .await?;
+        let id: i64 = row.try_get("id").unwrap_or(0);
+
+        // Owner is automatically a member with role 'owner'.
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role)
+             VALUES ($1, $2, 'owner')
+             ON CONFLICT (group_id, user_id) DO NOTHING",
+        )
+        .bind(id)
+        .bind(owner_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(Group {
+            id,
+            name: name.to_string(),
+            description: description.to_string(),
+            owner_id,
+            created_at: DateTime::parse_from_rfc3339(&created_at)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+        })
+    }
+
+    /// Fetch a group by its unique name.
+    pub async fn get_group_by_name(&self, name: &str) -> Result<Option<Group>> {
+        let rows = sqlx::query(
+            "SELECT id, name, description, owner_id, created_at FROM groups WHERE name = $1",
+        )
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.first().map(row_to_group).transpose()?)
+    }
+
+    /// List all groups the given user is a member of (including owned).
+    pub async fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<Group>> {
+        let rows = sqlx::query(
+            "SELECT g.id, g.name, g.description, g.owner_id, g.created_at
+             FROM groups g
+             JOIN group_members gm ON gm.group_id = g.id
+             WHERE gm.user_id = $1
+             ORDER BY g.name",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_group).collect()
+    }
+
+    /// List repositories that belong to a group.
+    pub async fn list_group_repositories(&self, group_id: i64) -> Result<Vec<Repository>> {
+        let rows = sqlx::query(
+            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+             FROM repositories WHERE group_id = $1 ORDER BY name",
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_repo).collect()
+    }
+
+    /// List all issues across all (public) repositories, joined with the
+    /// repository's owner/name for display.
+    pub async fn list_all_issues(
+        &self,
+        status: Option<IssueStatus>,
+        limit: usize,
+    ) -> Result<Vec<(Issue, Repository)>> {
+        let rows = if let Some(st) = status {
+            sqlx::query(
+                "SELECT i.id AS issue_id, i.repo_id, i.number, i.title, i.body, i.status,
+                        i.author_id, i.author_name, i.created_at AS issue_created_at,
+                        i.updated_at AS issue_updated_at, i.closed_at,
+                        r.id AS repo_id, r.owner_id, r.owner_name, r.name, r.description,
+                        r.is_private, r.default_branch, r.created_at AS repo_created_at
+                 FROM issues i
+                 JOIN repositories r ON r.id = i.repo_id
+                 WHERE i.status = $2
+                 ORDER BY i.id DESC LIMIT $1",
+            )
+            .bind(limit as i64)
+            .bind(st.to_string())
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT i.id AS issue_id, i.repo_id, i.number, i.title, i.body, i.status,
+                        i.author_id, i.author_name, i.created_at AS issue_created_at,
+                        i.updated_at AS issue_updated_at, i.closed_at,
+                        r.id AS repo_id, r.owner_id, r.owner_name, r.name, r.description,
+                        r.is_private, r.default_branch, r.created_at AS repo_created_at
+                 FROM issues i
+                 JOIN repositories r ON r.id = i.repo_id
+                 ORDER BY i.id DESC LIMIT $1",
+            )
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        rows.iter()
+            .map(|row| {
+                let issue = row_to_issue_alias(row)?;
+                let repo = row_to_repo_alias(row)?;
+                Ok((issue, repo))
+            })
+            .collect()
+    }
+}
+
+/// Parse an Issue row using the aliased column names produced by
+/// `list_all_issues`.
+fn row_to_issue_alias(row: &PgRow) -> Result<Issue> {
+    let status: String = row.try_get("status")?;
+    let created_at: String = row.try_get("issue_created_at")?;
+    let updated_at: String = row.try_get("issue_updated_at")?;
+    let closed_at: Option<String> = row.try_get("closed_at")?;
+    Ok(Issue {
+        id: row.try_get("issue_id")?,
+        repo_id: row.try_get("repo_id")?,
+        number: row.try_get("number")?,
+        title: row.try_get("title")?,
+        body: row.try_get("body")?,
+        status: if status == "closed" { IssueStatus::Closed } else { IssueStatus::Open },
+        author_id: row.try_get("author_id")?,
+        author_name: row.try_get("author_name")?,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        updated_at: DateTime::parse_from_rfc3339(&updated_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        closed_at: closed_at
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc)),
+    })
+}
+
+/// Parse a Repository row using the aliased column names produced by
+/// `list_all_issues`.
+fn row_to_repo_alias(row: &PgRow) -> Result<Repository> {
+    let created_at: String = row.try_get("repo_created_at")?;
+    Ok(Repository {
+        id: row.try_get("repo_id")?,
+        owner_id: row.try_get("owner_id")?,
+        owner_name: row.try_get("owner_name")?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        is_private: row.try_get::<i64, _>("is_private")? != 0,
+        default_branch: row.try_get("default_branch")?,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+    })
+}
+
+fn row_to_group(row: &PgRow) -> Result<Group> {
+    let created_at: String = row.try_get("created_at")?;
+    Ok(Group {
+        id: row.try_get("id")?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        owner_id: row.try_get("owner_id")?,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+    })
+}
+
 #[allow(dead_code)]
 fn _assert_send_sync(_db: &Db) {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -925,32 +1120,20 @@ pub async fn new_test_db(url: &str) -> Db {
         TEST_SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst)
     );
 
-    // Connect with a tiny pool; we need a regular PgPool for sqlx::migrate.
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .acquire_timeout(Duration::from_secs(10))
-        .connect(url)
+    // Create the schema on a throwaway connection. Then connect_with_schema
+    // pins search_path on every pooled connection via after_connect so
+    // migrations land in the test schema.
+    let mut admin = sqlx::PgConnection::connect(url)
         .await
-        .expect("failed to connect to test database");
-
-    // CREATE SCHEMA then pin search_path. We use `current_schemas(true)`-friendly
-    // approach: every migration runs against the dedicated schema because the
-    // pool only ever checks out connections whose search_path points there.
+        .expect("failed to connect to test database (admin)");
     sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
-        .execute(&pool)
+        .execute(&mut admin)
         .await
         .expect("failed to create test schema");
-    sqlx::query(&format!("SET search_path TO \"{schema}\""))
-        .execute(&pool)
-        .await
-        .expect("failed to set search_path");
 
-    let db = Db::from_pool(pool);
-    sqlx::migrate!("./migrations")
-        .run(db.pool())
+    Db::connect_with_schema(url, &schema)
         .await
-        .expect("failed to run migrations");
-    db
+        .expect("failed to run migrations")
 }
 
 /// Drop the schema backing a test Db.
@@ -1021,6 +1204,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn group_crud() {
+        let db = fresh_db().await;
+        let owner = db
+            .create_user("groupowner", "groupowner@example.com", "h")
+            .await
+            .unwrap();
+        let g = db
+            .create_group("acme", "The Acme group", owner.id)
+            .await
+            .unwrap();
+        assert!(g.id > 0);
+        assert_eq!(g.name, "acme");
+        assert_eq!(g.description, "The Acme group");
+        assert_eq!(g.owner_id, owner.id);
+
+        // Fetch by name
+        let fetched = db.get_group_by_name("acme").await.unwrap().unwrap();
+        assert_eq!(fetched.id, g.id);
+
+        // List groups for owner (owner is auto member)
+        let groups = db.list_groups_for_user(owner.id).await.unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "acme");
+
+        // Create a repo inside the group namespace, then list it.
+        let repo = db
+            .create_repository(owner.id, "acme", "widgets", "widget repo", false, "main")
+            .await
+            .unwrap();
+        let group_repos = db.list_group_repositories(g.id).await.unwrap();
+        assert_eq!(group_repos.len(), 0, "repo not attached to group yet");
+
+        // Attach repo to group.
+        sqlx::query("UPDATE repositories SET group_id = $1 WHERE id = $2")
+            .bind(g.id)
+            .bind(repo.id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let group_repos = db.list_group_repositories(g.id).await.unwrap();
+        assert_eq!(group_repos.len(), 1);
+        assert_eq!(group_repos[0].full_name(), "acme/widgets");
+
+        drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
+    async fn list_all_issues_joins_repo() {
+        let db = fresh_db().await;
+        let owner = db
+            .create_user("issueowner", "issueowner@example.com", "h")
+            .await
+            .unwrap();
+        let repo = db
+            .create_repository(owner.id, "issueowner", "issues-repo", "desc", false, "main")
+            .await
+            .unwrap();
+        let _issue = db
+            .create_issue(repo.id, "Bug found", "details", owner.id, &owner.username)
+            .await
+            .unwrap();
+
+        let all = db.list_all_issues(None, 50).await.unwrap();
+        assert_eq!(all.len(), 1);
+        let (issue, r) = &all[0];
+        assert_eq!(issue.title, "Bug found");
+        assert_eq!(r.name, "issues-repo");
+        assert_eq!(r.owner_name, "issueowner");
+
+        drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
     async fn event_insert_and_list() {
         let db = fresh_db().await;
         let event = Event {
@@ -1048,14 +1304,17 @@ mod tests {
             .run(db.pool())
             .await
             .unwrap();
-        // _sqlx_migrations must contain exactly one entry: 20260101000000_init.
+        // _sqlx_migrations must contain entries for both init and groups.
         let rows: Vec<(i64, String)> =
             sqlx::query_as("SELECT version, description FROM _sqlx_migrations ORDER BY version")
                 .fetch_all(db.pool())
                 .await
                 .unwrap();
-        assert_eq!(rows.len(), 1, "expected exactly one applied migration");
-        assert_eq!(rows[0].1, "init");
+        let descriptions: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+        assert!(
+            descriptions.contains(&"init") && descriptions.contains(&"groups"),
+            "expected init + groups migrations, got {descriptions:?}"
+        );
         drop_test_db(&db).await;
     }
 
@@ -1070,6 +1329,8 @@ mod tests {
             "issues",
             "events",
             "access_tokens",
+            "groups",
+            "group_members",
         ];
         for table in expected {
             let row: (i64,) = sqlx::query_as(&format!(

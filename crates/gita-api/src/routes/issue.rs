@@ -51,6 +51,39 @@ pub fn issue_routes() -> Router<AppState> {
         .route("/api/repos/{owner}/{repo}/issues", post(create_issue).get(list_issues))
         .route("/api/repos/{owner}/{repo}/issues/{number}", get(get_issue))
         .route("/api/repos/{owner}/{repo}/issues/{number}/close", post(close_issue))
+        .route("/api/issues", get(list_global_issues))
+}
+
+/// Global issue list across all repositories.
+async fn list_global_issues(
+    State(state): State<AppState>,
+    Query(q): Query<ListIssuesQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let status = match q.status.as_deref() {
+        None | Some("open") => Some(IssueStatus::Open),
+        Some("closed") => Some(IssueStatus::Closed),
+        Some("all") => None,
+        Some(_) => return Err(ApiError::BadRequest("invalid status".into())),
+    };
+    let limit = q.limit.unwrap_or(50).min(200);
+    let items = state.db.list_all_issues(status, limit).await?;
+    Ok(Json(serde_json::json!({
+        "issues": items
+            .into_iter()
+            .map(|(issue, repo)| serde_json::json!({
+                "id": issue.id,
+                "number": issue.number,
+                "title": issue.title,
+                "body": issue.body,
+                "status": issue.status.to_string(),
+                "author": issue.author_name,
+                "repo_owner": repo.owner_name,
+                "repo_name": repo.name,
+                "full_name": format!("{}/{}", repo.owner_name, repo.name),
+                "created_at": issue.created_at.to_rfc3339(),
+            }))
+            .collect::<Vec<_>>(),
+    })))
 }
 
 async fn create_issue(

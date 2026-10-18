@@ -19,6 +19,16 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
+/// A group (namespace) that can own repositories.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Group {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub owner_id: i64,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A repository (bare git repository) hosted on Gita.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Repository {

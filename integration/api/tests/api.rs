@@ -726,7 +726,8 @@ async fn register_then_login_chain_succeeds_for_second_user() {
     .await;
     assert_eq!(status, axum::http::StatusCode::OK);
     let new_token = body["token"].as_str().unwrap();
-    assert_ne!(token, new_token, "two logins produce different JWTs");
+    // Note: two logins within the same second may produce identical JWTs
+    // because claims are second-precision; we only assert validity here.
 
     // both tokens are valid against /me
     for t in [token, new_token.to_string()] {
