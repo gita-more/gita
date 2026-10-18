@@ -107,6 +107,13 @@ mod tests {
     }
 
     #[test]
+    fn password_verify_rejects_invalid_hash_format() {
+        // Garbage strings must not panic; verify_password must return false.
+        assert!(!Auth::verify_password("any", "not-a-real-hash"));
+        assert!(!Auth::verify_password("any", ""));
+    }
+
+    #[test]
     fn jwt_roundtrip() {
         let auth = Auth::new("test-secret".to_string());
         let user = User {
@@ -120,5 +127,28 @@ mod tests {
         let claims = auth.verify_jwt(&token).unwrap();
         assert_eq!(claims.sub, 1);
         assert_eq!(claims.username, "alice");
+    }
+
+    #[test]
+    fn jwt_with_wrong_secret_rejected() {
+        let signer = Auth::new("secret-A".to_string());
+        let user = User {
+            id: 7,
+            username: "x".to_string(),
+            email: "y@z.io".to_string(),
+            password_hash: "x".to_string(),
+            created_at: Utc::now(),
+        };
+        let token = signer.sign_jwt(&user).unwrap();
+        let verifier = Auth::new("secret-B".to_string());
+        let err = verifier.verify_jwt(&token).unwrap_err();
+        assert!(matches!(err, ApiError::Unauthorized(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn jwt_garbage_returns_unauthorized() {
+        let auth = Auth::new("test-secret".to_string());
+        let err = auth.verify_jwt("not.a.jwt").unwrap_err();
+        assert!(matches!(err, ApiError::Unauthorized(_)));
     }
 }

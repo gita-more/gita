@@ -1083,4 +1083,86 @@ mod tests {
         }
         drop_test_db(&db).await;
     }
+
+    #[tokio::test]
+    async fn list_events_filter_combinations() {
+        // Cover all four branches in list_events: (None, None),
+        // (Some(rid), None), (None, Some(et)), (Some(rid), Some(et)).
+        let db = fresh_db().await;
+        for (i, et) in [
+            EventType::Push,
+            EventType::Push,
+            EventType::IssueCreated,
+            EventType::Push,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let _ = db
+                .insert_event(&Event {
+                    id: 0,
+                    event_type: *et,
+                    repo_id: if i % 2 == 0 { Some(i as i64) } else { None },
+                    actor_id: Some(1),
+                    payload: serde_json::json!({"i": i}),
+                    created_at: Utc::now(),
+                })
+                .await
+                .unwrap();
+        }
+
+        // (None, None) — all four events
+        let all = db.list_events(None, None, 50).await.unwrap();
+        assert_eq!(all.len(), 4);
+
+        // (Some(rid=0), None) — only i=0 has repo_id=0 (i=2 has repo_id=2)
+        let r0 = db.list_events(Some(0), None, 50).await.unwrap();
+        assert!(r0.iter().all(|e| e.repo_id == Some(0)));
+        assert_eq!(r0.len(), 1);
+
+        // (None, Some("push")) — events with type=Push (3 out of 4)
+        let pushes = db.list_events(None, Some("push"), 50).await.unwrap();
+        assert_eq!(pushes.len(), 3);
+
+        // (Some(rid=2), Some("push")) — events with repo_id=2 AND type=Push
+        // (i=2 is IssueCreated so this is empty)
+        let r2_pushes = db.list_events(Some(2), Some("push"), 50).await.unwrap();
+        assert_eq!(r2_pushes.len(), 0);
+        drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
+    async fn list_repositories_filter_by_owner() {
+        let db = fresh_db().await;
+        let alice = db
+            .create_user("alice2", "alice2@example.com", "h")
+            .await
+            .unwrap();
+        let bob = db
+            .create_user("bob2", "bob2@example.com", "h")
+            .await
+            .unwrap();
+        db.create_repository(alice.id, "alice2", "alpha", "", false, "main")
+            .await
+            .unwrap();
+        db.create_repository(bob.id, "bob2", "beta", "", false, "main")
+            .await
+            .unwrap();
+        db.create_repository(alice.id, "alice2", "gamma", "", false, "main")
+            .await
+            .unwrap();
+
+        let alice_repos = db
+            .list_repositories(Some("alice2"), 50)
+            .await
+            .unwrap();
+        assert_eq!(alice_repos.len(), 2);
+        for r in &alice_repos {
+            assert_eq!(r.owner_name, "alice2");
+        }
+
+        let all = db.list_repositories(None, 50).await.unwrap();
+        assert_eq!(all.len(), 3);
+        drop_test_db(&db).await;
+    }
 }

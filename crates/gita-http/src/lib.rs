@@ -477,4 +477,54 @@ mod tests {
         assert!(res.is_err(), "push with wrong token should be rejected");
         assert_eq!(res.unwrap_err().status(), StatusCode::UNAUTHORIZED);
     }
+
+    #[tokio::test]
+    async fn authorize_via_query_string_service_flag() {
+        // `git-receive-pack` may be specified in either path_info or
+        // ?service=git-receive-pack; the body of the request (git smart
+        // HTTP) typically uses the query-string form.
+        let state = test_state().await;
+        let user = state
+            .db
+            .create_user("dsvc", "dsvc@example.com", "h")
+            .await
+            .unwrap();
+        state
+            .db
+            .create_repository(user.id, "dsvc", "qrepo", "qs test", false, "main")
+            .await
+            .unwrap();
+
+        // query-string receive-pack without auth -> denied
+        let qs = Some("service=git-receive-pack".to_string());
+        let empty_headers = HeaderMap::new();
+        let res = authorize_git_request(
+            &state,
+            "dsvc",
+            "qrepo",
+            "/dsvc/qrepo.git/info/refs",
+            &qs,
+            &empty_headers,
+        )
+        .await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authorize_unknown_repo_returns_404() {
+        let state = test_state().await;
+        let empty_headers = HeaderMap::new();
+        let res = authorize_git_request(
+            &state,
+            "nobody",
+            "void",
+            "/nobody/void.git/info/refs",
+            &None,
+            &empty_headers,
+        )
+        .await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status(), StatusCode::NOT_FOUND);
+    }
 }
