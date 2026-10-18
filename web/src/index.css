@@ -568,8 +568,8 @@ select {
 }
 
 .app.sidebar-collapsed .sidebar-link svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
 }
 
 .sidebar {
@@ -627,6 +627,9 @@ select {
   text-decoration: none;
   border-left: 2px solid transparent;
   min-height: 36px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-link:hover {
