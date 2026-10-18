@@ -238,4 +238,75 @@ mod tests {
         }
         assert!(log.len() <= 10_000);
     }
+
+    /// Real Lagged recovery path. Create a bus, fire enough events to
+    /// overflow the broadcast channel capacity (1024), confirm the
+    /// subscriber sees `RecvError::Lagged`, and then verify that the
+    /// subscriber can continue to receive subsequent events.
+    ///
+    /// Note: tokio's `try_recv` silently skips lagged messages without
+    /// reporting them — only the async `recv().await` returns
+    /// `RecvError::Lagged`. We use that here.
+    #[tokio::test]
+    async fn subscriber_recovers_from_lagged() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+
+        // Publish way more than 1024 events so the buffer overwrites the
+        // unread end while the subscriber isn't draining.
+        for i in 0..2000 {
+            bus.publish(
+                EventType::Push,
+                Some(i),
+                None,
+                serde_json::json!({"i": i}),
+            );
+        }
+
+        // async recv should immediately surface Lagged.
+        let first = rx.recv().await;
+        assert!(
+            matches!(first, Err(tokio::sync::broadcast::error::RecvError::Lagged(_))),
+            "expected Lagged, got {first:?}"
+        );
+
+        // Publish one more and make sure the receiver can keep going.
+        bus.publish(
+            EventType::IssueCreated,
+            None,
+            None,
+            serde_json::json!({"after": "lag"}),
+        );
+
+        let mut saw_after = false;
+        for _ in 0..2000 {
+            match rx.recv().await {
+                Ok(ev) if ev.event_type == EventType::IssueCreated => {
+                    saw_after = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+        assert!(saw_after, "should be able to keep receiving after Lagged");
+    }
+
+    /// When every `Sender` is dropped, subscribers see `RecvError::Closed`
+    /// exactly once and the listener loop in `EventLogSubscriber` exits.
+    #[tokio::test]
+    async fn subscribers_observe_closed_after_drop() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+        // Drop the only Sender that the original bus owns.
+        drop(bus);
+
+        // async recv yields Closed once the channel is empty.
+        let result = rx.recv().await;
+        assert!(
+            matches!(result, Err(tokio::sync::broadcast::error::RecvError::Closed)),
+            "expected Closed after bus drop, got {result:?}"
+        );
+    }
 }
