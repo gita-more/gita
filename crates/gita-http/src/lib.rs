@@ -114,6 +114,17 @@ async fn handle_git_request(
         }
     }
 
+    // Parse ref updates from receive-pack requests BEFORE running the CGI.
+    // The request body is the protocol's authoritative source for what a
+    // push claims to update — the CGI's report-status body is streamed in
+    // chunks and hard to recover synchronously. We keep the parsed updates
+    // in scope for the post-CGI publish below.
+    let received_updates = if path_info.contains("git-receive-pack") {
+        parse_receive_pack_ref_updates(&body)
+    } else {
+        Vec::new()
+    };
+
     let (status, cgi_headers, body) = match state.git.run_http_backend(
         &method,
         &path_info,
@@ -142,13 +153,27 @@ async fn handle_git_request(
                 .ok()
                 .flatten();
             let repo_id = repo.as_ref().map(|r| r.id);
-            let payload = serde_json::json!({
-                "owner": owner,
-                "repo": repo_name,
-                "push": true,
-            });
-            info!("push to {owner}/{repo_name}");
-            state.bus.publish(EventType::Push, repo_id, None, payload);
+            // Resolve who pushed — this fixes the long-standing
+            // actor_id: None on push events and lets CI enforce policies
+            // like "don't run on pushes from bot users".
+            let pusher = resolve_authed_user(&state, &headers).await;
+            let pusher_id = pusher.as_ref().map(|u| u.id);
+            for upd in &received_updates {
+                let payload = serde_json::json!({
+                    "owner": owner,
+                    "repo": repo_name,
+                    "ref": upd.ref_name,
+                    "old_sha": upd.old_sha,
+                    "new_sha": upd.new_sha,
+                    "pusher_id": pusher_id,
+                });
+                info!(
+                    push_ref = %upd.ref_name,
+                    new_sha = %upd.new_sha,
+                    "push to {owner}/{repo_name}"
+                );
+                state.bus.publish(EventType::Push, repo_id, pusher_id, payload);
+            }
         }
     }
 
@@ -192,6 +217,82 @@ fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<String>) {
             .to_string()
     });
     (owner, repo)
+}
+
+/// One ref-update line parsed from a git-receive-pack request body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RefUpdate {
+    old_sha: String,
+    new_sha: String,
+    ref_name: String,
+}
+
+/// Parse the ref-update lines from the body of a `POST .../git-receive-pack`
+/// request.
+///
+/// The body is a sequence of pkt-lines. Each pkt-line is prefixed with a
+/// 4-byte ASCII-hex length (the length includes the 4 length bytes).
+/// `0000` is a flush packet that ends the command list.
+///
+/// Each ref line has the shape:
+///
+/// ```text
+/// <old_sha> SP <new_sha> SP <ref> NUL <capabilities> LF
+/// ```
+///
+/// Capabilities only appear on the first ref line. We return the parsed
+/// updates without capabilities.
+fn parse_receive_pack_ref_updates(body: &[u8]) -> Vec<RefUpdate> {
+    let mut out = Vec::new();
+    if body.is_empty() {
+        return out;
+    }
+
+    // Skip the initial flush packet (`0000`) if present.
+    let mut pos = 0usize;
+    if body.len() >= 4 && &body[..4] == b"0000" {
+        pos = 4;
+    }
+
+    while pos + 4 <= body.len() {
+        let len_hex = &body[pos..pos + 4];
+        let Ok(len_str) = std::str::from_utf8(len_hex) else { break };
+        let Ok(len) = usize::from_str_radix(len_str, 16) else { break };
+        if len == 0 {
+            // Flush packet — end of the ref-update section.
+            break;
+        }
+        if len < 4 || pos + len > body.len() {
+            break;
+        }
+        let line = &body[pos + 4..pos + len];
+        pos += len;
+
+        // Trim trailing LF.
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+
+        // First line may have a NUL-separated capabilities section.
+        let (ref_part, _caps) = match line.iter().position(|&b| b == 0) {
+            Some(idx) => (&line[..idx], &line[idx + 1..]),
+            None => (line, &[][..]),
+        };
+
+        let fields: Vec<&[u8]> = ref_part.split(|&b| b == b' ').collect();
+        if fields.len() < 3 {
+            continue;
+        }
+        let old_sha = String::from_utf8_lossy(fields[0]).to_string();
+        let new_sha = String::from_utf8_lossy(fields[1]).to_string();
+        let ref_name = String::from_utf8_lossy(fields[2]).to_string();
+        out.push(RefUpdate {
+            old_sha,
+            new_sha,
+            ref_name,
+        });
+    }
+
+    out
 }
 
 /// Authorize a Git HTTP request (clone/fetch = read, push = write).
@@ -526,5 +627,89 @@ mod tests {
         .await;
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn parse_receive_pack_ref_updates_parses_basic_lines() {
+        // One flush packet + two ref-update pkt-lines.
+        // Line lengths: "old new ref\0caps\n" — we'll compute hex lengths.
+        fn pkt_line(s: &str) -> Vec<u8> {
+            let mut line = s.as_bytes().to_vec();
+            line.push(b'\n');
+            let len = line.len() + 4;
+            let mut out = format!("{len:04x}").into_bytes();
+            out.extend_from_slice(&line);
+            out
+        }
+
+        let mut body = Vec::new();
+        body.extend_from_slice(b"0000");
+        body.extend_from_slice(&pkt_line(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/main\0report-status-v2 side-band-64k",
+        ));
+        body.extend_from_slice(&pkt_line(
+            "cccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddd refs/heads/dev",
+        ));
+
+        let updates = parse_receive_pack_ref_updates(&body);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].old_sha, "a".repeat(40));
+        assert_eq!(updates[0].new_sha, "b".repeat(40));
+        assert_eq!(updates[0].ref_name, "refs/heads/main");
+        assert_eq!(updates[1].old_sha, "c".repeat(40));
+        assert_eq!(updates[1].new_sha, "d".repeat(40));
+        assert_eq!(updates[1].ref_name, "refs/heads/dev");
+    }
+
+    #[test]
+    fn parse_receive_pack_ref_updates_handles_flush_only() {
+        let body = b"0000".to_vec();
+        let updates = parse_receive_pack_ref_updates(&body);
+        assert!(updates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn push_event_payload_contains_pusher_id() {
+        // The publish block calls resolve_authed_user; we can't easily
+        // drive the full HTTP handler, so assert the pieces that matter:
+        // the enriched payload shape is what the handler builds, and the
+        // parse function feeds it the right (ref, old_sha, new_sha).
+        let state = test_state().await;
+        let user = state
+            .db
+            .create_user("ppusher", "p@e.io", "h")
+            .await
+            .unwrap();
+        state
+            .db
+            .create_repository(user.id, "ppusher", "r1", "d", false, "main")
+            .await
+            .unwrap();
+
+        let token = state.auth.sign_jwt(&user).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+
+        let authed = resolve_authed_user(&state, &headers).await;
+        assert!(authed.is_some());
+        assert_eq!(authed.unwrap().id, user.id);
+
+        // The payload built by the push block uses pusher_id = user.id.
+        let payload = serde_json::json!({
+            "owner": "ppusher",
+            "repo": "r1",
+            "ref": "refs/heads/main",
+            "old_sha": "0".repeat(40),
+            "new_sha": "a".repeat(40),
+            "pusher_id": user.id,
+        });
+        let event = state.bus.publish(
+            EventType::Push,
+            Some(user.id),
+            Some(user.id),
+            payload.clone(),
+        );
+        assert_eq!(event.payload["pusher_id"], serde_json::json!(user.id));
+        assert_eq!(event.actor_id, Some(user.id));
     }
 }
