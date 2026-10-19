@@ -67,7 +67,7 @@ pub struct CommitsQuery {
 pub fn repo_routes() -> Router<AppState> {
     Router::new()
         .route("/api/repos", post(create_repo).get(list_repos))
-        .route("/api/repos/{owner}/{repo}", get(get_repo).delete(delete_repo))
+        .route("/api/repos/{owner}/{repo}", get(get_repo).delete(delete_repo).patch(update_repo))
         .route("/api/repos/{owner}/{repo}/tree", get(get_tree))
         .route("/api/repos/{owner}/{repo}/file", get(get_file))
         .route("/api/repos/{owner}/{repo}/commits", get(list_commits))
@@ -95,6 +95,16 @@ pub struct CreateTagRequest {
     pub name: String,
     #[serde(rename = "ref")]
     pub r#ref: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct UpdateRepoRequest {
+    pub description: Option<String>,
+    pub is_private: Option<bool>,
+    /// New repository name (rename within the same namespace).
+    pub new_name: Option<String>,
+    /// Transfer target: a username or group name.
+    pub new_owner: Option<String>,
 }
 
 async fn create_repo(
@@ -198,6 +208,130 @@ async fn delete_repo(
     Ok(Json(crate::error::MessageResponse {
         message: "repository deleted".to_string(),
     }))
+}
+
+async fn update_repo(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo)): Path<(String, String)>,
+    Json(req): Json<UpdateRepoRequest>,
+) -> ApiResult<Json<RepoResponse>> {
+    let mut repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repository.owner_id != user.id {
+        return Err(ApiError::Forbidden("only the repository owner can update this repo".into()));
+    }
+
+    // Visibility change.
+    if let Some(is_private) = req.is_private {
+        state
+            .db
+            .update_repository_visibility(repository.id, is_private)
+            .await?;
+    }
+
+    // Description change.
+    if let Some(desc) = req.description {
+        let desc = desc.trim().to_string();
+        state
+            .db
+            .update_repository_description(repository.id, &desc)
+            .await?;
+    }
+
+    // Rename (within the same namespace).
+    if let Some(new_name) = req.new_name {
+        let new_name = new_name.trim().to_string();
+        if new_name.is_empty()
+            || !new_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            return Err(ApiError::BadRequest(
+                "repository name may only contain letters, numbers, '-', '_', '.'".into(),
+            ));
+        }
+        // Conflict check on the new name.
+        if state
+            .db
+            .get_repository_by_name(&repository.owner_name, &new_name)
+            .await?
+            .is_some()
+        {
+            return Err(ApiError::Conflict("target repository already exists".into()));
+        }
+        state
+            .git
+            .rename_repo(&owner, &repo, &repository.owner_name, &new_name)
+            .map_err(ApiError::from)?;
+        state
+            .db
+            .rename_repository(repository.id, &repository.owner_name, &new_name)
+            .await?;
+        repository.name = new_name;
+    }
+
+    // Transfer to another owner (user or group).
+    if let Some(new_owner) = req.new_owner {
+        let new_owner = new_owner.trim().to_string();
+        if new_owner.is_empty() {
+            return Err(ApiError::BadRequest("new owner is required".into()));
+        }
+        // Resolve the target namespace: a user or a group.
+        let (new_owner_id, new_owner_name, group_id) =
+            if let Some(g) = state.db.get_group_by_name(&new_owner).await? {
+                (g.owner_id, g.name.clone(), Some(g.id))
+            } else if let Some(u) = state.db.get_user_by_username(&new_owner).await? {
+                (u.id, u.username.clone(), None)
+            } else {
+                return Err(ApiError::NotFound("target user or group not found".into()));
+            };
+
+        // Conflict check in the target namespace.
+        if state
+            .db
+            .get_repository_by_name(&new_owner_name, &repository.name)
+            .await?
+            .is_some()
+        {
+            return Err(ApiError::Conflict("target repository already exists".into()));
+        }
+
+        // Move the bare repo on disk.
+        state
+            .git
+            .rename_repo(&owner, &repo, &new_owner_name, &repository.name)
+            .map_err(ApiError::from)?;
+        state
+            .db
+            .transfer_repository(repository.id, new_owner_id, &new_owner_name, group_id)
+            .await?;
+        repository.owner_id = new_owner_id;
+        repository.owner_name = new_owner_name;
+    }
+
+    // Publish an update event (reuse RepoCreated as a coarse "updated" marker
+    // for the AI event stream; a dedicated RepoUpdated variant is cleaner).
+    state.bus.publish(
+        EventType::RepoCreated,
+        Some(repository.id),
+        Some(user.id),
+        serde_json::json!({
+            "owner": repository.owner_name,
+            "repo": repository.name,
+            "action": "updated",
+        }),
+    );
+
+    let updated = state
+        .db
+        .get_repository(repository.id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    Ok(Json(RepoResponse::from(updated)))
 }
 
 async fn get_tree(

@@ -75,6 +75,29 @@ impl GitManager {
         Ok(())
     }
 
+    /// Move a bare repository from one namespace/name to another.
+    pub fn rename_repo(
+        &self,
+        old_owner: &str,
+        old_name: &str,
+        new_owner: &str,
+        new_name: &str,
+    ) -> Result<()> {
+        let old_path = self.repo_path(old_owner, old_name);
+        let new_path = self.repo_path(new_owner, new_name);
+        if !old_path.exists() {
+            return Err(anyhow!("repository not found: {old_owner}/{old_name}"));
+        }
+        if new_path.exists() {
+            return Err(anyhow!("target repository already exists: {new_owner}/{new_name}"));
+        }
+        if let Some(parent) = new_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&old_path, &new_path)?;
+        Ok(())
+    }
+
     /// Open a bare repository with gix.
     pub fn open(&self, owner: &str, name: &str) -> Result<Repository> {
         let path = self.repo_path(owner, name);
@@ -1112,6 +1135,31 @@ mod tests {
         mgr.delete_tag("alice", "branchtag", "v1.0.0").unwrap();
         let tags = mgr.list_tags("alice", "branchtag").unwrap();
         assert!(!tags.contains(&"v1.0.0".to_string()));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn rename_repo_moves_bare_dir() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        mgr.create_repo("alice", "before", "main").await.unwrap();
+        assert!(mgr.repo_exists("alice", "before"));
+
+        // Rename within the same namespace.
+        mgr.rename_repo("alice", "before", "alice", "after").unwrap();
+        assert!(!mgr.repo_exists("alice", "before"));
+        assert!(mgr.repo_exists("alice", "after"));
+
+        // Rename to a different namespace.
+        mgr.rename_repo("alice", "after", "bob", "shared").unwrap();
+        assert!(!mgr.repo_exists("alice", "after"));
+        assert!(mgr.repo_exists("bob", "shared"));
+
+        // Rename to existing target -> error.
+        mgr.create_repo("alice", "collision", "main").await.unwrap();
+        let err = mgr.rename_repo("bob", "shared", "alice", "collision").unwrap_err();
+        assert!(err.to_string().contains("already exists"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

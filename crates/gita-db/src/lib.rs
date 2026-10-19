@@ -425,6 +425,56 @@ impl Db {
             .await?;
         Ok(())
     }
+
+    /// Update a repository's visibility (`is_private`).
+    pub async fn update_repository_visibility(&self, id: i64, is_private: bool) -> Result<()> {
+        sqlx::query("UPDATE repositories SET is_private = $2 WHERE id = $1")
+            .bind(id)
+            .bind(is_private as i64)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Rename a repository. Returns the updated row.
+    pub async fn rename_repository(
+        &self,
+        id: i64,
+        new_owner_name: &str,
+        new_name: &str,
+    ) -> Result<Option<Repository>> {
+        let rows = sqlx::query(
+            "UPDATE repositories SET owner_name = $2, name = $3 WHERE id = $1
+             RETURNING id, owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id",
+        )
+        .bind(id)
+        .bind(new_owner_name)
+        .bind(new_name)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.first().map(row_to_repo).transpose()?)
+    }
+
+    /// Transfer a repository to a new owner (user or group).
+    pub async fn transfer_repository(
+        &self,
+        id: i64,
+        new_owner_id: i64,
+        new_owner_name: &str,
+        group_id: Option<i64>,
+    ) -> Result<Option<Repository>> {
+        let rows = sqlx::query(
+            "UPDATE repositories SET owner_id = $2, owner_name = $3, group_id = $4 WHERE id = $1
+             RETURNING id, owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id",
+        )
+        .bind(id)
+        .bind(new_owner_id)
+        .bind(new_owner_name)
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.first().map(row_to_repo).transpose()?)
+    }
 }
 
 fn row_to_repo(row: &PgRow) -> Result<Repository> {

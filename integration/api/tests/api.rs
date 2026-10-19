@@ -1226,6 +1226,114 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn update_repo_settings_rename_transfer_visibility() {
+    let (app, _guard) = common::test_app().await;
+    let owner = register_user(&app, "settings-user").await;
+    let full = common::create_repo(&app, &owner.token, "before").await;
+    let (owner_name, _) = full.split_once('/').unwrap();
+    common::push_initial_commit(&app, owner_name, "before");
+
+    // Patch description + visibility.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::PATCH,
+        &format!("/api/repos/{owner_name}/before"),
+        Some(serde_json::json!({"description": "new desc", "is_private": true})),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "patch: {body}");
+    assert_eq!(body["description"], "new desc");
+    assert_eq!(body["is_private"], true);
+
+    // Rename.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::PATCH,
+        &format!("/api/repos/{owner_name}/before"),
+        Some(serde_json::json!({"new_name": "after"})),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "rename: {body}");
+    assert_eq!(body["name"], "after");
+
+    // Old path should now 404.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner_name}/before"),
+        None,
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+
+    // Push still works on the new path.
+    let bare = app.data_dir.join("repos").join(owner_name).join("after.git");
+    let work = app.data_dir.join("work-rename");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let url = format!("file://{}", bare.display());
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&work)
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@e.io")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@e.io")
+            .output()
+            .expect("git");
+        if !out.status.success() {
+            panic!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+        }
+    };
+    run(&["clone", "-q", &url, "."]);
+    std::fs::write(work.join("renamed.txt"), "yes").unwrap();
+    run(&["add", "."]);
+    run(&["commit", "-q", "-m", "after-rename"]);
+    run(&["push", "-q", "origin", "main"]);
+    let _ = std::fs::remove_dir_all(&work);
+
+    // Transfer to a new owner.
+    let target = register_user(&app, "transfer-target").await;
+    let (status, body) = request(
+        &app,
+        axum::http::Method::PATCH,
+        &format!("/api/repos/{owner_name}/after"),
+        Some(serde_json::json!({"new_owner": "transfer-target"})),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "transfer: {body}");
+    assert_eq!(body["owner"], "transfer-target");
+
+    // Non-owner can't update.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::PATCH,
+        &format!("/api/repos/transfer-target/after"),
+        Some(serde_json::json!({"is_private": false})),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+    // New owner can now patch.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::PATCH,
+        "/api/repos/transfer-target/after",
+        Some(serde_json::json!({"is_private": false})),
+        Some(&target.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "new owner patch: {body}");
+    assert_eq!(body["is_private"], false);
+}
+
+#[tokio::test]
 async fn register_then_login_chain_succeeds_for_second_user() {
     // Verifies a fresh user can complete both flows in one test without
     // hidden state from a previous test (token issuing/signing).
