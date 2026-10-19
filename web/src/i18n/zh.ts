@@ -148,6 +148,8 @@ export const messages = {
     deleteBranchTitle: '删除分支',
     deleteTagTitle: '删除标签',
     refFromPlaceholder: '起点（默认 HEAD）',
+    star: '标星',
+    unstar: '取消标星',
     pipelinesTitle: '流水线',
     pipelinesSubtitle: '共 {n} 次运行',
     emptyPipelinesTitle: '还没有流水线配置',

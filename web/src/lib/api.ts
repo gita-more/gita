@@ -508,8 +508,6 @@ export const api = {
     request<{ repos?: RepoSearchHit[]; code?: CodeSearchHit[] }>(
       `/api/search?q=${encodeURIComponent(q)}${type_ ? `&type=${type_}` : ''}`,
     ),
-      `/api/search?q=${encodeURIComponent(q)}${type_ ? `&type=${type_}` : ''}`,
-    ),
   searchRepos: (q: string) =>
     request<{ hits: RepoSearchHit[] }>(
       `/api/search/repos?q=${encodeURIComponent(q)}`,

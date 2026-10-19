@@ -1324,6 +1324,15 @@ select {
   border-bottom: 1px solid var(--border-muted);
 }
 
+.commit-item.clickable {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.commit-item.clickable:hover {
+  background: var(--bg-hover);
+}
+
 .commit-item:last-child {
   border-bottom: none;
 }
@@ -1459,6 +1468,14 @@ select {
 }
 
 /* ============================ Forms (create repo / pr / issue) ============================ */
+
+/* Starred button */
+.btn-starred,
+.btn-ghost.starred {
+  color: var(--fg-attention);
+  border-color: rgba(154, 103, 0, 0.4);
+  background: var(--attention-muted);
+}
 
 .create-form {
   display: grid;

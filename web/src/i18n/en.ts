@@ -148,6 +148,8 @@ export const messages = {
     deleteBranchTitle: 'Delete branch',
     deleteTagTitle: 'Delete tag',
     refFromPlaceholder: 'Start point (default HEAD)',
+    star: 'Star',
+    unstar: 'Unstar',
     pipelinesTitle: 'Pipelines',
     pipelinesSubtitle: '{n} runs',
     emptyPipelinesTitle: 'No pipelines yet',

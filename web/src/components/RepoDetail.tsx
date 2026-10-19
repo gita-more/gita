@@ -26,6 +26,7 @@ import {
   XIcon,
   CheckIcon,
   MessageSquareIcon,
+  StarIcon,
 } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
 import { EmptyRepoWelcome } from './EmptyRepoWelcome'
@@ -73,6 +74,8 @@ export function RepoDetail({
   const [error, setError] = useState('')
   const [showRefs, setShowRefs] = useState(false)
   const [tags, setTags] = useState<string[]>([])
+  const [starred, setStarred] = useState(false)
+  const [starCount, setStarCount] = useState(0)
 
   const loadTags = useCallback(async () => {
     try {
@@ -141,10 +144,37 @@ export function RepoDetail({
     }
   }, [owner, name, translateError])
 
+  const loadStar = useCallback(async () => {
+    try {
+      const res = await api.getStar(owner, name)
+      setStarred(res.starred)
+      setStarCount(res.count)
+    } catch {
+      // Not starred / repo gone; ignore for now.
+    }
+  }, [owner, name])
+
+  const toggleStar = useCallback(async () => {
+    try {
+      if (starred) {
+        const res = await api.unstarRepo(owner, name)
+        setStarred(res.starred)
+        setStarCount(res.count)
+      } else {
+        const res = await api.starRepo(owner, name)
+        setStarred(res.starred)
+        setStarCount(res.count)
+      }
+    } catch {
+      // ignore
+    }
+  }, [owner, name, starred])
+
   useEffect(() => {
     void loadBranches()
     void loadTags()
-  }, [loadBranches, loadTags])
+    void loadStar()
+  }, [loadBranches, loadTags, loadStar])
 
   useEffect(() => {
     switch (tab) {
@@ -196,6 +226,15 @@ export function RepoDetail({
             <button className="btn btn-ghost" onClick={onBack} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <ChevronRightIcon size={14} style={{ transform: 'rotate(180deg)' }} />
               {t('projects.backToList')}
+            </button>
+            <button
+              className={`btn btn-ghost${starred ? ' starred' : ''}`}
+              onClick={() => void toggleStar()}
+              title={starred ? t('repo.unstar') : t('repo.star')}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              <StarIcon size={14} />
+              {starCount > 0 ? starCount : (starred ? 1 : 0)}
             </button>
             <select className="select" value={ref} onChange={(e) => setRef(e.target.value)} title={t('projects.defaultBranch')} style={{ width: 'auto' }}>
               {branches.map((b) => (
