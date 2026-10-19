@@ -10,6 +10,7 @@ members = [
     "crates/gita-api",
     "crates/gita-server",
     "crates/gita-web",
+    "crates/gita-runner",
     "integration/cli",
     "integration/api",
 ]
@@ -55,7 +56,7 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 hex = "0.4"
 rand = "0.8"
 dotenvy = "0.15"
