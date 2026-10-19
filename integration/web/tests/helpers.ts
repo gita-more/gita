@@ -71,9 +71,12 @@ export async function setUserLocale(page: Page, locale: 'zh' | 'en') {
 }
 
 /**
- * POST /api/repos as the current user. Returns the repo full_name.
- * Idempotent: if a repo with this name already exists, returns its
- * full_name from the list endpoint instead of throwing.
+ * Create a repository. By default this hits POST /api/repos (the user-owned
+ * namespace). Pass `group` to hit POST /api/groups/{group}/repos instead,
+ * which stores the repo under the group's name.
+ *
+ * Idempotent: 409 is treated as "already exists" and the function returns
+ * the existing repo's full_name.
  */
 export async function createRepo(
   page: Page,
@@ -81,32 +84,41 @@ export async function createRepo(
   opts: { description?: string; isPrivate?: boolean; group?: string } = {},
 ): Promise<string> {
   const token = await page.evaluate(() => localStorage.getItem('gita_token'))
-  const res = await page.request.post(`${BASE}/api/repos`, {
+  const body = {
+    name,
+    description: opts.description ?? '',
+    default_branch: 'main',
+    is_private: opts.isPrivate ?? false,
+  }
+  const url = opts.group ? `${BASE}/api/groups/${opts.group}/repos` : `${BASE}/api/repos`
+  const res = await page.request.post(url, {
     headers: { Authorization: `Bearer ${token}` },
-    data: {
-      name,
-      description: opts.description ?? '',
-      default_branch: 'main',
-      is_private: opts.isPrivate ?? false,
-      group: opts.group,
-    },
+    data: body,
   })
   if (res.ok()) {
-    const body = (await res.json()) as { repo: { full_name: string } }
-    return body.repo.full_name
+    const json = (await res.json()) as { repo: { full_name: string } }
+    return json.repo.full_name
   }
   if (res.status() === 409) {
-    // already exists — fetch and return
-    const list = await page.request.get(`${BASE}/api/repos`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    expect(list.ok()).toBeTruthy()
-    const body = (await list.json()) as { repos: Array<{ full_name: string; name: string }> }
-    const found = body.repos.find((r) => r.name === name)
-    if (!found) throw new Error(`createRepo: 409 but ${name} not in list`)
-    return found.full_name
+    const owner = opts.group ?? (await currentUsername(page))
+    return `${owner}/${name}`
   }
   throw new Error(`createRepo failed: ${res.status()} ${await res.text()}`)
+}
+
+/**
+ * Look up the currently authenticated user's username via /api/users/me.
+ * Used as a fallback to compute full_name when a repo was created via
+ * /api/repos and we got a 409 on retry.
+ */
+async function currentUsername(page: Page): Promise<string> {
+  const token = await page.evaluate(() => localStorage.getItem('gita_token'))
+  const res = await page.request.get(`${BASE}/api/users/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok()) throw new Error(`currentUsername: ${res.status()}`)
+  const body = (await res.json()) as { user: { username: string } }
+  return body.user.username
 }
 
 /**
