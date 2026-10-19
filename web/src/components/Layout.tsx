@@ -10,6 +10,7 @@ import {
   HomeIcon,
   PersonIcon,
   RefreshIcon,
+  RocketIcon,
   SettingsIcon,
   ShieldAlertIcon,
   UsersIcon,
@@ -24,6 +25,7 @@ export type NavTarget =
   | 'commits'
   | 'prs'
   | 'issues'
+  | 'pipelines'
 
 /** Top-level navigation targets shown on the global (home) sidebar. */
 export type GlobalNavTarget = 'projects' | 'groups' | 'issues'
@@ -39,6 +41,7 @@ const SIDEBAR_NAV: { key: NavTarget; labelKey: string; icon: typeof HomeIcon; co
   { key: 'commits', labelKey: 'nav.commits', icon: GitCommitIcon },
   { key: 'prs', labelKey: 'nav.prs', icon: GitPullRequestIcon, countKey: 'prs' },
   { key: 'issues', labelKey: 'nav.issues', icon: CircleDotIcon, countKey: 'issues' },
+  { key: 'pipelines', labelKey: 'nav.pipelines', icon: RocketIcon },
 ]
 
 export function Brand({ compact = false }: { compact?: boolean }) {
@@ -279,7 +282,8 @@ export function Sidebar({
               : (item.key === 'files' && currentTab === 'files') ||
                 (item.key === 'commits' && currentTab === 'commits') ||
                 (item.key === 'prs' && currentTab === 'prs') ||
-                (item.key === 'issues' && currentTab === 'issues')
+                (item.key === 'issues' && currentTab === 'issues') ||
+                (item.key === 'pipelines' && currentTab === 'pipelines')
             return (
               <button
                 key={item.key}

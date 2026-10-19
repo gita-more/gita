@@ -29,6 +29,7 @@ export const messages = {
     projects: '项目',
     groups: '群组',
     issuesGlobal: 'Issues',
+    pipelines: '流水线',
   },
   auth: {
     username: '用户名',
@@ -127,6 +128,14 @@ export const messages = {
     backToDir: '返回目录',
     emptyDirTitle: '目录为空',
     emptyDirDescription: '这个目录里还没有文件。',
+    pipelinesTitle: '流水线',
+    pipelinesSubtitle: '共 {n} 次运行',
+    emptyPipelinesTitle: '还没有流水线配置',
+    emptyPipelinesDescription: '在默认分支添加 `.gita-ci.yml` 并推送即可触发运行。',
+    emptyRunsTitle: '还没有运行',
+    emptyRunsDescription: '推送一个提交来触发第一次运行。',
+    runQueuedAt: '排队于 {ts}',
+    noLogsYet: '（尚无日志输出）',
     empty: {
       title: '快速设置',
       desc: '这个仓库还是空的 — 下面是从命令行推送已有代码、或从头新建的方法。',

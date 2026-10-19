@@ -1,0 +1,179 @@
+import { useEffect, useState } from 'react'
+import { useI18n } from '../i18n'
+import { api, type Pipeline, type PipelineRun, type Job, type JobLogLine } from '../lib/api'
+import { PageHeader, EmptyState, StatusLabel } from './Layout'
+import { RocketIcon } from './Icons'
+
+export function PipelinesPanel({
+  owner,
+  name,
+  pipelines,
+  onChanged: _onChanged,
+}: {
+  owner: string
+  name: string
+  pipelines: Pipeline[]
+  onChanged: () => void
+}) {
+  const { t } = useI18n()
+  const [runs, setRuns] = useState<PipelineRun[]>([])
+  const [selectedRunId, setSelectedRunId] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (pipelines.length === 0) {
+      setRuns([])
+      return
+    }
+    api
+      .listRuns(owner, name, pipelines[0].path)
+      .then((r) => setRuns(r.runs))
+      .catch(() => setRuns([]))
+  }, [owner, name, pipelines])
+
+  return (
+    <>
+      <PageHeader
+        icon={<RocketIcon size={18} />}
+        title={t('repo.pipelinesTitle')}
+        subtitle={t('repo.pipelinesSubtitle', { n: runs.length })}
+      />
+
+      {pipelines.length === 0 ? (
+        <EmptyState
+          icon={<RocketIcon size={22} />}
+          title={t('repo.emptyPipelinesTitle')}
+          description={t('repo.emptyPipelinesDescription')}
+        />
+      ) : selectedRunId ? (
+        <RunDetail
+          owner={owner}
+          name={name}
+          runId={selectedRunId}
+          onBack={() => setSelectedRunId(null)}
+        />
+      ) : runs.length === 0 ? (
+        <EmptyState
+          icon={<RocketIcon size={22} />}
+          title={t('repo.emptyRunsTitle')}
+          description={t('repo.emptyRunsDescription')}
+        />
+      ) : (
+        <div className="row-list">
+          {runs.map((run) => (
+            <button
+              key={run.id}
+              className="row-item"
+              onClick={() => setSelectedRunId(run.id)}
+            >
+              <span className={`row-icon status-${run.status}`}>
+                <RocketIcon size={16} />
+              </span>
+              <div className="row-main">
+                <div className="row-title">
+                  #{run.id} {run.head_sha.slice(0, 10)}
+                </div>
+                <div className="row-meta">
+                  <span>{run.ref}</span>
+                  <span>{t('repo.runQueuedAt', { ts: new Date(run.queued_at).toLocaleString() })}</span>
+                </div>
+              </div>
+              <StatusLabel status={run.status} />
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function RunDetail({
+  owner,
+  name,
+  runId,
+  onBack,
+}: {
+  owner: string
+  name: string
+  runId: number
+  onBack: () => void
+}) {
+  const { t } = useI18n()
+  const [run, setRun] = useState<PipelineRun | null>(null)
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [logs, setLogs] = useState<Record<number, JobLogLine[]>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    api.getRun(owner, name, runId).then((r) => {
+      if (cancelled) return
+      setRun(r.run)
+      setJobs(r.jobs)
+      const initial: Record<number, JobLogLine[]> = {}
+      r.jobs.forEach((j) => {
+        initial[j.id] = []
+      })
+      setLogs(initial)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [owner, name, runId])
+
+  // Poll logs every 2s while any job is running.
+  useEffect(() => {
+    if (!jobs.some((j) => j.status === 'running' || j.status === 'queued')) return
+    const id = setInterval(async () => {
+      const updates: Record<number, JobLogLine[]> = {}
+      for (const job of jobs) {
+        const since = (logs[job.id] ?? []).length > 0
+          ? (logs[job.id]!.at(-1)?.seq ?? -1) + 1
+          : -1
+        const { lines } = await api.getJobLogs(owner, name, runId, job.id, since)
+        updates[job.id] = lines
+      }
+      setLogs((prev) => {
+        const next = { ...prev }
+        for (const [k, v] of Object.entries(updates)) {
+          next[Number(k)] = [...(prev[Number(k)] ?? []), ...v]
+        }
+        return next
+      })
+    }, 2000)
+    return () => clearInterval(id)
+  }, [owner, name, runId, jobs, logs])
+
+  if (!run) return null
+  return (
+    <>
+      <div className="pr-detail-header">
+        <div className="pr-detail-title">
+          <span className="pr-number">#{run.id}</span>
+          {run.head_sha.slice(0, 10)}
+          <StatusLabel status={run.status} />
+        </div>
+        <div className="page-actions">
+          <button className="btn btn-ghost" onClick={onBack}>
+            {t('repo.backToList')}
+          </button>
+        </div>
+      </div>
+      <div className="commit-list">
+        {jobs.map((job) => (
+          <div key={job.id} className="commit-item">
+            <span className="commit-avatar">{job.name.slice(0, 1).toUpperCase()}</span>
+            <div className="commit-body">
+              <div className="commit-message">
+                {job.name} <StatusLabel status={job.status} />
+              </div>
+              <pre className="code-block" data-job-id={job.id}>
+                {(logs[job.id] ?? [])
+                  .map((l) => `[${l.stream}] ${l.line}`)
+                  .join('\n') || t('repo.noLogsYet')}
+              </pre>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}

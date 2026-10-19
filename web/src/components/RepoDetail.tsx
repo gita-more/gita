@@ -7,6 +7,7 @@ import {
   type PullRequest,
   type Issue,
   type TreeEntry,
+  type Pipeline,
 } from '../lib/api'
 import { PageHeader, Alert, EmptyState, StatusLabel } from './Layout'
 import {
@@ -24,9 +25,10 @@ import {
 } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
 import { EmptyRepoWelcome } from './EmptyRepoWelcome'
+import { PipelinesPanel } from './PipelinesPanel'
 
-type Tab = 'files' | 'commits' | 'prs' | 'issues'
-const VALID_TABS: Tab[] = ['files', 'commits', 'prs', 'issues']
+type Tab = 'files' | 'commits' | 'prs' | 'issues' | 'pipelines'
+const VALID_TABS: Tab[] = ['files', 'commits', 'prs', 'issues', 'pipelines']
 
 export function RepoDetail({
   owner,
@@ -63,6 +65,7 @@ export function RepoDetail({
   const [commits, setCommits] = useState<Commit[]>([])
   const [prs, setPrs] = useState<PullRequest[]>([])
   const [issues, setIssues] = useState<Issue[]>([])
+  const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [error, setError] = useState('')
 
   const loadBranches = useCallback(async () => {
@@ -114,6 +117,15 @@ export function RepoDetail({
     }
   }, [owner, name, translateError])
 
+  const loadPipelines = useCallback(async () => {
+    try {
+      const res = await api.listPipelines(owner, name)
+      setPipelines(res.pipelines)
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }, [owner, name, translateError])
+
   useEffect(() => {
     void loadBranches()
   }, [loadBranches])
@@ -132,10 +144,13 @@ export function RepoDetail({
       case 'issues':
         void loadIssues()
         break
+      case 'pipelines':
+        void loadPipelines()
+        break
       default:
         break
     }
-  }, [tab, loadTree, loadCommits, loadPrs, loadIssues])
+  }, [tab, loadTree, loadCommits, loadPrs, loadIssues, loadPipelines])
 
   async function openEntry(entry: TreeEntry) {
     if (entry.kind === 'tree') {
@@ -195,6 +210,9 @@ export function RepoDetail({
       {tab === 'commits' && <CommitsPanel commits={commits} />}
       {tab === 'prs' && <PrPanel owner={owner} name={name} prs={prs} onChanged={() => void loadPrs()} />}
       {tab === 'issues' && <IssuePanel owner={owner} name={name} issues={issues} onChanged={() => void loadIssues()} />}
+      {tab === 'pipelines' && (
+        <PipelinesPanel owner={owner} name={name} pipelines={pipelines} onChanged={() => void loadPipelines()} />
+      )}
     </>
   )
 }

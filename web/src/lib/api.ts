@@ -102,6 +102,52 @@ export interface EventItem {
   created_at: string
 }
 
+export interface Pipeline {
+  id: number
+  repo_id: number
+  path: string
+  ref: string
+  ref_sha: string
+  content: string
+  created_at: string
+  updated_at: string
+}
+
+export interface PipelineRun {
+  id: number
+  pipeline_id: number
+  repo_id: number
+  ref: string
+  head_sha: string
+  trigger_event_id: number | null
+  trigger_pusher_id: number | null
+  status: 'queued' | 'running' | 'success' | 'failed' | 'canceled'
+  queued_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface Job {
+  id: number
+  run_id: number
+  name: string
+  stage: string
+  needs: string[]
+  script: string[]
+  status: 'queued' | 'running' | 'success' | 'failed' | 'skipped' | 'canceled'
+  queued_at: string
+  started_at: string | null
+  finished_at: string | null
+  exit_code: number | null
+}
+
+export interface JobLogLine {
+  seq: number
+  stream: 'stdout' | 'stderr' | 'system'
+  line: string
+  ts: string
+}
+
 let token: string | null = null
 export function setToken(t: string | null) {
   token = t
@@ -233,6 +279,33 @@ export const api = {
     request<{ message: string }>(`/api/repos/${owner}/${name}/issues/${number}/close`, {
       method: 'POST',
     }),
+
+  // pipelines
+  listPipelines: (owner: string, name: string) =>
+    request<{ pipelines: Pipeline[] }>(`/api/repos/${owner}/${name}/pipelines`),
+  listRuns: (owner: string, name: string, path = '.gita-ci.yml') =>
+    request<{ runs: PipelineRun[] }>(
+      `/api/repos/${owner}/${name}/pipelines/${encodeURIComponent(path)}/runs`,
+    ),
+  getRun: (owner: string, name: string, runId: number) =>
+    request<{ run: PipelineRun; jobs: Job[] }>(
+      `/api/repos/${owner}/${name}/runs/${runId}`,
+    ),
+  getJobLogs: (
+    owner: string,
+    name: string,
+    runId: number,
+    jobId: number,
+    since = -1,
+  ) =>
+    request<{ lines: JobLogLine[] }>(
+      `/api/repos/${owner}/${name}/runs/${runId}/jobs/${jobId}/logs?since=${since}`,
+    ),
+  cancelRun: (owner: string, name: string, runId: number) =>
+    request<{ message: string }>(
+      `/api/repos/${owner}/${name}/runs/${runId}/cancel`,
+      { method: 'POST' },
+    ),
 
   // global
   listGlobalIssues: (status?: 'open' | 'closed' | 'all', limit = 50) =>

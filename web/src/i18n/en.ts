@@ -29,6 +29,7 @@ export const messages = {
     projects: 'Projects',
     groups: 'Groups',
     issuesGlobal: 'Issues',
+    pipelines: 'Pipelines',
   },
   auth: {
     username: 'Username',
@@ -127,6 +128,14 @@ export const messages = {
     backToDir: 'Back to directory',
     emptyDirTitle: 'Empty directory',
     emptyDirDescription: 'This directory has no files yet.',
+    pipelinesTitle: 'Pipelines',
+    pipelinesSubtitle: '{n} runs',
+    emptyPipelinesTitle: 'No pipelines yet',
+    emptyPipelinesDescription: 'Add a `.gita-ci.yml` to this repo on the default branch and push to start a run.',
+    emptyRunsTitle: 'No runs yet',
+    emptyRunsDescription: 'Push a commit to trigger the first run.',
+    runQueuedAt: 'queued at {ts}',
+    noLogsYet: '(no log output yet)',
     empty: {
       title: 'Quick setup',
       desc: 'This repository is empty. Push an existing repository from the command line, or create a new one below.',
