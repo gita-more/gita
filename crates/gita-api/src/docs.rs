@@ -401,6 +401,214 @@ pub const OPENAPI_JSON: &str = r##"{
           }
         }
       }
+    },
+    "/api/search": {
+      "get": {
+        "tags": ["search"],
+        "summary": "Search repositories and code",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "type", "in": "query", "schema": { "type": "string", "enum": ["repos", "code", "all"] } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Search results" },
+          "400": { "description": "Missing query" }
+        }
+      }
+    },
+    "/api/search/repos": {
+      "get": {
+        "tags": ["search"],
+        "summary": "Search repositories by name/description",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Repository hits" }
+        }
+      }
+    },
+    "/api/search/code": {
+      "get": {
+        "tags": ["search"],
+        "summary": "Search code in all repositories",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Code hits" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/commits/{sha}": {
+      "get": {
+        "tags": ["repos"],
+        "summary": "Get a single commit with its diff",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "sha", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Commit detail + diff" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/star": {
+      "get": {
+        "tags": ["repos"],
+        "summary": "Check if the authenticated user starred this repo",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Star status" } }
+      },
+      "put": {
+        "tags": ["repos"],
+        "summary": "Star a repository",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Starred" } }
+      },
+      "delete": {
+        "tags": ["repos"],
+        "summary": "Unstar a repository",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Unstarred" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/fork": {
+      "post": {
+        "tags": ["repos"],
+        "summary": "Fork this repository under the caller's namespace",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "description": "Optional fork name" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Fork created" },
+          "409": { "description": "Destination already exists" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/hooks": {
+      "get": {
+        "tags": ["repos"],
+        "summary": "List webhooks for a repository",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Hook list" } }
+      },
+      "post": {
+        "tags": ["repos"],
+        "summary": "Create a webhook",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "url": { "type": "string" },
+                  "events": { "type": "array", "items": { "type": "string" } },
+                  "secret": { "type": "string" },
+                  "active": { "type": "boolean" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Hook created" },
+          "400": { "description": "Invalid URL or events" },
+          "403": { "description": "Not the owner" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/hooks/{id}": {
+      "delete": {
+        "tags": ["repos"],
+        "summary": "Delete a webhook",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Hook deleted" },
+          "404": { "description": "Hook not found" }
+        }
+      }
+    },
+    "/api/groups/{group}/members": {
+      "get": {
+        "tags": ["groups"],
+        "summary": "List group members",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Member list" } }
+      },
+      "post": {
+        "tags": ["groups"],
+        "summary": "Add a member",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": { "type": "string" },
+                  "role": { "type": "string", "enum": ["owner", "maintainer", "developer", "member", "guest"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Member added" },
+          "403": { "description": "Not the group owner" }
+        }
+      }
+    },
+    "/api/groups/{group}/members/{username}": {
+      "patch": {
+        "tags": ["groups"],
+        "summary": "Update a member's role",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Role updated" } }
+      },
+      "delete": {
+        "tags": ["groups"],
+        "summary": "Remove a member",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Member removed" },
+          "404": { "description": "Not a member" }
+        }
+      }
     }
   },
   "components": {
