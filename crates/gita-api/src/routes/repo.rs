@@ -71,7 +71,30 @@ pub fn repo_routes() -> Router<AppState> {
         .route("/api/repos/{owner}/{repo}/tree", get(get_tree))
         .route("/api/repos/{owner}/{repo}/file", get(get_file))
         .route("/api/repos/{owner}/{repo}/commits", get(list_commits))
-        .route("/api/repos/{owner}/{repo}/branches", get(list_branches))
+        .route("/api/repos/{owner}/{repo}/branches", get(list_branches).post(create_branch))
+        .route(
+            "/api/repos/{owner}/{repo}/branches/{branch}",
+            axum::routing::delete(delete_branch),
+        )
+        .route("/api/repos/{owner}/{repo}/tags", get(list_tags).post(create_tag))
+        .route(
+            "/api/repos/{owner}/{repo}/tags/{tag}",
+            axum::routing::delete(delete_tag),
+        )
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateBranchRequest {
+    pub name: String,
+    #[serde(rename = "ref")]
+    pub r#ref: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateTagRequest {
+    pub name: String,
+    #[serde(rename = "ref")]
+    pub r#ref: Option<String>,
 }
 
 async fn create_repo(
@@ -256,4 +279,136 @@ async fn list_branches(
         .list_branches(&owner, &repo.name)
         .map_err(ApiError::from)?;
     Ok(Json(branches))
+}
+
+async fn create_branch(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo)): Path<(String, String)>,
+    Json(req): Json<CreateBranchRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repository.owner_id != user.id {
+        return Err(ApiError::Forbidden("only the repository owner can manage branches".into()));
+    }
+    let branch = req.name.trim().to_string();
+    if branch.is_empty() {
+        return Err(ApiError::BadRequest("branch name is required".into()));
+    }
+    let start_sha = match req.r#ref.as_deref() {
+        Some(r) if !r.is_empty() => {
+            Some(
+                state
+                    .git
+                    .head_sha(&owner, &repo, r)
+                    .map_err(|_| ApiError::BadRequest(format!("ref not found: {r}")))?,
+            )
+        }
+        _ => None,
+    };
+    state
+        .git
+        .create_branch(&owner, &repo, &branch, start_sha.as_deref())
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({ "branch": branch })))
+}
+
+async fn delete_branch(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo, branch)): Path<(String, String, String)>,
+) -> ApiResult<Json<crate::error::MessageResponse>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repository.owner_id != user.id {
+        return Err(ApiError::Forbidden("only the repository owner can manage branches".into()));
+    }
+    state
+        .git
+        .delete_branch(&owner, &repo, &branch)
+        .map_err(ApiError::from)?;
+    Ok(Json(crate::error::MessageResponse {
+        message: format!("branch {branch} deleted"),
+    }))
+}
+
+async fn list_tags(
+    State(state): State<AppState>,
+    Path((owner, repo)): Path<(String, String)>,
+) -> ApiResult<Json<Vec<String>>> {
+    let repo = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let tags = state
+        .git
+        .list_tags(&owner, &repo.name)
+        .map_err(ApiError::from)?;
+    Ok(Json(tags))
+}
+
+async fn create_tag(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo)): Path<(String, String)>,
+    Json(req): Json<CreateTagRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repository.owner_id != user.id {
+        return Err(ApiError::Forbidden("only the repository owner can manage tags".into()));
+    }
+    let tag = req.name.trim().to_string();
+    if tag.is_empty() {
+        return Err(ApiError::BadRequest("tag name is required".into()));
+    }
+    let start_sha = match req.r#ref.as_deref() {
+        Some(r) if !r.is_empty() => {
+            Some(
+                state
+                    .git
+                    .head_sha(&owner, &repo, r)
+                    .map_err(|_| ApiError::BadRequest(format!("ref not found: {r}")))?,
+            )
+        }
+        _ => None,
+    };
+    state
+        .git
+        .create_tag(&owner, &repo, &tag, start_sha.as_deref())
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({ "tag": tag })))
+}
+
+async fn delete_tag(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo, tag)): Path<(String, String, String)>,
+) -> ApiResult<Json<crate::error::MessageResponse>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repository.owner_id != user.id {
+        return Err(ApiError::Forbidden("only the repository owner can manage tags".into()));
+    }
+    state
+        .git
+        .delete_tag(&owner, &repo, &tag)
+        .map_err(ApiError::from)?;
+    Ok(Json(crate::error::MessageResponse {
+        message: format!("tag {tag} deleted"),
+    }))
 }

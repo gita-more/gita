@@ -18,6 +18,7 @@ import {
   FileCodeIcon,
   GitCommitIcon,
   GitPullRequestIcon,
+  GitBranchIcon,
   CircleDotIcon,
   ChevronRightIcon,
   PlusIcon,
@@ -69,6 +70,17 @@ export function RepoDetail({
   const [issues, setIssues] = useState<Issue[]>([])
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [error, setError] = useState('')
+  const [showRefs, setShowRefs] = useState(false)
+  const [tags, setTags] = useState<string[]>([])
+
+  const loadTags = useCallback(async () => {
+    try {
+      const res = await api.listTags(owner, name)
+      setTags(res)
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }, [owner, name, translateError])
 
   const loadBranches = useCallback(async () => {
     try {
@@ -130,7 +142,8 @@ export function RepoDetail({
 
   useEffect(() => {
     void loadBranches()
-  }, [loadBranches])
+    void loadTags()
+  }, [loadBranches, loadTags])
 
   useEffect(() => {
     switch (tab) {
@@ -188,9 +201,26 @@ export function RepoDetail({
                 <option key={b} value={b}>{b}</option>
               ))}
             </select>
+            <button className="btn btn-ghost" onClick={() => setShowRefs((v) => !v)}>
+              <GitBranchIcon size={14} />
+              {showRefs ? t('common.cancel') : t('repo.manageRefs')}
+            </button>
           </div>
         }
       />
+
+      {showRefs && (
+        <RefsPanel
+          owner={owner}
+          name={name}
+          branches={branches}
+          tags={tags}
+          onChanged={() => {
+            void loadBranches()
+            void loadTags()
+          }}
+        />
+      )}
 
       {error && <Alert type="error">{error}</Alert>}
 
@@ -1029,6 +1059,141 @@ function CommentSection({
             {submitLabel}
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+// ---------------------------------------------------------------------------
+// Branches / Tags management panel
+// ---------------------------------------------------------------------------
+
+function RefsPanel({
+  owner,
+  name,
+  branches,
+  tags,
+  onChanged,
+}: {
+  owner: string
+  name: string
+  branches: string[]
+  tags: string[]
+  onChanged: () => void
+}) {
+  const { t } = useI18n()
+  const translateError = useErrorTranslator()
+  const [branchName, setBranchName] = useState('')
+  const [branchRef, setBranchRef] = useState('')
+  const [tagName, setTagName] = useState('')
+  const [tagRef, setTagRef] = useState('')
+  const [error, setError] = useState('')
+
+  async function createBranch() {
+    setError('')
+    try {
+      await api.createBranch(owner, name, branchName, branchRef || undefined)
+      setBranchName('')
+      setBranchRef('')
+      onChanged()
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }
+
+  async function deleteBranch(branch: string) {
+    setError('')
+    try {
+      await api.deleteBranch(owner, name, branch)
+      onChanged()
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }
+
+  async function createTag() {
+    setError('')
+    try {
+      await api.createTag(owner, name, tagName, tagRef || undefined)
+      setTagName('')
+      setTagRef('')
+      onChanged()
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }
+
+  async function deleteTag(tag: string) {
+    setError('')
+    try {
+      await api.deleteTag(owner, name, tag)
+      onChanged()
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }
+
+  return (
+    <div className="refs-panel">
+      {error && <Alert type="error">{error}</Alert>}
+      <div className="refs-column">
+        <h4>{t('repo.branchesTitle')}</h4>
+        <div className="refs-create">
+          <input
+            className="input"
+            placeholder={t('repo.createBranchPlaceholder')}
+            value={branchName}
+            onChange={(e) => setBranchName(e.target.value)}
+          />
+          <input
+            className="input"
+            placeholder={t('repo.refFromPlaceholder')}
+            value={branchRef}
+            onChange={(e) => setBranchRef(e.target.value)}
+          />
+          <button className="btn btn-primary btn-sm" disabled={!branchName.trim()} onClick={() => void createBranch()}>
+            {t('repo.createBranchBtn')}
+          </button>
+        </div>
+        <ul className="refs-list">
+          {branches.map((b) => (
+            <li key={b}>
+              <span className="refs-name"><GitBranchIcon size={13} />{b}</span>
+              <button className="btn btn-ghost btn-xs" title={t('repo.deleteBranchTitle')} onClick={() => void deleteBranch(b)}>
+                {t('repo.deleteBranchTitle')}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="refs-column">
+        <h4>{t('repo.tagsTitle')}</h4>
+        <div className="refs-create">
+          <input
+            className="input"
+            placeholder={t('repo.createTagPlaceholder')}
+            value={tagName}
+            onChange={(e) => setTagName(e.target.value)}
+          />
+          <input
+            className="input"
+            placeholder={t('repo.refFromPlaceholder')}
+            value={tagRef}
+            onChange={(e) => setTagRef(e.target.value)}
+          />
+          <button className="btn btn-primary btn-sm" disabled={!tagName.trim()} onClick={() => void createTag()}>
+            {t('repo.createTagBtn')}
+          </button>
+        </div>
+        <ul className="refs-list">
+          {tags.map((tag) => (
+            <li key={tag}>
+              <span className="refs-name">🏷 {tag}</span>
+              <button className="btn btn-ghost btn-xs" title={t('repo.deleteTagTitle')} onClick={() => void deleteTag(tag)}>
+                {t('repo.deleteTagTitle')}
+              </button>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   )

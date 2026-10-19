@@ -1064,6 +1064,168 @@ async fn pull_request_non_ff_merge_creates_merge_commit() {
 }
 
 #[tokio::test]
+async fn branch_and_tag_management() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "bt-user").await;
+    let full = common::create_repo(&app, &user.token, "bt-repo").await;
+    let (owner, name) = full.split_once('/').unwrap();
+    common::push_initial_commit(&app, owner, name);
+
+    // Create a branch.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        &format!("/api/repos/{owner}/{name}/branches"),
+        Some(serde_json::json!({"name": "feature"})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create branch: {body}");
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner}/{name}/branches"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let branches = body.as_array().unwrap();
+    assert!(branches.iter().any(|b| b == "feature"));
+
+    // Delete the branch.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/repos/{owner}/{name}/branches/feature"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner}/{name}/branches"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert!(!body.as_array().unwrap().iter().any(|b| b == "feature"));
+
+    // Create a tag.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        &format!("/api/repos/{owner}/{name}/tags"),
+        Some(serde_json::json!({"name": "v1.0.0"})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create tag: {body}");
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner}/{name}/tags"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert!(body.as_array().unwrap().iter().any(|t| t == "v1.0.0"));
+
+    // Non-owner cannot delete a tag.
+    let intruder = register_user(&app, "bt-intruder").await;
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/repos/{owner}/{name}/tags/v1.0.0"),
+        None,
+        Some(&intruder.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+    // Owner deletes tag.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/repos/{owner}/{name}/tags/v1.0.0"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn personal_access_token_revocation() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "pat-user").await;
+
+    // Create two tokens.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/tokens",
+        Some(serde_json::json!({"name": "ci"})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let token_id = body["id"].as_i64().unwrap();
+    let raw_token = body["token"].as_str().unwrap().to_string();
+
+    // Token works for auth.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/auth/me",
+        None,
+        Some(&raw_token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Delete the token.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/auth/tokens/{token_id}"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Token no longer authenticates.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/auth/me",
+        None,
+        Some(&raw_token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+
+    // Deleting a non-existent token -> 404.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/auth/tokens/{token_id}"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn register_then_login_chain_succeeds_for_second_user() {
     // Verifies a fresh user can complete both flows in one test without
     // hidden state from a previous test (token issuing/signing).

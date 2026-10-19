@@ -4,7 +4,7 @@ use crate::auth::Auth;
 use crate::error::{ApiError, ApiResult};
 use crate::extract::AuthUserExtractor;
 use crate::state::AppState;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::routing::post;
 use axum::{Json, Router};
 use gita_core::EventType;
@@ -74,6 +74,7 @@ pub fn auth_routes() -> Router<AppState> {
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
         .route("/api/auth/tokens", post(create_token).get(list_tokens))
+        .route("/api/auth/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/auth/me", axum::routing::get(me).patch(update_me))
 }
 
@@ -183,6 +184,20 @@ async fn list_tokens(
             })
             .collect(),
     ))
+}
+
+async fn delete_token(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<crate::error::MessageResponse>> {
+    let deleted = state.db.delete_token(id, user.id).await?;
+    if !deleted {
+        return Err(ApiError::NotFound("token not found".into()));
+    }
+    Ok(Json(crate::error::MessageResponse {
+        message: "token deleted".to_string(),
+    }))
 }
 
 async fn me(State(state): State<AppState>, user: AuthUserExtractor) -> ApiResult<Json<PublicUser>> {

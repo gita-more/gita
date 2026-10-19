@@ -184,6 +184,128 @@ impl GitManager {
         Ok(branches)
     }
 
+    /// List tags of a repository.
+    pub fn list_tags(&self, owner: &str, name: &str) -> Result<Vec<String>> {
+        let repo = self.open(owner, name)?;
+        let mut tags = Vec::new();
+        for reference in repo.references()?.all()? {
+            let name = reference?.name().to_string();
+            if let Some(tag) = name.strip_prefix("refs/tags/") {
+                tags.push(tag.to_string());
+            }
+        }
+        tags.sort();
+        Ok(tags)
+    }
+
+    /// Create a branch pointing at `start_sha` (or HEAD's commit).
+    pub fn create_branch(
+        &self,
+        owner: &str,
+        name: &str,
+        branch: &str,
+        start_sha: Option<&str>,
+    ) -> Result<()> {
+        let repo = self.open(owner, name)?;
+        let full_name = gix::refs::FullName::try_from(format!("refs/heads/{branch}").as_str())
+            .map_err(|e| anyhow!("invalid branch name {branch}: {e}"))?;
+        if repo.find_reference(&full_name).is_ok() {
+            return Err(anyhow!("branch already exists: {branch}"));
+        }
+        let target = match start_sha {
+            Some(sha) => Some(
+                gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes()))
+                    .map_err(|e| anyhow!("invalid start sha {sha}: {e}"))?,
+            ),
+            None => None,
+        };
+        let target = match target {
+            Some(t) => t,
+            None => repo
+                .head()?
+                .into_peeled_id()
+                .map_err(|e| anyhow!("cannot resolve HEAD: {e}"))?
+                .detach(),
+        };
+        let edit = gix::refs::transaction::RefEdit::update(
+            full_name,
+            gix::refs::Target::Object(target),
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            format!("branch: created {branch}"),
+        );
+        repo.edit_references([edit])
+            .map_err(|e| anyhow!("failed to create branch {branch}: {e}"))?;
+        Ok(())
+    }
+
+    /// Delete a branch.
+    pub fn delete_branch(&self, owner: &str, name: &str, branch: &str) -> Result<()> {
+        let repo = self.open(owner, name)?;
+        let full = gix::refs::FullName::try_from(format!("refs/heads/{branch}").as_str())
+            .map_err(|e| anyhow!("invalid branch name {branch}: {e}"))?;
+        let edit = gix::refs::transaction::RefEdit::delete(
+            full,
+            gix::refs::transaction::PreviousValue::Any,
+        );
+        repo.edit_references([edit])
+            .map_err(|e| anyhow!("failed to delete branch {branch}: {e}"))?;
+        Ok(())
+    }
+
+    /// Create a lightweight tag pointing at `start_sha` (or HEAD).
+    pub fn create_tag(
+        &self,
+        owner: &str,
+        name: &str,
+        tag: &str,
+        start_sha: Option<&str>,
+    ) -> Result<()> {
+        let repo = self.open(owner, name)?;
+        let full_name = gix::refs::FullName::try_from(format!("refs/tags/{tag}").as_str())
+            .map_err(|e| anyhow!("invalid tag name {tag}: {e}"))?;
+        if repo.find_reference(&full_name).is_ok() {
+            return Err(anyhow!("tag already exists: {tag}"));
+        }
+        let target = match start_sha {
+            Some(sha) => Some(
+                gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes()))
+                    .map_err(|e| anyhow!("invalid start sha {sha}: {e}"))?,
+            ),
+            None => None,
+        };
+        let target = match target {
+            Some(t) => t,
+            None => repo
+                .head()?
+                .into_peeled_id()
+                .map_err(|e| anyhow!("cannot resolve HEAD: {e}"))?
+                .detach(),
+        };
+        let edit = gix::refs::transaction::RefEdit::update(
+            full_name,
+            gix::refs::Target::Object(target),
+            gix::refs::transaction::PreviousValue::MustNotExist,
+            format!("tag: created {tag}"),
+        );
+        repo.edit_references([edit])
+            .map_err(|e| anyhow!("failed to create tag {tag}: {e}"))?;
+        Ok(())
+    }
+
+    /// Delete a tag.
+    pub fn delete_tag(&self, owner: &str, name: &str, tag: &str) -> Result<()> {
+        let repo = self.open(owner, name)?;
+        let full = gix::refs::FullName::try_from(format!("refs/tags/{tag}").as_str())
+            .map_err(|e| anyhow!("invalid tag name {tag}: {e}"))?;
+        let edit = gix::refs::transaction::RefEdit::delete(
+            full,
+            gix::refs::transaction::PreviousValue::Any,
+        );
+        repo.edit_references([edit])
+            .map_err(|e| anyhow!("failed to delete tag {tag}: {e}"))?;
+        Ok(())
+    }
+
     /// Resolve a branch name (or HEAD) to a commit SHA.
     pub fn resolve_branch(&self, owner: &str, name: &str, branch: &str) -> Result<String> {
         let repo = self.open(owner, name)?;
@@ -949,6 +1071,49 @@ mod tests {
         run(&["push", "-q", "origin", "main"]);
         let sha2 = mgr.head_sha("alice", "test", "main").unwrap();
         assert_ne!(sha, sha2, "head_sha must advance after a push");
+    }
+
+    #[tokio::test]
+    async fn branch_and_tag_crud() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let path = mgr.create_repo("alice", "branchtag", "main").await.unwrap();
+        push_initial_commit(&mgr, "alice", "branchtag", &path);
+
+        // Create a branch from HEAD.
+        mgr.create_branch("alice", "branchtag", "feature", None).unwrap();
+        let branches = mgr.list_branches("alice", "branchtag").unwrap();
+        assert!(branches.contains(&"feature".to_string()));
+
+        // Create a branch from a specific sha (main head).
+        let main_sha = mgr.head_sha("alice", "branchtag", "main").unwrap();
+        mgr.create_branch("alice", "branchtag", "from-sha", Some(&main_sha)).unwrap();
+        let branches = mgr.list_branches("alice", "branchtag").unwrap();
+        assert!(branches.contains(&"from-sha".to_string()));
+
+        // Duplicate branch -> error.
+        let err = mgr.create_branch("alice", "branchtag", "feature", None).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+
+        // Delete branch.
+        mgr.delete_branch("alice", "branchtag", "feature").unwrap();
+        let branches = mgr.list_branches("alice", "branchtag").unwrap();
+        assert!(!branches.contains(&"feature".to_string()));
+
+        // Tags.
+        mgr.create_tag("alice", "branchtag", "v1.0.0", Some(&main_sha)).unwrap();
+        let tags = mgr.list_tags("alice", "branchtag").unwrap();
+        assert!(tags.contains(&"v1.0.0".to_string()));
+
+        // Duplicate tag -> error.
+        let err = mgr.create_tag("alice", "branchtag", "v1.0.0", None).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+
+        mgr.delete_tag("alice", "branchtag", "v1.0.0").unwrap();
+        let tags = mgr.list_tags("alice", "branchtag").unwrap();
+        assert!(!tags.contains(&"v1.0.0".to_string()));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

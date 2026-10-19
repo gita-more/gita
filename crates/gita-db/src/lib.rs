@@ -985,17 +985,18 @@ impl Db {
         name: &str,
     ) -> Result<AccessToken> {
         let created_at = Utc::now().to_rfc3339();
-        sqlx::query(
-            "INSERT INTO access_tokens (user_id, token, name, created_at) VALUES ($1, $2, $3, $4)",
+        let row = sqlx::query(
+            "INSERT INTO access_tokens (user_id, token, name, created_at) VALUES ($1, $2, $3, $4)
+             RETURNING id",
         )
         .bind(user_id)
         .bind(token)
         .bind(name)
         .bind(&created_at)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
         Ok(AccessToken {
-            id: 0, // not returned; re-fetch via get_user_by_token if needed
+            id: row.try_get("id").unwrap_or(0),
             user_id,
             token: token.to_string(),
             name: name.to_string(),

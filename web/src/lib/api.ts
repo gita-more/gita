@@ -81,6 +81,13 @@ export interface Comment {
   created_at: string
 }
 
+export interface Token {
+  id: number
+  token: string
+  name: string
+  created_at: string
+}
+
 export interface Group {
   id: number
   name: string
@@ -251,6 +258,36 @@ export const api = {
     ),
   getBranches: (owner: string, name: string) =>
     request<string[]>(`/api/repos/${owner}/${name}/branches`),
+  createBranch: (owner: string, name: string, branch: string, ref?: string) =>
+    request<{ branch: string }>(`/api/repos/${owner}/${name}/branches`, {
+      method: 'POST',
+      body: JSON.stringify({ name: branch, ref }),
+    }),
+  deleteBranch: (owner: string, name: string, branch: string) =>
+    request<{ message: string }>(`/api/repos/${owner}/${name}/branches/${encodeURIComponent(branch)}`, {
+      method: 'DELETE',
+    }),
+  listTags: (owner: string, name: string) =>
+    request<string[]>(`/api/repos/${owner}/${name}/tags`),
+  createTag: (owner: string, name: string, tag: string, ref?: string) =>
+    request<{ tag: string }>(`/api/repos/${owner}/${name}/tags`, {
+      method: 'POST',
+      body: JSON.stringify({ name: tag, ref }),
+    }),
+  deleteTag: (owner: string, name: string, tag: string) =>
+    request<{ message: string }>(`/api/repos/${owner}/${name}/tags/${encodeURIComponent(tag)}`, {
+      method: 'DELETE',
+    }),
+
+  // tokens
+  createToken: (name?: string) =>
+    request<{ id: number; token: string; name: string }>('/api/auth/tokens', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+  listTokens: () => request<Token[]>(`/api/auth/tokens`),
+  deleteToken: (id: number) =>
+    request<{ message: string }>(`/api/auth/tokens/${id}`, { method: 'DELETE' }),
 
   // PRs
   createPr: (owner: string, name: string, pr: {
