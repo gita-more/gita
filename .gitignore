@@ -25,5 +25,6 @@ config/gita.toml
 tmp
 
 # Playwright
+/test-results
 integration/web/test-results
 integration/web/playwright-report

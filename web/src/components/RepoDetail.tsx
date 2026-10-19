@@ -23,6 +23,7 @@ import {
   CheckIcon,
 } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
+import { EmptyRepoWelcome } from './EmptyRepoWelcome'
 
 type Tab = 'files' | 'commits' | 'prs' | 'issues'
 const VALID_TABS: Tab[] = ['files', 'commits', 'prs', 'issues']
@@ -31,10 +32,14 @@ export function RepoDetail({
   owner,
   name,
   onBack,
+  repoKind,
+  groupName,
 }: {
   owner: string
   name: string
   onBack: () => void
+  repoKind?: 'personal' | 'group'
+  groupName?: string
 }) {
   const { t } = useI18n()
   const translateError = useErrorTranslator()
@@ -53,6 +58,7 @@ export function RepoDetail({
   const [ref, setRef] = useState('main')
   const [branches, setBranches] = useState<string[]>([])
   const [tree, setTree] = useState<TreeEntry[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [file, setFile] = useState<FileContent | null>(null)
   const [commits, setCommits] = useState<Commit[]>([])
   const [prs, setPrs] = useState<PullRequest[]>([])
@@ -72,8 +78,10 @@ export function RepoDetail({
   const loadTree = useCallback(async () => {
     try {
       setFile(null)
+      setLoaded(false)
       const res = await api.getTree(owner, name, path, ref)
       setTree(res.entries)
+      setLoaded(true)
     } catch (err) {
       setError(translateError(err))
     }
@@ -169,7 +177,21 @@ export function RepoDetail({
 
       {error && <Alert type="error">{error}</Alert>}
 
-      {tab === 'files' && <FilesPanel path={path} setPath={setPath} tree={tree} file={file} setFile={setFile} openEntry={openEntry} />}
+      {tab === 'files' && (
+        <FilesPanel
+          path={path}
+          setPath={setPath}
+          tree={tree}
+          file={file}
+          setFile={setFile}
+          openEntry={openEntry}
+          isEmptyRepo={loaded && commits.length === 0 && tree.length === 0}
+          owner={owner}
+          name={name}
+          repoKind={repoKind}
+          groupName={groupName}
+        />
+      )}
       {tab === 'commits' && <CommitsPanel commits={commits} />}
       {tab === 'prs' && <PrPanel owner={owner} name={name} prs={prs} onChanged={() => void loadPrs()} />}
       {tab === 'issues' && <IssuePanel owner={owner} name={name} issues={issues} onChanged={() => void loadIssues()} />}
@@ -188,6 +210,11 @@ function FilesPanel({
   file,
   setFile,
   openEntry,
+  isEmptyRepo,
+  owner,
+  name,
+  repoKind,
+  groupName,
 }: {
   path: string
   setPath: (p: string) => void
@@ -195,11 +222,28 @@ function FilesPanel({
   file: FileContent | null
   setFile: (f: FileContent | null) => void
   openEntry: (entry: TreeEntry) => void
+  isEmptyRepo: boolean
+  owner: string
+  name: string
+  repoKind?: 'personal' | 'group'
+  groupName?: string
 }) {
   const { t } = useI18n()
   const parts = path.split('/').filter(Boolean)
 
   const crumbParts = ['', ...parts.map((_, idx) => path.split('/').slice(0, idx + 1).join('/'))]
+
+  if (tree.length === 0 && isEmptyRepo) {
+    // Fresh, never-committed repo: show the GitHub-style quick setup card.
+    return (
+      <EmptyRepoWelcome
+        owner={owner}
+        name={name}
+        repoKind={repoKind ?? 'personal'}
+        groupName={groupName}
+      />
+    )
+  }
 
   return (
     <div className="file-browser">

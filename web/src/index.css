@@ -1671,3 +1671,121 @@ select {
 .settings-locale-options input[type='radio'] {
   accent-color: var(--accent-emphasis);
 }
+
+/* ============================ Empty repo welcome (Quick setup) ============================ */
+
+.quick-setup {
+  margin-top: 8px;
+  padding: 20px 24px;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.quick-setup-title {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg-default);
+}
+
+.quick-setup-desc {
+  margin: 0 0 18px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.quick-setup-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.proto-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.proto-toggle-btn {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--bg-canvas);
+  color: var(--fg-default);
+  border: none;
+  cursor: pointer;
+  border-right: 1px solid var(--border-default);
+}
+
+.proto-toggle-btn:last-child {
+  border-right: none;
+}
+
+.proto-toggle-btn.active {
+  background: var(--accent-subtle);
+  color: var(--accent-fg);
+}
+
+.proto-toggle-btn:hover:not(.active) {
+  background: var(--bg-hover);
+}
+
+.clone-url {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.clone-url-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  font: 12px/1.4 var(--font-mono);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--fg-default);
+}
+
+.cmd-block {
+  margin-top: 20px;
+}
+
+.cmd-block-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-default);
+}
+
+.cmd-block-body {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.cmd-block-body code {
+  font: 12px/1.5 var(--font-mono);
+  color: var(--fg-default);
+  white-space: pre;
+}
+
+.quick-setup-protip {
+  margin: 18px 0 0;
+  padding: 10px 12px;
+  background: var(--attention-muted);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
