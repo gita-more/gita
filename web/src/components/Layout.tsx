@@ -441,8 +441,15 @@ export function EmptyState({
 }
 
 export function StatusLabel({ status }: { status: string }) {
+  const { t } = useI18n()
   let cls = 'status'
   let Icon = GitPullRequestIcon
+  // status is one of 'open' / 'merged' / 'closed' / 'resolved'. We use the
+  // raw status as the i18n key under status.*; if a future status slips in
+  // here untranslated, fall back to the raw string so the UI never goes blank.
+  const labelKey = `status.${status}` as const
+  const translated = t(labelKey)
+  const label = translated === labelKey ? status : translated
   if (status === 'open') {
     cls += ' status-open'
     Icon = CircleDotIcon
@@ -459,7 +466,7 @@ export function StatusLabel({ status }: { status: string }) {
   return (
     <span className={cls}>
       <Icon size={12} />
-      {status}
+      {label}
     </span>
   )
 }

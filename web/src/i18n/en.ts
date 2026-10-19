@@ -144,6 +144,7 @@ export const messages = {
     open: 'open',
     merged: 'merged',
     closed: 'closed',
+    resolved: 'resolved',
   },
   settings: {
     title: 'Settings',
