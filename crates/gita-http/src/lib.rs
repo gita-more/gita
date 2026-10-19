@@ -174,6 +174,67 @@ async fn handle_git_request(
                 );
                 state.bus.publish(EventType::Push, repo_id, pusher_id, payload);
             }
+
+            // Phase 1 CI trigger: if the pushed commit contains
+            // `.gita-ci.yml`, upsert the pipeline, enqueue a run, and
+            // emit a PipelineRequested event. `trigger_event_id` is left
+            // NULL — bus.publish() doesn't return a DB id (the persist
+            // hook inserts asynchronously), and the PipelineRequested
+            // payload already carries owner/repo/ref/head_sha/run_id.
+            if let Some(rid) = repo_id {
+                for upd in &received_updates {
+                    if upd.new_sha.chars().all(|c| c == '0') {
+                        continue; // branch deletion — skip
+                    }
+                    let Some(file) = state
+                        .git
+                        .read_file(owner, repo_name, &upd.new_sha, ".gita-ci.yml")
+                        .ok()
+                        .flatten()
+                    else {
+                        continue; // no CI config at this commit
+                    };
+                    let pipeline_id = state
+                        .db
+                        .upsert_pipeline(
+                            rid,
+                            ".gita-ci.yml",
+                            &upd.ref_name,
+                            &upd.new_sha,
+                            &file.content,
+                        )
+                        .await
+                        .ok();
+                    let Some(pid) = pipeline_id else { continue };
+                    let run_id = state
+                        .db
+                        .insert_pipeline_run(
+                            pid,
+                            rid,
+                            &upd.ref_name,
+                            &upd.new_sha,
+                            pusher_id,
+                            None,
+                        )
+                        .await
+                        .ok();
+                    let Some(run_id) = run_id else { continue };
+                    let req_payload = serde_json::json!({
+                        "owner": owner,
+                        "repo": repo_name,
+                        "run_id": run_id,
+                        "pipeline_id": pid,
+                        "ref": upd.ref_name,
+                        "head_sha": upd.new_sha,
+                    });
+                    state.bus.publish(
+                        EventType::PipelineRequested,
+                        Some(rid),
+                        pusher_id,
+                        req_payload,
+                    );
+                }
+            }
         }
     }
 
