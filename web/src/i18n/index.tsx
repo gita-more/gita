@@ -8,11 +8,8 @@ import {
   type ReactNode,
 } from 'react'
 import { api, type User } from '../lib/api'
-import { messages as zh } from './zh'
-import { messages as en } from './en'
-import type { Locale, Messages } from './types'
-
-const dictionaries: Record<Locale, Messages> = { zh, en }
+import { translate } from './translate'
+import type { Locale } from './types'
 
 // ---------------------------------------------------------------------------
 // Module-level locale store (same pattern as useAuth) so the whole app shares
@@ -56,31 +53,8 @@ function getSnapshot(): Locale {
 }
 
 // ---------------------------------------------------------------------------
-// Translation
+// Translation (see ./translate.ts)
 // ---------------------------------------------------------------------------
-
-function translate(locale: Locale, key: string, vars?: Record<string, string | number>): string {
-  const dict = dictionaries[locale]
-  const lookup = (source: Messages): unknown =>
-    key.split('.').reduce<unknown>(
-      (acc, part) =>
-        acc && typeof acc === 'object' ? (acc as Record<string, unknown>)[part] : undefined,
-      source,
-    )
-  const text = lookup(dict)
-  if (typeof text === 'string') {
-    let result: string = text
-    if (vars) {
-      for (const [k, v] of Object.entries(vars)) {
-        result = result.replaceAll(`{${k}}`, String(v))
-      }
-    }
-    return result
-  }
-  // Fallback: English, then the key itself.
-  const enText = lookup(en)
-  return typeof enText === 'string' ? enText : key
-}
 
 // ---------------------------------------------------------------------------
 // Setting locale: update memory + localStorage + backend, notify subscribers.
