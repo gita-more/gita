@@ -1,57 +1,5 @@
-import { test, expect, type Page } from '@playwright/test'
-
-// ---------------------------------------------------------------------------
-// 辅助函数：通过 API 登录并把 token / user 注入 localStorage
-// （与 layout.spec.ts 共享同一个机制）
-// ---------------------------------------------------------------------------
-const BASE = process.env.GITA_URL ?? 'http://127.0.0.1:3100'
-
-async function loginViaApi(
-  page: Page,
-  user: { username: string; password: string },
-) {
-  const res = await page.request.post(`${BASE}/api/auth/register`, {
-    data: { email: `${user.username}@e2e.local`, ...user },
-  })
-  // 409 (already exists) is fine for retry; only fail on actual errors.
-  if (!res.ok() && res.status() !== 409) {
-    throw new Error(`register failed: ${res.status()} ${await res.text()}`)
-  }
-  const login = await page.request.post(`${BASE}/api/auth/login`, {
-    data: user,
-  })
-  expect(login.ok()).toBeTruthy()
-  const body = (await login.json()) as {
-    token: string
-    user: { id: number; username: string; email: string }
-  }
-  await page.addInitScript(
-    ({ token, user }) => {
-      localStorage.setItem('gita_token', token)
-      localStorage.setItem('gita_user', JSON.stringify(user))
-    },
-    { token: body.token, user: body.user },
-  )
-}
-
-async function loginExisting(
-  page: Page,
-  user: { username: string; password: string },
-) {
-  const login = await page.request.post(`${BASE}/api/auth/login`, { data: user })
-  expect(login.ok()).toBeTruthy()
-  const body = (await login.json()) as {
-    token: string
-    user: { id: number; username: string; email: string }
-  }
-  await page.addInitScript(
-    ({ token, user }) => {
-      localStorage.setItem('gita_token', token)
-      localStorage.setItem('gita_user', JSON.stringify(user))
-    },
-    { token: body.token, user: body.user },
-  )
-}
+import { test, expect } from '@playwright/test'
+import { loginViaApi, loginExisting } from './helpers'
 
 // ---------------------------------------------------------------------------
 // 端到端用户旅程

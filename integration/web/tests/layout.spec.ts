@@ -1,48 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-
-// ---------------------------------------------------------------------------
-// 辅助函数：通过 API 登录并把 token / user 注入 localStorage
-// （跳过 UI 登录表单，使测试更稳定）
-// ---------------------------------------------------------------------------
-const BASE = process.env.GITA_URL ?? 'http://127.0.0.1:3100'
-const USER = process.env.GITA_TEST_USER ?? 'testuser'
-const PASS = process.env.GITA_TEST_PASS ?? 'testpass123'
-
-async function loginViaApi(page: Page) {
-  // Ensure the test user exists (register; ignore 409 if already present),
-  // so the test is self-contained even after a database reset.
-  const reg = await page.request.post(`${BASE}/api/auth/register`, {
-    data: { username: USER, email: `${USER}@e2e.local`, password: PASS },
-  })
-  if (!reg.ok() && reg.status() !== 409) {
-    throw new Error(`register failed: ${reg.status()} ${await reg.text()}`)
-  }
-  const res = await page.request.post(`${BASE}/api/auth/login`, {
-    data: { username: USER, password: PASS },
-  })
-  expect(res.ok()).toBeTruthy()
-  const body = (await res.json()) as { token: string; user: { id: number; username: string; email: string } }
-  await page.addInitScript(
-    ({ token, user }) => {
-      localStorage.setItem('gita_token', token)
-      localStorage.setItem('gita_user', JSON.stringify(user))
-    },
-    { token: body.token, user: body.user },
-  )
-}
-
-async function ensureTestRepo(page: Page) {
-  // 尝试创建测试仓库（已存在会失败，忽略即可）
-  const token = await page.evaluate(() => localStorage.getItem('gita_token'))
-  const res = await page.request.post(`${BASE}/api/repos`, {
-    headers: { Authorization: `Bearer ${token}` },
-    data: { name: 'e2e-demo', description: 'created by playwright test', default_branch: 'main' },
-  })
-  if (!res.ok()) {
-    const body = await res.text()
-    console.warn(`ensureTestRepo: ${res.status()} ${body.slice(0, 120)}`)
-  }
-}
+import { loginViaApi, BASE } from './helpers'
 
 // ---------------------------------------------------------------------------
 // 侧边栏布局测试
@@ -111,4 +68,31 @@ test.describe('侧边栏布局', () => {
     await expect(page.locator('.app.sidebar-collapsed')).toHaveCount(0)
     await expect(page.locator('.sidebar-link span').first()).toBeVisible()
   })
+
+  test('仓库卡片是单行 flex 布局', async ({ page }) => {
+    await loginViaApi(page)
+    await page.goto('/')
+    await ensureTestRepo(page)
+    await page.goto('/')
+
+    const card = page.locator('.repo-card', { hasText: 'e2e-demo' }).first()
+    await expect(card).toBeVisible()
+    // 5adbd7b7 把 .repo-card 从 grid 列改成单行 flex 行；
+    // flex-direction 一旦回到 column 就视为回归。
+    const dir = await card.evaluate((el) => getComputedStyle(el).flexDirection)
+    expect(dir).toBe('row')
+  })
 })
+
+async function ensureTestRepo(page: Page) {
+  // 尝试创建测试仓库（已存在会失败，忽略即可）
+  const token = await page.evaluate(() => localStorage.getItem('gita_token'))
+  const res = await page.request.post(`${BASE}/api/repos`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { name: 'e2e-demo', description: 'created by playwright test', default_branch: 'main' },
+  })
+  if (!res.ok()) {
+    const body = await res.text()
+    console.warn(`ensureTestRepo: ${res.status()} ${body.slice(0, 120)}`)
+  }
+}
