@@ -50,6 +50,25 @@ pub fn group_routes() -> Router<AppState> {
         .route("/api/groups", axum::routing::post(create_group).get(list_groups))
         .route("/api/groups/{group}", get(get_group))
         .route("/api/groups/{group}/repos", axum::routing::post(create_group_repo))
+        .route(
+            "/api/groups/{group}/members",
+            get(list_group_members).post(add_group_member),
+        )
+        .route(
+            "/api/groups/{group}/members/{username}",
+            axum::routing::delete(remove_group_member).patch(update_group_member),
+        )
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddGroupMemberRequest {
+    pub username: String,
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateGroupMemberRequest {
+    pub role: String,
 }
 
 async fn create_group(
@@ -189,4 +208,141 @@ async fn create_group_repo(
         "default_branch": repo.default_branch,
         "created_at": repo.created_at.to_rfc3339(),
     })))
+}
+// ---------------------------------------------------------------------------
+// Group member management
+// ---------------------------------------------------------------------------
+
+fn require_group_owner(state: &AppState, g: &gita_core::Group, user_id: i64) -> ApiResult<()> {
+    if g.owner_id != user_id {
+        return Err(ApiError::Forbidden(
+            "only the group owner can manage members".into(),
+        ));
+    }
+    let _ = state;
+    Ok(())
+}
+
+async fn list_group_members(
+    State(state): State<AppState>,
+    Path(group): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let g = state
+        .db
+        .get_group_by_name(&group)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
+    let members = state.db.list_group_members(g.id).await?;
+    Ok(Json(serde_json::json!({ "members": members })))
+}
+
+async fn add_group_member(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path(group): Path<String>,
+    Json(req): Json<AddGroupMemberRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let g = state
+        .db
+        .get_group_by_name(&group)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
+    require_group_owner(&state, &g, user.id)?;
+
+    let username = req.username.trim().to_string();
+    if username.is_empty() {
+        return Err(ApiError::BadRequest("username is required".into()));
+    }
+    let target = state
+        .db
+        .get_user_by_username(&username)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("user not found".into()))?;
+    let role = req.role.unwrap_or_else(|| "member".to_string());
+    let role = normalize_role(&role)?;
+
+    state
+        .db
+        .upsert_group_member(g.id, target.id, &role)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "group": g.name,
+        "username": target.username,
+        "role": role,
+    })))
+}
+
+async fn remove_group_member(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((group, username)): Path<(String, String)>,
+) -> ApiResult<Json<crate::error::MessageResponse>> {
+    let g = state
+        .db
+        .get_group_by_name(&group)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
+    require_group_owner(&state, &g, user.id)?;
+
+    let target = state
+        .db
+        .get_user_by_username(&username)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("user not found".into()))?;
+    if !state
+        .db
+        .remove_group_member(g.id, target.id)
+        .await?
+    {
+        return Err(ApiError::NotFound("user is not a member of this group".into()));
+    }
+    Ok(Json(crate::error::MessageResponse {
+        message: "member removed".to_string(),
+    }))
+}
+
+async fn update_group_member(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((group, username)): Path<(String, String)>,
+    Json(req): Json<UpdateGroupMemberRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let g = state
+        .db
+        .get_group_by_name(&group)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
+    require_group_owner(&state, &g, user.id)?;
+
+    let target = state
+        .db
+        .get_user_by_username(&username)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("user not found".into()))?;
+    let role = normalize_role(&req.role)?;
+
+    state
+        .db
+        .upsert_group_member(g.id, target.id, &role)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "group": g.name,
+        "username": target.username,
+        "role": role,
+    })))
+}
+
+/// Restrict roles to a small known set. `owner` is reserved for the group
+/// creator; assigning it to other users is rejected here so the original
+/// owner stays unique.
+fn normalize_role(role: &str) -> ApiResult<String> {
+    match role {
+        "owner" => Ok("owner".to_string()),
+        "maintainer" | "developer" | "member" | "guest" => Ok(role.to_string()),
+        _ => Err(ApiError::BadRequest(format!(
+            "invalid role '{role}' (allowed: owner, maintainer, developer, member, guest)"
+        ))),
+    }
 }

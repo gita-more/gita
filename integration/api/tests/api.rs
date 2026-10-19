@@ -1226,6 +1226,105 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn group_member_management() {
+    let (app, _guard) = common::test_app().await;
+    let owner = register_user(&app, "grp-owner").await;
+    let member = register_user(&app, "grp-member").await;
+
+    // Owner creates a group.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/groups",
+        Some(serde_json::json!({"name": "acme", "description": ""})),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create group: {body}");
+
+    // Add member.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/groups/acme/members",
+        Some(serde_json::json!({"username": "grp-member", "role": "developer"})),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "add member: {body}");
+    assert_eq!(body["role"], "developer");
+
+    // List members.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/groups/acme/members",
+        None,
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let members = body["members"].as_array().unwrap();
+    assert!(members.iter().any(|m| m["username"] == "grp-member"));
+    assert!(members.iter().any(|m| m["username"] == "grp-owner")); // owner is auto-added
+
+    // Non-owner cannot add a member.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/groups/acme/members",
+        Some(serde_json::json!({"username": "grp-owner"})),
+        Some(&member.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+    // Update role.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::PATCH,
+        "/api/groups/acme/members/grp-member",
+        Some(serde_json::json!({"role": "maintainer"})),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Invalid role -> 400.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/groups/acme/members",
+        Some(serde_json::json!({"username": "grp-member", "role": "admin"})),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+    // Remove member.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        "/api/groups/acme/members/grp-member",
+        None,
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Removing twice -> 404.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        "/api/groups/acme/members/grp-member",
+        None,
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn login_rate_limit_returns_429() {
     let (app, _guard) = common::test_app().await;
     // Default router uses a 100/200 limiter (effectively off) — install a

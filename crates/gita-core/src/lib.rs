@@ -31,6 +31,15 @@ pub struct Group {
     pub created_at: DateTime<Utc>,
 }
 
+/// A member of a group, with their role.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GroupMember {
+    pub group_id: i64,
+    pub user_id: i64,
+    pub username: String,
+    pub role: String,
+}
+
 /// A repository (bare git repository) hosted on Gita.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Repository {
