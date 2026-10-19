@@ -155,6 +155,13 @@ pub enum EventType {
     IssueClosed,
     AgentRunStarted,
     AgentRunCompleted,
+    // In-repo CI (Phase 1)
+    PipelineRequested,
+    PipelineStarted,
+    PipelineCompleted,
+    PipelineFailed,
+    JobStarted,
+    JobCompleted,
 }
 
 impl fmt::Display for EventType {
@@ -170,6 +177,12 @@ impl fmt::Display for EventType {
             EventType::IssueClosed => "issue_closed",
             EventType::AgentRunStarted => "agent_run_started",
             EventType::AgentRunCompleted => "agent_run_completed",
+            EventType::PipelineRequested => "pipeline_requested",
+            EventType::PipelineStarted => "pipeline_started",
+            EventType::PipelineCompleted => "pipeline_completed",
+            EventType::PipelineFailed => "pipeline_failed",
+            EventType::JobStarted => "job_started",
+            EventType::JobCompleted => "job_completed",
         };
         write!(f, "{s}")
     }
