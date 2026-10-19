@@ -169,6 +169,7 @@ fn parse_event_type(s: &str) -> Result<EventType> {
         "pull_request_closed" => EventType::PullRequestClosed,
         "issue_created" => EventType::IssueCreated,
         "issue_closed" => EventType::IssueClosed,
+        "user_registered" => EventType::UserRegistered,
         "agent_run_started" => EventType::AgentRunStarted,
         "agent_run_completed" => EventType::AgentRunCompleted,
         "pipeline_requested" => EventType::PipelineRequested,

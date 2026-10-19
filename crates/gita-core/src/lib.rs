@@ -180,6 +180,7 @@ pub enum EventType {
     IssueClosed,
     CommentCreated,
     CommentDeleted,
+    UserRegistered,
     AgentRunStarted,
     AgentRunCompleted,
     // In-repo CI (Phase 1)
@@ -204,6 +205,7 @@ impl fmt::Display for EventType {
             EventType::IssueClosed => "issue_closed",
             EventType::CommentCreated => "comment_created",
             EventType::CommentDeleted => "comment_deleted",
+            EventType::UserRegistered => "user_registered",
             EventType::AgentRunStarted => "agent_run_started",
             EventType::AgentRunCompleted => "agent_run_completed",
             EventType::PipelineRequested => "pipeline_requested",

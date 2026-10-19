@@ -128,7 +128,7 @@ async fn register(
     let token = state.auth.sign_jwt(&user)?;
 
     state.bus.publish(
-        EventType::RepoCreated, // placeholder: no dedicated signup event; use comment_added? Keep simple.
+        EventType::UserRegistered,
         None,
         Some(user.id),
         serde_json::json!({"username": username}),
