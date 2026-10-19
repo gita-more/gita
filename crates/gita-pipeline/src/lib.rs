@@ -29,6 +29,94 @@ use thiserror::Error;
 pub struct PipelineSpec {
     pub stages: Vec<String>,
     pub jobs: Vec<ParsedJob>,
+    pub triggers: Triggers,
+}
+
+/// Top-level trigger filters. A push triggers the pipeline if
+/// `only` matches (any non-empty `only` field matches) AND `except`
+/// doesn't disqualify it (none of `except`'s non-empty fields match).
+/// Empty filters match everything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Triggers {
+    pub only: TriggerRule,
+    pub except: TriggerRule,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TriggerRule {
+    /// Branch globs (e.g. `main`, `release/*`, `feature/**`).
+    pub branches: Vec<String>,
+    /// Path globs relative to the repo root (e.g. `src/**`, `*.md`).
+    pub paths: Vec<String>,
+}
+
+/// Result of [`Triggers::should_run`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TriggerDecision {
+    Run,
+    Skip,
+}
+
+impl Triggers {
+    /// Decide whether a pipeline should run for a push at `branch`
+    /// that touched any of `changed_paths`.
+    ///
+    /// Rules:
+    /// - `only`: if non-empty, **any** matching field (branch OR path)
+    ///   passes; otherwise the push is skipped.
+    /// - `except`: if any matching field (branch OR path) is non-empty
+    ///   and matches, the push is skipped.
+    pub fn should_run(&self, branch: &str, changed_paths: &[&str]) -> TriggerDecision {
+        let only_active = !self.only.branches.is_empty() || !self.only.paths.is_empty();
+        if only_active {
+            let branch_ok = self
+                .only
+                .branches
+                .iter()
+                .any(|g| glob_match(g, branch));
+            let path_ok = self
+                .only
+                .paths
+                .iter()
+                .any(|g| changed_paths.iter().any(|p| glob_match(g, p)));
+            // `only` requires any-field match.
+            if !(branch_ok || path_ok) {
+                return TriggerDecision::Skip;
+            }
+        }
+
+        // `except` short-circuits if either field matches.
+        if self
+            .except
+            .branches
+            .iter()
+            .any(|g| glob_match(g, branch))
+        {
+            return TriggerDecision::Skip;
+        }
+        if self
+            .except
+            .paths
+            .iter()
+            .any(|g| changed_paths.iter().any(|p| glob_match(g, p)))
+        {
+            return TriggerDecision::Skip;
+        }
+
+        TriggerDecision::Run
+    }
+}
+
+/// Match `pat` (a glob) against `s`. `*` matches any non-`/` chars,
+/// `?` matches one char. Falls back to plain equality when the
+/// pattern has no glob metachars.
+fn glob_match(pat: &str, s: &str) -> bool {
+    if !pat.contains('*') && !pat.contains('?') && !pat.contains('[') {
+        return pat == s;
+    }
+    globset::Glob::new(pat)
+        .map(|g| g.compile_matcher().is_match(s))
+        .unwrap_or(false)
 }
 
 /// One job parsed from the YAML.
@@ -79,6 +167,18 @@ struct RawSpec {
     stages: Vec<String>,
     #[serde(default)]
     jobs: BTreeMap<String, RawJob>,
+    #[serde(default)]
+    only: Option<RawTriggerRule>,
+    #[serde(default)]
+    except: Option<RawTriggerRule>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawTriggerRule {
+    #[serde(default)]
+    branches: Vec<String>,
+    #[serde(default)]
+    paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,6 +236,22 @@ pub fn parse_yaml(src: &str) -> Result<PipelineSpec, PipelineParseError> {
     Ok(PipelineSpec {
         stages: raw.stages,
         jobs,
+        triggers: Triggers {
+            only: raw
+                .only
+                .map(|r| TriggerRule {
+                    branches: r.branches,
+                    paths: r.paths,
+                })
+                .unwrap_or_default(),
+            except: raw
+                .except
+                .map(|r| TriggerRule {
+                    branches: r.branches,
+                    paths: r.paths,
+                })
+                .unwrap_or_default(),
+        },
     })
 }
 
@@ -341,5 +457,89 @@ jobs:
 "#;
         let err = parse_yaml(yaml).unwrap_err();
         assert!(matches!(err, PipelineParseError::MissingScript { .. }));
+    }
+
+    #[test]
+    fn parse_only_branches_globs() {
+        let yaml = r#"
+stages: [build]
+only:
+  branches: [main, release/*]
+jobs:
+  b:
+    stage: build
+    script: [echo b]
+"#;
+        let spec = parse_yaml(yaml).unwrap();
+        assert_eq!(spec.triggers.only.branches, vec!["main", "release/*"]);
+        assert!(spec.triggers.only.paths.is_empty());
+    }
+
+    #[test]
+    fn should_run_logic() {
+        let spec_yaml = r#"
+stages: [build]
+only:
+  branches: [main, release/*]
+  paths: ["src/**"]
+except:
+  paths: ["docs/**"]
+jobs:
+  b:
+    stage: build
+    script: [echo b]
+"#;
+        let spec = parse_yaml(spec_yaml).unwrap();
+
+        // Branch matches main → run.
+        assert_eq!(
+            spec.triggers.should_run("main", &["README.md"]),
+            TriggerDecision::Run
+        );
+        // Branch matches release/1.x via glob, path matches src/** → run.
+        assert_eq!(
+            spec.triggers.should_run("release/1.x", &["src/lib.rs"]),
+            TriggerDecision::Run
+        );
+        // Branch is feature/foo (no `only` branch match), path matches
+        // src/** → still run because `only` is OR-of-branches-and-paths.
+        assert_eq!(
+            spec.triggers.should_run("feature/foo", &["src/main.rs"]),
+            TriggerDecision::Run
+        );
+
+        // Branch doesn't match `only.branches`, path doesn't match
+        // `only.paths` → skip.
+        assert_eq!(
+            spec.triggers.should_run("feature/foo", &["README.md"]),
+            TriggerDecision::Skip
+        );
+
+        // Branch matches, but path matches `except.paths` → skip.
+        assert_eq!(
+            spec.triggers.should_run("main", &["docs/intro.md"]),
+            TriggerDecision::Skip
+        );
+    }
+
+    #[test]
+    fn should_run_default_when_triggers_empty() {
+        // No `only` and no `except` → always run.
+        let spec = parse_yaml(
+            r#"
+stages: [build]
+jobs:
+  b:
+    stage: build
+    script: [echo b]
+"#,
+        )
+        .unwrap();
+        for branch in ["main", "feature/x", "release/1.x"] {
+            assert_eq!(
+                spec.triggers.should_run(branch, &["anything.md"]),
+                TriggerDecision::Run
+            );
+        }
     }
 }

@@ -1027,6 +1027,7 @@ dependencies = [
  "gita-db",
  "gita-events",
  "gita-git",
+ "gita-pipeline",
  "serde",
  "serde_json",
  "thiserror",
@@ -1075,6 +1076,7 @@ dependencies = [
 name = "gita-pipeline"
 version = "0.0.1"
 dependencies = [
+ "globset",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2127,6 +2129,19 @@ checksum = "8c2edb206bf06f3c801f4f6789c696396171558ab9b4c7f1fe3ba4d39b00b0f4"
 dependencies = [
  "gix-error",
  "zlib-rs",
+]
+
+[[package]]
+name = "globset"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07c34a9410465b45bd9787443bc7370f37735bad04b0f0cd57ff1a3186c98988"
+dependencies = [
+ "aho-corasick",
+ "bstr",
+ "log",
+ "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]

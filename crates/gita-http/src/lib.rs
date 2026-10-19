@@ -194,6 +194,11 @@ async fn handle_git_request(
                     else {
                         continue; // no CI config at this commit
                     };
+                    // Parse + apply only/except filter before enqueueing.
+                    // We only have the branch + the new SHA here; the
+                    // pipeline spec may carry changed paths in a future
+                    // revision. For Phase 2 we evaluate the branch rule
+                    // and pass an empty changed_paths list.
                     let pipeline_id = state
                         .db
                         .upsert_pipeline(
@@ -206,6 +211,35 @@ async fn handle_git_request(
                         .await
                         .ok();
                     let Some(pid) = pipeline_id else { continue };
+
+                    // Apply the only/except trigger filters from the
+                    // .gita-ci.yml we just parsed. Phase 2 evaluates
+                    // branch + path; we pass an empty changed_paths
+                    // list here because the receive-pack handler
+                    // doesn't know which paths the commit touched yet.
+                    match gita_pipeline::parse_yaml(&file.content) {
+                        Ok(spec) => {
+                            use gita_pipeline::TriggerDecision;
+                            if matches!(
+                                spec.triggers.should_run(&upd.ref_name, &[]),
+                                TriggerDecision::Skip
+                            ) {
+                                info!(
+                                    "skip enqueue for {}/{} on {} (filtered by only/except)",
+                                    owner, repo_name, upd.ref_name
+                                );
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            // A malformed yaml is fine to skip here:
+                            // the runner will mark the run failed on
+                            // pickup. We just don't enqueue.
+                            tracing::warn!("parse .gita-ci.yml failed (skip enqueue): {e}");
+                            continue;
+                        }
+                    }
+
                     let run_id = state
                         .db
                         .insert_pipeline_run(

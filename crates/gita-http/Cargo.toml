@@ -21,3 +21,4 @@ gita-git = { path = "../gita-git" }
 gita-db = { path = "../gita-db" }
 gita-events = { path = "../gita-events" }
 gita-api = { path = "../gita-api" }
+gita-pipeline = { path = "../gita-pipeline" }
