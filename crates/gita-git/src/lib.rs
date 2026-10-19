@@ -98,6 +98,43 @@ impl GitManager {
         Ok(())
     }
 
+    /// Fork: clone the bare repository at `(src_owner, src_name)` to a
+    /// new location under `(dst_owner, dst_name)`. The destination must
+    /// not exist. The clone uses `git clone --bare` so all objects and
+    /// refs are copied without a working tree.
+    pub fn fork_repo(
+        &self,
+        src_owner: &str,
+        src_name: &str,
+        dst_owner: &str,
+        dst_name: &str,
+    ) -> Result<()> {
+        let src = self.repo_path(src_owner, src_name);
+        let dst = self.repo_path(dst_owner, dst_name);
+        if !src.exists() {
+            return Err(anyhow!("source repository not found: {src_owner}/{src_name}"));
+        }
+        if dst.exists() {
+            return Err(anyhow!("destination repository already exists: {dst_owner}/{dst_name}"));
+        }
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let src_url = format!("file://{}", src.display());
+        let output = git_cmd()
+            .args(["clone", "--bare", "--no-local", &src_url])
+            .arg(&dst)
+            .output()
+            .map_err(|e| anyhow!("fork git clone failed: {e}"))?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "fork git clone error: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    }
+
     /// Open a bare repository with gix.
     pub fn open(&self, owner: &str, name: &str) -> Result<Repository> {
         let path = self.repo_path(owner, name);

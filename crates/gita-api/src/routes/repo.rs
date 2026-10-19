@@ -76,6 +76,10 @@ pub fn repo_routes() -> Router<AppState> {
             "/api/repos/{owner}/{repo}/star",
             axum::routing::put(put_star).delete(delete_star).get(get_star),
         )
+        .route(
+            "/api/repos/{owner}/{repo}/fork",
+            axum::routing::post(post_fork),
+        )
         .route("/api/repos/{owner}/{repo}/branches", get(list_branches).post(create_branch))
         .route(
             "/api/repos/{owner}/{repo}/branches/{branch}",
@@ -511,6 +515,77 @@ async fn get_star(
         "starred": starred,
         "count": total,
     })))
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ForkRequest {
+    /// Optional override for the fork's name. Defaults to the source name.
+    pub name: Option<String>,
+}
+
+async fn post_fork(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo)): Path<(String, String)>,
+    Json(req): Json<ForkRequest>,
+) -> ApiResult<Json<RepoResponse>> {
+    let source = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("source repository not found".into()))?;
+    let fork_name = req.name.unwrap_or_else(|| source.name.clone());
+    let fork_name = fork_name.trim().to_string();
+    if fork_name.is_empty()
+        || !fork_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(ApiError::BadRequest(
+            "repository name may only contain letters, numbers, '-', '_', '.'".into(),
+        ));
+    }
+    // The fork lives under the forking user's namespace.
+    let dst_owner = user.username.clone();
+    if state
+        .db
+        .get_repository_by_name(&dst_owner, &fork_name)
+        .await?
+        .is_some()
+    {
+        return Err(ApiError::Conflict("destination repository already exists".into()));
+    }
+
+    state
+        .git
+        .fork_repo(&owner, &repo, &dst_owner, &fork_name)
+        .map_err(ApiError::from)?;
+
+    let repo = state
+        .db
+        .create_repository(
+            user.id,
+            &dst_owner,
+            &fork_name,
+            &source.description,
+            false,
+            &source.default_branch,
+        )
+        .await?;
+
+    state.bus.publish(
+        EventType::RepoCreated,
+        Some(repo.id),
+        Some(user.id),
+        serde_json::json!({
+            "owner": dst_owner,
+            "repo": fork_name,
+            "action": "forked",
+            "source": format!("{}/{}", owner, source.name),
+        }),
+    );
+
+    Ok(Json(RepoResponse::from(repo)))
 }
 
 async fn create_branch(

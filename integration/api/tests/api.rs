@@ -1226,6 +1226,68 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn fork_repository() {
+    let (app, _guard) = common::test_app().await;
+    let owner = register_user(&app, "fork-owner").await;
+    let forker = register_user(&app, "forker").await;
+    let full = common::create_repo(&app, &owner.token, "origin").await;
+    let (owner_name, _) = full.split_once('/').unwrap();
+    common::push_initial_commit(&app, owner_name, "origin");
+
+    // Forker forks the repo under their own namespace.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        &format!("/api/repos/{owner_name}/origin/fork"),
+        Some(serde_json::json!({})),
+        Some(&forker.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "fork: {body}");
+    assert_eq!(body["owner"], "forker");
+    assert_eq!(body["name"], "origin");
+
+    // Fork is readable via the new namespace.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/repos/forker/origin",
+        None,
+        Some(&forker.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["full_name"], "forker/origin");
+
+    // Pushing to the fork writes to a different bare repo on disk.
+    let fork_bare = app.data_dir.join("repos").join("forker").join("origin.git");
+    assert!(fork_bare.exists(), "forked bare repo should exist on disk");
+
+    // Cannot fork to an existing destination.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        &format!("/api/repos/{owner_name}/origin/fork"),
+        Some(serde_json::json!({})),
+        Some(&forker.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CONFLICT);
+
+    // Custom fork name.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        &format!("/api/repos/{owner_name}/origin/fork"),
+        Some(serde_json::json!({"name": "my-fork"})),
+        Some(&forker.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "fork with name: {body}");
+    assert_eq!(body["name"], "my-fork");
+}
+
+#[tokio::test]
 async fn star_and_unstar() {
     let (app, _guard) = common::test_app().await;
     let owner = register_user(&app, "star-owner").await;
