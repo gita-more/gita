@@ -57,13 +57,14 @@ export async function loginExisting(page: Page, creds: Creds) {
 }
 
 /**
- * Switch the current user's saved locale on the server. Useful for tests
- * that want to exercise UI translation. The page is reloaded afterwards
- * so the next render pulls the new locale.
+ * Switch the current user's saved locale on the server. Mirrors what
+ * Settings.tsx does via api.updateLocale() — PATCH /api/auth/me with the
+ * {locale} body. The page is reloaded afterwards so the next render pulls
+ * the new locale.
  */
 export async function setUserLocale(page: Page, locale: 'zh' | 'en') {
   const token = await page.evaluate(() => localStorage.getItem('gita_token'))
-  const res = await page.request.post(`${BASE}/api/users/me/locale`, {
+  const res = await page.request.patch(`${BASE}/api/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
     data: { locale },
   })
