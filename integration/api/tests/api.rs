@@ -1226,6 +1226,181 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn login_rate_limit_returns_429() {
+    let (app, _guard) = common::test_app().await;
+    // Default router uses a 100/200 limiter (effectively off) — install a
+    // tighter limiter (1 req/s, burst 1) so we can demonstrate 429 with a
+    // small loop.
+    use tower::ServiceExt;
+    let limiter = gita_api::build_limiter(1, 1);
+    let router = app.router_with_limiter(limiter);
+    // Single request consumes the only token; the next must be 429.
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "username": "nobody",
+                "password": "nope",
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert!(
+        resp.status() == axum::http::StatusCode::UNAUTHORIZED
+            || resp.status() == axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "first request should be UNAUTHORIZED or already throttled, got {}",
+        resp.status()
+    );
+
+    let req2 = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "username": "nobody",
+                "password": "nope",
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp2 = router.oneshot(req2).await.unwrap();
+    assert_eq!(
+        resp2.status(),
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "second request must hit the limit"
+    );
+}
+
+#[tokio::test]
+async fn change_password_and_email() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "pw-user").await;
+
+    // Change password — wrong current password.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::PATCH,
+        "/api/auth/me",
+        Some(serde_json::json!({
+            "current_password": "wrong",
+            "new_password": "newpass99",
+        })),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+
+    // Change password — missing current.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::PATCH,
+        "/api/auth/me",
+        Some(serde_json::json!({"new_password": "newpass99"})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+    // Change password — successful.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::PATCH,
+        "/api/auth/me",
+        Some(serde_json::json!({
+            "current_password": "hunter22",
+            "new_password": "newpass99",
+        })),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Old password no longer works.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/login",
+        Some(serde_json::json!({"username": "pw-user", "password": "hunter22"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+
+    // New password works.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/login",
+        Some(serde_json::json!({"username": "pw-user", "password": "newpass99"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Change email — successful.
+    let new_token = {
+        let (status, body) = request(
+            &app,
+            axum::http::Method::POST,
+            "/api/auth/login",
+            Some(serde_json::json!({"username": "pw-user", "password": "newpass99"})),
+            None,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        body["token"].as_str().unwrap().to_string()
+    };
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::PATCH,
+        "/api/auth/me",
+        Some(serde_json::json!({
+            "current_password": "newpass99",
+            "email": "pw-user-new@example.com",
+        })),
+        Some(&new_token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "patch email: {body}");
+    assert_eq!(body["email"], "pw-user-new@example.com");
+
+    // Duplicate email -> 409.
+    let other = register_user(&app, "pw-other").await;
+    let (status, _) = request(
+        &app,
+        axum::http::Method::PATCH,
+        "/api/auth/me",
+        Some(serde_json::json!({
+            "current_password": "newpass99",
+            "email": "pw-other@e2e.local",
+        })),
+        Some(&new_token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CONFLICT);
+
+    // Short new password -> 400.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::PATCH,
+        "/api/auth/me",
+        Some(serde_json::json!({
+            "current_password": "newpass99",
+            "new_password": "123",
+        })),
+        Some(&new_token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    let _ = other;
+}
+
+#[tokio::test]
 async fn update_repo_settings_rename_transfer_visibility() {
     let (app, _guard) = common::test_app().await;
     let owner = register_user(&app, "settings-user").await;

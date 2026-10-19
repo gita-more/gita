@@ -47,8 +47,11 @@ impl From<gita_core::User> for PublicUser {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct UpdateLocaleRequest {
-    pub locale: String,
+pub struct UpdateMeRequest {
+    pub locale: Option<String>,
+    pub email: Option<String>,
+    pub current_password: Option<String>,
+    pub new_password: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +76,15 @@ pub fn auth_routes() -> Router<AppState> {
     Router::new()
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
+        .route("/api/auth/tokens", post(create_token).get(list_tokens))
+        .route("/api/auth/tokens/{id}", axum::routing::delete(delete_token))
+        .route("/api/auth/me", axum::routing::get(me).patch(update_me))
+}
+
+#[allow(dead_code)]
+pub fn auth_routes_except_login() -> Router<AppState> {
+    Router::new()
+        .route("/api/auth/register", post(register))
         .route("/api/auth/tokens", post(create_token).get(list_tokens))
         .route("/api/auth/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/auth/me", axum::routing::get(me).patch(update_me))
@@ -128,10 +140,25 @@ async fn register(
     }))
 }
 
-async fn login(
+pub async fn login(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
+    // Per-IP rate limiting (P1). Bucket is per-IP; the X-Forwarded-For
+    // header is honored when present so the limiter is correct behind a
+    // trusted reverse proxy (nginx/docker-compose sets this).
+    if let Some(limiter) = state.login_limiter.as_ref() {
+        let key = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        if limiter.check_key(&key).is_err() {
+            return Err(ApiError::RateLimited("too many login attempts; try again later".into()));
+        }
+    }
     let user = state
         .db
         .get_user_by_username(&req.username)
@@ -212,16 +239,78 @@ async fn me(State(state): State<AppState>, user: AuthUserExtractor) -> ApiResult
 async fn update_me(
     State(state): State<AppState>,
     user: AuthUserExtractor,
-    Json(req): Json<UpdateLocaleRequest>,
+    Json(req): Json<UpdateMeRequest>,
 ) -> ApiResult<Json<PublicUser>> {
-    let locale = req.locale.trim().to_string();
-    if locale != "zh" && locale != "en" {
-        return Err(ApiError::BadRequest("invalid locale".into()));
-    }
-    let db_user = state
+    let mut db_user = state
         .db
-        .update_user_locale(user.id, &locale)
+        .get_user_by_id(user.id)
         .await?
         .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+
+    // Email change.
+    if let Some(email) = req.email {
+        let email = email.trim().to_string();
+        if email.is_empty() || !email.contains('@') {
+            return Err(ApiError::BadRequest("invalid email".into()));
+        }
+        // Verify current password for sensitive changes.
+        let current = req
+            .current_password
+            .as_deref()
+            .ok_or_else(|| ApiError::BadRequest("current_password required to change email".into()))?;
+        if !Auth::verify_password(current, &db_user.password_hash) {
+            return Err(ApiError::Unauthorized("invalid credentials".into()));
+        }
+        // Ensure the new email is unique.
+        if let Some(other) = state.db.get_user_by_email(&email).await? {
+            if other.id != user.id {
+                return Err(ApiError::Conflict("email already registered".into()));
+            }
+        }
+        db_user = state
+            .db
+            .update_user_email(user.id, &email)
+            .await?
+            .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    }
+
+    // Password change.
+    if let Some(new_password) = req.new_password {
+        if new_password.len() < 6 {
+            return Err(ApiError::BadRequest("password must be at least 6 characters".into()));
+        }
+        let current = req
+            .current_password
+            .as_deref()
+            .ok_or_else(|| ApiError::BadRequest("current_password required to change password".into()))?;
+        if !Auth::verify_password(current, &db_user.password_hash) {
+            return Err(ApiError::Unauthorized("invalid credentials".into()));
+        }
+        let hash = Auth::hash_password(&new_password)?;
+        state
+            .db
+            .update_user_password_hash(user.id, &hash)
+            .await?;
+        // Refresh user record so the response reflects the new hash.
+        db_user = state
+            .db
+            .get_user_by_id(user.id)
+            .await?
+            .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    }
+
+    // Locale change.
+    if let Some(locale) = req.locale {
+        let locale = locale.trim().to_string();
+        if locale != "zh" && locale != "en" {
+            return Err(ApiError::BadRequest("invalid locale".into()));
+        }
+        db_user = state
+            .db
+            .update_user_locale(user.id, &locale)
+            .await?
+            .ok_or_else(|| ApiError::Unauthorized("user not found".into()))?;
+    }
+
     Ok(Json(PublicUser::from(db_user)))
 }

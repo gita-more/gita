@@ -31,3 +31,4 @@ gita-core = { path = "../gita-core" }
 gita-db = { path = "../gita-db" }
 gita-git = { path = "../gita-git" }
 gita-events = { path = "../gita-events" }
+governor = "0.7"

@@ -13,6 +13,8 @@ pub struct AppState {
     pub auth: Arc<Auth>,
     pub git: Arc<GitManager>,
     pub bus: EventBus,
+    /// Per-IP login rate limiter. `None` means rate limiting is disabled.
+    pub login_limiter: Option<crate::middleware::SharedLimiter>,
 }
 
 impl AppState {
@@ -22,6 +24,13 @@ impl AppState {
             auth: Arc::new(auth),
             git: Arc::new(git),
             bus,
+            login_limiter: None,
         }
+    }
+
+    /// Set the login rate limiter (called by `gita-server::run`).
+    pub fn with_login_limiter(mut self, limiter: crate::middleware::SharedLimiter) -> Self {
+        self.login_limiter = Some(limiter);
+        self
     }
 }

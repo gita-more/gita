@@ -11,6 +11,7 @@ pub mod repo;
 
 // Re-export route functions.
 pub use auth::auth_routes;
+pub use auth::auth_routes_except_login;
 pub use comment::comment_routes;
 pub use group::group_routes;
 pub use repo::repo_routes;

@@ -28,6 +28,8 @@ pub enum ApiError {
     NotFound(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("rate limited: {0}")]
+    RateLimited(String),
     #[error("internal error: {0}")]
     Internal(String),
     #[error("database error: {0}")]
@@ -44,6 +46,7 @@ impl ApiError {
             ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
             ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
+            ApiError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Internal(_) | ApiError::Database(_) | ApiError::Io(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }

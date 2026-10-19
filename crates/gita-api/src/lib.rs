@@ -14,12 +14,14 @@ pub mod auth;
 pub mod docs;
 pub mod error;
 pub mod extract;
+pub mod middleware;
 pub mod routes;
 pub mod state;
 
 pub use auth::Auth;
 pub use error::{ApiError, ApiResult, MessageResponse, message};
 pub use extract::{AuthUserExtractor, OptionalAuthUser};
+pub use middleware::{SharedLimiter, build_limiter};
 pub use state::AppState;
 
 /// Build the full API router.

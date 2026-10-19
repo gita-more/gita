@@ -244,6 +244,35 @@ impl Db {
         Ok(Some(row_to_user(&rows[0])?))
     }
 
+    pub async fn update_user_email(&self, user_id: i64, email: &str) -> Result<Option<User>> {
+        let rows = sqlx::query(
+            "UPDATE users SET email = $2 WHERE id = $1
+             RETURNING id, username, email, password_hash, created_at, locale",
+        )
+        .bind(user_id)
+        .bind(email)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(row_to_user(&rows[0])?))
+    }
+
+    /// Update a user's password (raw Argon2 hash).
+    pub async fn update_user_password_hash(
+        &self,
+        user_id: i64,
+        new_hash: &str,
+    ) -> Result<bool> {
+        let res = sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
+            .bind(user_id)
+            .bind(new_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     pub async fn get_user_by_id(&self, id: i64) -> Result<Option<User>> {
         let rows = sqlx::query(
             "SELECT id, username, email, password_hash, created_at, locale FROM users WHERE id = $1",

@@ -223,7 +223,18 @@ impl App {
 
     /// Build the full axum router.
     pub fn router(&self) -> axum::Router {
-        let api_router = gita_api::api_router(self.api_state.clone());
+        self.router_with_limiter(gita_api::build_limiter(100, 200))
+    }
+
+    /// Build the full axum router with an explicit per-IP login limiter.
+    pub fn router_with_limiter(&self, limiter: gita_api::SharedLimiter) -> axum::Router {
+        // Install the login limiter into AppState so the login handler
+        // can check the bucket; the rest of the API is unaffected.
+        let api_state = self
+            .api_state
+            .clone()
+            .with_login_limiter(limiter);
+        let api_router = gita_api::api_router(api_state);
         let git_router = gita_http::router(self.git_http_state.clone());
         // Serve the built React frontend (`web/dist`) when present.
         let web_router = match find_web_dist() {
@@ -274,7 +285,6 @@ fn find_web_dist() -> Option<PathBuf> {
 /// Run the server.
 pub async fn run(config: Config) -> Result<()> {
     let app = App::build(config.clone()).await?;
-    let router = app.router();
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -282,7 +292,16 @@ pub async fn run(config: Config) -> Result<()> {
         .with_context(|| format!("bind {addr}"))?;
     info!("Gita listening on http://{addr}");
 
-    axum::serve(listener, router).await.context("axum serve error")
+    // Per-IP login rate limiter: 5 req/s with burst 10 — slows brute force
+    // without affecting normal users.
+    let limiter = gita_api::build_limiter(5, 10);
+    let router = app.router_with_limiter(limiter);
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .context("axum serve error")
 }
 
 /// Mint a runner token for `username`, stored under `name`, and return
