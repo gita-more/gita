@@ -1,11 +1,9 @@
 # gita-ci — the complete user guide
 
 gita-ci is the in-repo CI built into gita. A pipeline is a single
-`.gita-ci.yml` file at the repo root, modelled on [GitLab CI's
-`.gitlab-ci.yml`][gl-yaml]; the keyword set, the examples, and the
-reference structure are tracked directly here.
-
-[gl-yaml]: https://docs.gitlab.com/ee/ci/yaml/
+`.gita-ci.yml` file at the repo root. This document is the
+authoritative reference for the keyword set, the examples, and the
+vocabulary gita understands.
 
 ## Quick start
 
@@ -204,15 +202,16 @@ Glob syntax:
 - `*.{rb,py,sh}` — brace expansion
 - `*.json` — matches dotfiles too
 
-GitLab uses Ruby `File.fnmatch` with
-`FNM_PATHNAME | FNM_DOTMATCH | FNM_EXTGLOB`. Up to **50 patterns**
-per `changes:` block.
+Glob syntax — `*` for any non-`/` chars within a
+segment, `**` across directory segments, `?` for one char, brace
+expansion (`*.{rb,py,sh}`), and dotfile match (`*.json`). Up to
+**50 patterns** per `changes:` block.
 
 > Use `changes:` with branch / MR pipelines. For tag / scheduled /
 > manual pipelines (which don't have a "list of changed files"),
 > `changes:` is always false — gate it with `rules: - if:
 > $CI_PIPELINE_SOURCE == "push"`. To compare paths against an older
-> ref, use `compare_to` (GitLab 15.5+).
+> ref, use `compare_to` (Phase 3).
 
 ### `rules:exists`
 
@@ -267,13 +266,13 @@ needs:
     optional: true
 ```
 
-### `needs:project:` (Phase 3, GitLab Premium/Ultimate)
+### `needs:project:` (Phase 3, multi-project pipelines)
 
 Pulls artifacts from up to 5 jobs in another project's latest
 successful pipeline. Requires `project: <path>`, `job: <name>`,
 `ref: <branch>`, `artifacts: true`.
 
-### `needs:pipeline:job:` (Phase 3, GitLab 13.7+)
+### `needs:pipeline:job:` (Phase 3, parent-child artifact sharing)
 
 Crosses between parent and child pipelines.
 
@@ -433,8 +432,8 @@ Sub-keys:
 - `expose_as:` — exposes the artifact in the merge-request UI.
   Up to 10 jobs per MR. Glob patterns unsupported. Single files open
   directly; directories open the artifact browser. Renders `.html`,
-  `.htm`, `.txt`, `.json`, `.xml`, `.log` automatically when GitLab
-  Pages is enabled.
+  `.htm`, `.txt`, `.json`, `.xml`, `.log` directly when the
+  artifact browser is enabled.
 - `reports:` — collect generated reports (`junit:`, `coverage:`,
   `codequality:`, etc.). Reports upload even on failure; use
   `expire_in:` to bound retention.
@@ -494,7 +493,7 @@ microservice_a:
   trigger:
     include:
       - local: path/to/microservice_a.yml
-      - template: Security/SAST.gitlab-ci.yml
+      - template: Security/SAST.gita-ci.yml
     strategy: depend
 ```
 
@@ -528,7 +527,7 @@ parent:
 
 `$CI_PIPELINE_SOURCE` inside the child is set to `parent_pipeline`.
 
-### Dynamic child pipelines (GitLab 13.12+)
+### Dynamic child pipelines (Phase 3)
 
 Generate YAML at runtime, then trigger it:
 
@@ -544,8 +543,8 @@ trigger:
 
 ### Depth limits
 
-Max child-pipeline depth is **2** (since GitLab 13.4). A child
-pipeline can trigger a grandchild, but no deeper.
+Max child-pipeline depth is **2**. A child pipeline can trigger a
+grandchild, but no deeper.
 
 ---
 
@@ -710,15 +709,16 @@ docs:
 | 3 | `secrets:` | Mount external secrets. |
 | 3 | `trigger:` | Spawn child / multi-project pipelines. |
 | ✗ | `dast_configuration:` | Dynamic AppSec Testing; n/a for a self-hosted git server. |
-| ✗ | `pages:` | GitLab Pages; n/a here. |
+| ✗ | `pages:` | Static-site publishing; n/a here. |
 
 ---
 
 ## Where to look next
 
-- `docs/gitlab-ci-yaml-reference.md` — the keyword matrix mapped to
-  gita's Phase 1/2/3 support status.
-- [GitLab CI/CD YAML syntax reference][gl-yaml] — the canonical source
-  this guide mirrors.
+This is the only user-facing CI doc. For implementation details
+(Phase 1 / Phase 2 / Phase 3 status, internal data model, runner
+architecture) see:
 
-[gl-yaml]: https://docs.gitlab.com/ee/ci/yaml/
+- `goal.md` §10 — In-repo CI roadmap and current Phase.
+- `crates/gita-pipeline/` — the YAML parser + DAG expander.
+- `crates/gita-runner/` — the runner binary.

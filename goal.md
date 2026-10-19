@@ -19,9 +19,9 @@
 - 对 AI 应用生态：通过 MCP Server 暴露标准接口，任何 MCP 客户端（Claude Desktop、Cline 等）都能操作仓库。
 
 **竞品参照**：
-- Gitea / GitLab：功能全面，但 AI 是外挂。
+- Gitea / 主流 self-hosted Git 服务：功能全面，但 AI 是外挂。
 - Sourcegraph：优秀的代码语义搜索，但不是 Git 服务器。
-- Greptile / CodeRabbit：AI 评审 SaaS，但依赖 GitHub 等第三方托管。
+- Greptile / CodeRabbit：AI 评审 SaaS，但依赖外部托管平台。
 - **Gita 的差异化**：自托管 + 开源 + AI 原生数据模型 + MCP 一等公民。
 
 ---
@@ -346,13 +346,13 @@ gita/
 
 ## 10. In-repo CI（按阶段推进）
 
-gita 自带一个轻量级 in-repo CI，借鉴 GitLab CI / GitHub Actions 的形态，但只做仓库内 CI（不替代 SaaS 大流水线）。
+gita 自带一个轻量级 in-repo CI，借鉴主流 SaaS CI 平台的形态，但只做仓库内 CI（不替代大型 SaaS 流水线）。
 
 ### 10.1 设计要点
 
-- **DSL：`.gita-ci.yml`**，贴近 GitLab CI 风格。Phase 1 仅支持 `stages`、`script`、`needs` 三种 key，其他字段（`image`、`artifacts`、`only/except`、`when`、`cache`）会被 serde 严格拒绝并在 UI 上报错。
+- **DSL：`.gita-ci.yml`**，贴近主流 CI YAML 风格。Phase 1 仅支持 `stages`、`script`、`needs` 三种 key，其他字段（`image`、`artifacts`、`only/except`、`when`、`cache`）会被 serde 严格拒绝并在 UI 上报错。
 - **Pipeline 定义 in-repo**，由仓库自己管理；没有 server-side 管理面板。
-- **Runner 是独立二进制** `gita-runner`，与 `gita-server` 解耦，跨进程通过 PostgreSQL 共享状态（`pipeline_runs` 表 + `FOR UPDATE SKIP LOCKED` 抢单），gitlab-runner 模型。
+- **Runner 是独立二进制** `gita-runner`，与 `gita-server` 解耦，跨进程通过 PostgreSQL 共享状态（`pipeline_runs` 表 + `FOR UPDATE SKIP LOCKED` 抢单），独立 worker 模型。
 - **Phase 1 runtime 仅 shell**（`sh -c "<joined script>"`）；Docker / Podman 推迟到 Phase 3。
 - 触发器：push（Phase 1）；PR 状态检查、SSE 日志流、定时触发推迟到 Phase 2。
 
@@ -362,7 +362,7 @@ gita 自带一个轻量级 in-repo CI，借鉴 GitLab CI / GitHub Actions 的形
 |-------|------|----------|
 | **1（本阶段）** | push 触发 → `.gita-ci.yml` 解析 → shell 跑 job → 写 logs → UI 上看 run + 日志 | 推一个有 `.gita-ci.yml` 的仓，能在 SPA Pipelines 标签看到 run 列表和 job stdout |
 | **2** | stages DAG + artifacts + cache + `only/except` + SSE 日志流 + cancel / re-run + PR status check | 一个完整 stage graph 跑起来，PR 合并前能等 CI pass |
-| **3** | Docker 运行时（`image:`/`services:`）+ secrets 加密存储 + worker 注册 API + pipeline YAML Monaco 编辑器 | 类似 GitHub Actions 基本可用 |
+| **3** | Docker 运行时（`image:`/`services:`）+ secrets 加密存储 + worker 注册 API + pipeline YAML Monaco 编辑器 | 类似主流 SaaS CI 基本可用 |
 
 ### 10.3 已完成（Phase 1）
 
