@@ -1226,6 +1226,145 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn webhooks_crud_and_fanout() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "hook-user").await;
+    let full = common::create_repo(&app, &user.token, "hook-repo").await;
+    let (owner, name) = full.split_once('/').unwrap();
+    common::push_initial_commit(&app, owner, name);
+    let bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
+    let repository_id = {
+        let (_, body) = request(
+            &app,
+            axum::http::Method::GET,
+            &format!("/api/repos/{owner}/{name}"),
+            None,
+            Some(&user.token),
+        )
+        .await;
+        body["id"].as_i64().unwrap()
+    };
+
+    // Start a small mock HTTP server that records POSTs.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let received_clone = received.clone();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let received_inner = received_clone.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                received_inner.lock().unwrap().push(serde_json::Value::String(
+                    String::from_utf8_lossy(&buf).to_string(),
+                ));
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            });
+        }
+    });
+
+    let url = format!("http://{addr}/hook");
+
+    // Non-owner cannot create a hook.
+    let intruder = register_user(&app, "hook-intruder").await;
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        &format!("/api/repos/{owner}/{name}/hooks"),
+        Some(serde_json::json!({"url": url})),
+        Some(&intruder.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+    // Owner creates a hook.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        &format!("/api/repos/{owner}/{name}/hooks"),
+        Some(serde_json::json!({"url": url, "events": ["push"]})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create hook: {body}");
+    let hook_id = body["id"].as_i64().unwrap();
+
+    // List shows the hook.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner}/{name}/hooks"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let hooks = body["hooks"].as_array().unwrap();
+    assert!(hooks.iter().any(|h| h["id"] == hook_id));
+
+    // Invalid URL -> 400.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        &format!("/api/repos/{owner}/{name}/hooks"),
+        Some(serde_json::json!({"url": "ftp://nope"})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+    // Publish a push event directly through the bus to exercise the
+    // webhook fan-out (the HTTP git protocol path publishes the same
+    // EventType::Push event).
+    app.bus.publish(
+        gita_core::EventType::Push,
+        Some(repository_id),
+        None,
+        serde_json::json!({"ref": "refs/heads/main", "new_sha": "abc123"}),
+    );
+    eprintln!("published push event; waiting for webhook...");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if !received.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        !received.lock().unwrap().is_empty(),
+        "webhook did not fire within 5s"
+    );
+
+    // Delete hook.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/repos/{owner}/{name}/hooks/{hook_id}"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Delete missing -> 404.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/repos/{owner}/{name}/hooks/{hook_id}"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn fork_repository() {
     let (app, _guard) = common::test_app().await;
     let owner = register_user(&app, "fork-owner").await;

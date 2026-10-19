@@ -21,6 +21,7 @@ toml = { workspace = true }
 dotenvy = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+reqwest = { workspace = true }
 gita-core = { path = "../gita-core" }
 gita-db = { path = "../gita-db" }
 gita-git = { path = "../gita-git" }

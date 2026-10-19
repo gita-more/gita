@@ -80,6 +80,14 @@ pub fn repo_routes() -> Router<AppState> {
             "/api/repos/{owner}/{repo}/fork",
             axum::routing::post(post_fork),
         )
+        .route(
+            "/api/repos/{owner}/{repo}/hooks",
+            get(list_hooks).post(create_hook),
+        )
+        .route(
+            "/api/repos/{owner}/{repo}/hooks/{id}",
+            axum::routing::delete(delete_hook),
+        )
         .route("/api/repos/{owner}/{repo}/branches", get(list_branches).post(create_branch))
         .route(
             "/api/repos/{owner}/{repo}/branches/{branch}",
@@ -717,5 +725,125 @@ async fn delete_tag(
         .map_err(ApiError::from)?;
     Ok(Json(crate::error::MessageResponse {
         message: format!("tag {tag} deleted"),
+    }))
+}
+// ---------------------------------------------------------------------------
+// Webhooks
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+pub struct CreateHookRequest {
+    pub url: String,
+    pub events: Option<Vec<String>>,
+    pub secret: Option<String>,
+    pub active: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HookResponse {
+    pub id: i64,
+    pub url: String,
+    pub events: Vec<String>,
+    pub secret: String,
+    pub active: bool,
+    pub created_at: String,
+}
+
+impl From<gita_db::WebhookRow> for HookResponse {
+    fn from(h: gita_db::WebhookRow) -> Self {
+        Self {
+            id: h.id,
+            url: h.url,
+            events: h.events,
+            secret: h.secret,
+            active: h.active,
+            created_at: h.created_at,
+        }
+    }
+}
+
+async fn create_hook(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo)): Path<(String, String)>,
+    Json(req): Json<CreateHookRequest>,
+) -> ApiResult<Json<HookResponse>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repository.owner_id != user.id {
+        return Err(ApiError::Forbidden(
+            "only the repository owner can manage webhooks".into(),
+        ));
+    }
+    let url = req.url.trim().to_string();
+    if url.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(ApiError::BadRequest(
+            "webhook URL must be http(s)://...".into(),
+        ));
+    }
+    let events = req.events.unwrap_or_else(|| vec!["push".to_string()]);
+    if events.is_empty() {
+        return Err(ApiError::BadRequest(
+            "at least one event must be specified".into(),
+        ));
+    }
+    let hook = state
+        .db
+        .create_webhook(
+            repository.id,
+            &url,
+            &events,
+            req.secret.unwrap_or_default().as_str(),
+            req.active.unwrap_or(true),
+        )
+        .await?;
+    Ok(Json(HookResponse::from(hook)))
+}
+
+async fn list_hooks(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repository.owner_id != user.id {
+        return Err(ApiError::Forbidden(
+            "only the repository owner can view webhooks".into(),
+        ));
+    }
+    let hooks = state.db.list_webhooks(repository.id).await?;
+    Ok(Json(serde_json::json!({
+        "hooks": hooks.into_iter().map(HookResponse::from).collect::<Vec<_>>(),
+    })))
+}
+
+async fn delete_hook(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo, id)): Path<(String, String, i64)>,
+) -> ApiResult<Json<crate::error::MessageResponse>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repository.owner_id != user.id {
+        return Err(ApiError::Forbidden(
+            "only the repository owner can manage webhooks".into(),
+        ));
+    }
+    let deleted = state.db.delete_webhook(id, repository.id).await?;
+    if !deleted {
+        return Err(ApiError::NotFound("webhook not found".into()));
+    }
+    Ok(Json(crate::error::MessageResponse {
+        message: "webhook deleted".to_string(),
     }))
 }

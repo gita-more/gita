@@ -31,6 +31,11 @@ impl GitManager {
         Self { root }
     }
 
+    /// The filesystem root where bare repositories live.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
     /// The filesystem path of a repository with the given owner/name.
     pub fn repo_path(&self, owner: &str, name: &str) -> PathBuf {
         self.root.join(owner).join(format!("{name}.git"))

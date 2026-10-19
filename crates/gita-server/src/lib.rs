@@ -185,12 +185,63 @@ impl App {
         let git = Arc::new(GitManager::new(repos_dir));
         // Persist every published event to the database so the `/api/events`
         // endpoint and AI-readable event stream reflect real activity.
+        // Also fan out repository-scoped events to any registered webhooks.
         let event_db = db.clone();
+        let event_git_root = git.root().to_path_buf();
         let bus = EventBus::new(Some(Arc::new(move |event: gita_core::Event| {
             let db = event_db.clone();
+            let git_root = event_git_root.clone();
             tokio::spawn(async move {
                 if let Err(e) = db.insert_event(&event).await {
                     warn!("failed to persist event: {e}");
+                }
+                // Webhook fan-out: only when the event has a repo scope.
+                if let Some(repo_id) = event.repo_id {
+                    match db.list_webhooks(repo_id).await {
+                        Ok(hooks) => {
+                            for hook in hooks {
+                                if !hook.active {
+                                    continue;
+                                }
+                                if !hook.events.is_empty()
+                                    && !hook.events
+                                        .iter()
+                                        .any(|e| e == &event.event_type.to_string())
+                                {
+                                    continue;
+                                }
+                                let url = hook.url.clone();
+                                let hook_id = hook.id;
+                                let payload = serde_json::json!({
+                                    "event": event.event_type.to_string(),
+                                    "actor_id": event.actor_id,
+                                    "repo_id": event.repo_id,
+                                    "payload": event.payload,
+                                    "created_at": event.created_at.to_rfc3339(),
+                                });
+                                let body = serde_json::to_string(&payload).unwrap_or_default();
+                                tokio::spawn(async move {
+                                    let client = reqwest::Client::new();
+                                    let req = client
+                                        .post(&url)
+                                        .header("content-type", "application/json")
+                                        .body(body);
+                                    match req.send().await {
+                                        Ok(_) => {
+                                            tracing::info!("webhook {hook_id} delivered to {url}")
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("webhook {hook_id} to {url} failed: {e}")
+                                        }
+                                    }
+                                    let _ = git_root;
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to load webhooks for repo {repo_id}: {e}");
+                        }
+                    }
                 }
             });
         })));
