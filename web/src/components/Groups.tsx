@@ -132,7 +132,7 @@ export function Groups({
                   <UsersIcon size={18} />
                 </span>
               </div>
-              <div>
+              <div className="repo-card-body">
                 <div className="repo-card-name">{g.name}</div>
                 <div className="repo-card-desc">{g.description || t('common.noDescription')}</div>
               </div>

@@ -154,9 +154,8 @@ export function Projects({
                 <span className="repo-card-icon">
                   <BookIcon size={18} />
                 </span>
-                <StatusLabel status={repoStatus(repo)} />
               </div>
-              <div>
+              <div className="repo-card-body">
                 <div className="repo-card-name">{repo.full_name}</div>
                 <div className="repo-card-desc">{repo.description || t('common.noDescription')}</div>
               </div>
@@ -168,6 +167,7 @@ export function Projects({
                 <span className="meta-item">
                   {repo.is_private ? t('projects.private') : t('projects.public')}
                 </span>
+                <StatusLabel status={repoStatus(repo)} />
               </div>
             </button>
           ))}
