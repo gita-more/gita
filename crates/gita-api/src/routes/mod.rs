@@ -4,6 +4,7 @@ pub mod auth;
 pub mod group;
 pub mod issue;
 pub mod misc;
+pub mod pipeline;
 pub mod pr;
 pub mod repo;
 
@@ -15,3 +16,4 @@ pub use pr::pr_routes;
 pub use issue::issue_routes;
 pub use misc::misc_routes;
 pub use misc::event_routes;
+pub use pipeline::pipeline_routes;

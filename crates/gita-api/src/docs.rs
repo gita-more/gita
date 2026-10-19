@@ -577,6 +577,60 @@ pub const OPENAPI_JSON: &str = r##"{
           "payload": { "type": "object", "additionalProperties": true },
           "created_at": { "type": "string", "format": "date-time" }
         }
+      },
+      "Pipeline": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "repo_id": { "type": "integer" },
+          "path": { "type": "string" },
+          "ref": { "type": "string" },
+          "ref_sha": { "type": "string" },
+          "content": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PipelineRun": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "pipeline_id": { "type": "integer" },
+          "repo_id": { "type": "integer" },
+          "ref": { "type": "string" },
+          "head_sha": { "type": "string" },
+          "trigger_event_id": { "type": "integer", "nullable": true },
+          "trigger_pusher_id": { "type": "integer", "nullable": true },
+          "status": { "type": "string", "enum": ["queued","running","success","failed","canceled"] },
+          "queued_at": { "type": "string", "format": "date-time" },
+          "started_at": { "type": "string", "format": "date-time", "nullable": true },
+          "finished_at": { "type": "string", "format": "date-time", "nullable": true }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "run_id": { "type": "integer" },
+          "name": { "type": "string" },
+          "stage": { "type": "string" },
+          "needs": { "type": "array", "items": { "type": "string" } },
+          "script": { "type": "array", "items": { "type": "string" } },
+          "status": { "type": "string", "enum": ["queued","running","success","failed","skipped","canceled"] },
+          "queued_at": { "type": "string", "format": "date-time" },
+          "started_at": { "type": "string", "format": "date-time", "nullable": true },
+          "finished_at": { "type": "string", "format": "date-time", "nullable": true },
+          "exit_code": { "type": "integer", "nullable": true }
+        }
+      },
+      "JobLogLine": {
+        "type": "object",
+        "properties": {
+          "seq": { "type": "integer" },
+          "stream": { "type": "string", "enum": ["stdout","stderr","system"] },
+          "line": { "type": "string" },
+          "ts": { "type": "string", "format": "date-time" }
+        }
       }
     }
   }
