@@ -347,3 +347,180 @@ jobs:
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].status, "canceled", "job should be canceled");
 }
+
+#[tokio::test]
+async fn stages_dag_runs_in_dependency_order() {
+    let (app, _guard) = common::test_app().await;
+    let db = app.db.clone();
+
+    let user = common::register_user(&app, "dagowner").await;
+    let _full = common::create_repo(&app, &user.token, "dagrepo").await;
+    common::push_initial_commit(&app, "dagowner", "dagrepo");
+    // Two-stage pipeline. The deploy stage's job depends on BOTH test
+    // jobs, so it must run after both. Each job writes a sentinel line
+    // with a timestamp; we assert the order at the end by reading logs.
+    push_ci_yml(
+        &app,
+        "dagowner",
+        "dagrepo",
+        r#"
+stages: [build, test, deploy]
+jobs:
+  compile:
+    stage: build
+    script: [echo "stage=build job=compile"]
+  unit:
+    stage: test
+    script: [echo "stage=test job=unit"]
+  lint:
+    stage: test
+    script: [echo "stage=test job=lint"]
+  release:
+    stage: deploy
+    script: [echo "stage=deploy job=release"]
+    needs: [unit, lint]
+"#,
+    );
+
+    let (status, repo_json) = common::request(
+        &app,
+        Method::GET,
+        "/api/repos/dagowner/dagrepo",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let repo_id = repo_json["id"].as_i64().unwrap();
+    let head_sha = app
+        .git
+        .head_sha("dagowner", "dagrepo", "refs/heads/main")
+        .expect("head_sha");
+
+    let owner_user = db
+        .get_user_by_username(&user.username)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let pid = db
+        .upsert_pipeline(
+            repo_id,
+            ".gita-ci.yml",
+            "refs/heads/main",
+            &head_sha,
+            "stages: [build, test, deploy]",
+        )
+        .await
+        .unwrap();
+    let run_id = db
+        .insert_pipeline_run(pid, repo_id, "refs/heads/main", &head_sha, Some(owner_user.id), None)
+        .await
+        .unwrap();
+
+    // Pre-clone so execute_pipeline skips the network clone.
+    let runner_config = RunnerConfig {
+        server_db_url: common::test_db_url(),
+        server_base_url: "http://localhost:3100".to_string(),
+        runner_token: "dag-test-token".to_string(),
+        runner_name: "dag-runner".to_string(),
+        work_dir: std::env::temp_dir().join(format!(
+            "gita-dag-it-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )),
+        poll_interval_secs: 1,
+        claim_lease_secs: 300,
+        concurrent_jobs: 1,
+    };
+    let _ = std::fs::create_dir_all(&runner_config.work_dir);
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join("dagowner")
+        .join("dagrepo.git");
+    let bare_url = format!("file://{}", bare.display());
+    let repo_dir = run_work_dir(&runner_config, run_id).join("repo");
+    let clone_out = Command::new("git")
+        .arg("clone")
+        .arg("--depth")
+        .arg("1")
+        .arg("--branch")
+        .arg("main")
+        .arg(&bare_url)
+        .arg(&repo_dir)
+        .output()
+        .expect("git clone");
+    assert!(clone_out.status.success(), "pre-clone failed");
+
+    let claimed = db
+        .claim_pipeline_run("dag-runner", 300)
+        .await
+        .unwrap()
+        .unwrap();
+    let registry = JobRegistry::new();
+    execute_pipeline(&db, &runner_config, &registry, &claimed)
+        .await
+        .expect("execute_pipeline");
+
+    let run = db.get_pipeline_run(run_id).await.unwrap().unwrap();
+    assert_eq!(run.status, "success");
+
+    let jobs = db.list_jobs(run_id).await.unwrap();
+    let mut by_name: std::collections::HashMap<String, &gita_db::JobRow> =
+        std::collections::HashMap::new();
+    for j in &jobs {
+        by_name.insert(j.name.clone(), j);
+    }
+    // Every job must have run successfully.
+    for name in ["compile", "unit", "lint", "release"] {
+        let job = by_name.get(name).unwrap_or_else(|| panic!("missing job {name}"));
+        assert_eq!(job.status, "success", "job {name} should be success");
+    }
+
+    // release must depend on both unit AND lint. Compare by ts (per-log
+    // timestamp); each job's seq is local so we use ts instead.
+    let release_first_ts = first_ts(&db, by_name["release"].id).await;
+    let unit_first_ts = first_ts(&db, by_name["unit"].id).await;
+    let lint_first_ts = first_ts(&db, by_name["lint"].id).await;
+    let compile_first_ts = first_ts(&db, by_name["compile"].id).await;
+    assert!(release_first_ts.is_some(), "release should have logs");
+    assert!(unit_first_ts.is_some(), "unit should have logs");
+    assert!(lint_first_ts.is_some(), "lint should have logs");
+    assert!(compile_first_ts.is_some(), "compile should have logs");
+    let release_first_ts = release_first_ts.unwrap();
+    let unit_first_ts = unit_first_ts.unwrap();
+    let lint_first_ts = lint_first_ts.unwrap();
+    let compile_first_ts = compile_first_ts.unwrap();
+    // Dependents must appear after their dependencies.
+    assert!(
+        release_first_ts >= unit_first_ts,
+        "release ({release_first_ts}) must run after unit ({unit_first_ts})"
+    );
+    assert!(
+        release_first_ts >= lint_first_ts,
+        "release ({release_first_ts}) must run after lint ({lint_first_ts})"
+    );
+    // compile (build) is stage 0; unit/lint are stage 1; the runner is
+    // serial within a stage so compile must precede unit and lint.
+    assert!(
+        compile_first_ts <= unit_first_ts,
+        "compile (build) should run before unit (test)"
+    );
+    assert!(
+        compile_first_ts <= lint_first_ts,
+        "compile (build) should run before lint (test)"
+    );
+}
+
+/// Returns the `ts` of the smallest-seq log line of `job_id`, or None
+/// if the job has no log lines.
+async fn first_ts(db: &Db, job_id: i64) -> Option<String> {
+    db.list_logs_since(job_id, 0, 1)
+        .await
+        .ok()
+        .and_then(|rows| rows.into_iter().next().map(|r| r.ts))
+}
