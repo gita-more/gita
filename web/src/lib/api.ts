@@ -268,6 +268,18 @@ export const api = {
     }),
   deleteRepo: (owner: string, name: string) =>
     request<{ message: string }>(`/api/repos/${owner}/${name}`, { method: 'DELETE' }),
+  getStar: (owner: string, name: string) =>
+    request<{ starred: boolean; count: number }>(`/api/repos/${owner}/${name}/star`),
+  starRepo: (owner: string, name: string) =>
+    request<{ starred: boolean; count: number; new: boolean }>(
+      `/api/repos/${owner}/${name}/star`,
+      { method: 'PUT' },
+    ),
+  unstarRepo: (owner: string, name: string) =>
+    request<{ starred: boolean; count: number; removed: boolean }>(
+      `/api/repos/${owner}/${name}/star`,
+      { method: 'DELETE' },
+    ),
   getRepo: (owner: string, name: string) =>
     request<Repository>(`/api/repos/${owner}/${name}`),
   getTree: (owner: string, name: string, path: string, ref: string) =>
@@ -494,6 +506,8 @@ export const api = {
   // search
   search: (q: string, type_?: 'repos' | 'code' | 'all') =>
     request<{ repos?: RepoSearchHit[]; code?: CodeSearchHit[] }>(
+      `/api/search?q=${encodeURIComponent(q)}${type_ ? `&type=${type_}` : ''}`,
+    ),
       `/api/search?q=${encodeURIComponent(q)}${type_ ? `&type=${type_}` : ''}`,
     ),
   searchRepos: (q: string) =>

@@ -72,6 +72,10 @@ pub fn repo_routes() -> Router<AppState> {
         .route("/api/repos/{owner}/{repo}/file", get(get_file))
         .route("/api/repos/{owner}/{repo}/commits", get(list_commits))
         .route("/api/repos/{owner}/{repo}/commits/{sha}", get(get_commit))
+        .route(
+            "/api/repos/{owner}/{repo}/star",
+            axum::routing::put(put_star).delete(delete_star).get(get_star),
+        )
         .route("/api/repos/{owner}/{repo}/branches", get(list_branches).post(create_branch))
         .route(
             "/api/repos/{owner}/{repo}/branches/{branch}",
@@ -448,6 +452,65 @@ async fn list_branches(
         .list_branches(&owner, &repo.name)
         .map_err(ApiError::from)?;
     Ok(Json(branches))
+}
+
+async fn put_star(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let inserted = state
+        .db
+        .add_star(user.id, repository.id)
+        .await?;
+    let total = state.db.count_stars(repository.id).await?;
+    Ok(Json(serde_json::json!({
+        "starred": true,
+        "new": inserted,
+        "count": total,
+    })))
+}
+
+async fn delete_star(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let removed = state.db.remove_star(user.id, repository.id).await?;
+    let total = state.db.count_stars(repository.id).await?;
+    Ok(Json(serde_json::json!({
+        "starred": false,
+        "removed": removed,
+        "count": total,
+    })))
+}
+
+async fn get_star(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo)): Path<(String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let starred = state.db.has_star(user.id, repository.id).await?;
+    let total = state.db.count_stars(repository.id).await?;
+    Ok(Json(serde_json::json!({
+        "starred": starred,
+        "count": total,
+    })))
 }
 
 async fn create_branch(

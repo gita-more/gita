@@ -1226,6 +1226,91 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn star_and_unstar() {
+    let (app, _guard) = common::test_app().await;
+    let owner = register_user(&app, "star-owner").await;
+    let starrer = register_user(&app, "star-starrer").await;
+    let full = common::create_repo(&app, &owner.token, "star-repo").await;
+    let (owner_name, name) = full.split_once('/').unwrap();
+
+    // Initially 0 stars, not starred.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner_name}/{name}/star"),
+        None,
+        Some(&starrer.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["starred"], false);
+    assert_eq!(body["count"], 0);
+
+    // Star.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::PUT,
+        &format!("/api/repos/{owner_name}/{name}/star"),
+        None,
+        Some(&starrer.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["starred"], true);
+    assert_eq!(body["new"], true);
+    assert_eq!(body["count"], 1);
+
+    // Star again -> no-op.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::PUT,
+        &format!("/api/repos/{owner_name}/{name}/star"),
+        None,
+        Some(&starrer.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["new"], false);
+
+    // GET shows starred=true.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner_name}/{name}/star"),
+        None,
+        Some(&starrer.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["starred"], true);
+    assert_eq!(body["count"], 1);
+
+    // Unstar.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/repos/{owner_name}/{name}/star"),
+        None,
+        Some(&starrer.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["removed"], true);
+    assert_eq!(body["count"], 0);
+
+    // Cannot star a non-existent repo -> 404.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::PUT,
+        "/api/repos/nobody/missing/star",
+        None,
+        Some(&starrer.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn commit_detail_endpoint() {
     let (app, _guard) = common::test_app().await;
     let user = register_user(&app, "commit-user").await;
