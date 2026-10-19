@@ -204,6 +204,196 @@ syntax reference:
 - [`cache:`](https://docs.gitlab.com/ee/ci/yaml/cache.html)
 - [`trigger:`](https://docs.gitlab.com/ee/ci/yaml/trigger.html)
 
+## Per-keyword deep dives (synthesised)
+
+These summaries track the upstream GitLab docs as of Phase 1
+(2026-10). Treat them as a primer — for authoritative semantics,
+follow the link at the end of each section.
+
+### `rules:` (GitLab 12.3+, replaces `only`/`except`)
+
+`rules:` is an **array of rule objects** evaluated top-to-bottom; the
+first rule that matches determines whether the job runs and with
+which `when:` value.
+
+Each rule can use:
+
+- `if:` — a CI/CD-variable expression (the same one used by `rules:if`
+  everywhere in GitLab CI).
+- `changes:` — globs of file paths; the rule matches if **any** of
+  the paths touched in the push satisfies a glob.
+- `exists:` — globs of files that must (or must not) exist in the repo.
+- `when:` — `on_success` / `on_failure` / `always` / `manual` /
+  `delayed` / `never`.
+- `allow_failure:`, `needs:` (override stage-level needs).
+
+Example:
+
+```yaml
+docker build:
+  script: docker build -t my-image:$CI_COMMIT_REF_SLUG .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - Dockerfile
+      when: manual
+      allow_failure: true
+```
+
+`changes:` supports `*` (within a path segment), `**` (across
+segments), brace expansion (`*.{rb,py,sh}`), and dotfiles (`*.json`).
+The glob uses Ruby `File.fnmatch` with `FNM_PATHNAME |
+FNM_DOTMATCH | FNM_EXTGLOB`. Up to 50 patterns per `changes:` block.
+
+A job is **added** to the pipeline when a matching rule has `when:
+on_success`, `delayed`, or `always` (or is a `when`-only rule). A job
+is **not added** when no rule matches or the matching rule is `when:
+never`.
+
+> gita roadmap: Phase 2 may implement a strict subset of `rules:`,
+> starting with `if:` against pre-defined variables.
+
+### `needs:` (DAG; replaces `dependencies:`)
+
+`needs:` creates a **directed-acyclic-graph** pipeline where a job can
+start as soon as all its named predecessors finish — without waiting
+for an entire stage to complete.
+
+- Up to 50 jobs in the array.
+- `needs: []` (empty) starts the job as soon as the pipeline is
+  created.
+- `optional: true` lets a `needs:` predecessor be absent (e.g.
+  when filtered out by another `rules:` block).
+- `artifacts: true | false` controls whether the predecessor's
+  artifacts are downloaded into this job's workspace. Cannot combine
+  with the older `dependencies:` keyword.
+
+Object form (Phase 2+):
+
+```yaml
+needs:
+  - job: build
+    artifacts: true
+  - job: test
+    optional: true
+```
+
+`needs: project:` (Premium/Ultimate tier in GitLab — Phase 3 in gita) pulls
+artifacts from another project's latest successful pipeline. Requires
+`project: <path>`, `job: <name>`, `ref: <branch>`, `artifacts: true`.
+
+`needs: pipeline: job:` (GitLab 13.7+) crosses between parent and
+child pipelines.
+
+### `artifacts:` (Phase 2 in gita)
+
+Sub-keys:
+
+- `paths:` — array of file globs (relative to `$CI_PROJECT_DIR` /
+  the repo root). Supports `*`, `**`, `?`, brace expansion. The
+  archive is uploaded when the job finishes (subject to `expire_in`
+  and the job's `when:`).
+- `name:` — overrides the archive name (defaults to `artifacts`,
+  downloads as `artifacts.zip`). Supports CI/CD variables, e.g.
+  `name: "$CI_JOB_NAME-$CI_COMMIT_SHORT_SHA"`.
+- `expire_in:` — how long the artifact is kept. Units: `s`, `sec(s)`,
+  `m`, `min(s)`, `hr(s)`, `d(ay(s))`, `wk(s)`, `mo(s)`, `y(ear(s))`.
+  Composite: `"2 hrs 20 min"`. `never` disables expiry (GitLab 13.3+).
+- `expose_as:` — exposes the artifact in the merge-request UI
+  (GitLab 12.5+). Up to 10 jobs per MR. Directories must end with `/`.
+  Renders `.html` / `.txt` / `.json` / `.xml` / `.log` directly when
+  GitLab Pages is enabled.
+- `reports:` — collect generated reports (`junit:`, `coverage:`
+  paths, etc.). Reports upload even on failure; use `expire_in:` to
+  bound retention.
+
+Example:
+
+```yaml
+rspec:
+  stage: test
+  script:
+    - bundle install
+    - rspec --format RspecJunitFormatter --out rspec.xml
+  artifacts:
+    paths: [coverage/]
+    reports:
+      junit: rspec.xml
+    expire_in: 1 week
+```
+
+### `cache:` (Phase 2 in gita)
+
+Sub-keys:
+
+- `paths:` — array of file globs. Same glob syntax as `artifacts.paths`.
+- `key:` — identifier used to share caches across pipelines. Defaults
+  to `default`. Set to a per-branch / per-job key to scope caches.
+- `policy:` — `pull`, `push`, or `pull-push` (default). `pull`
+  downloads but doesn't upload; `push` uploads but doesn't download;
+  `pull-push` does both.
+- `untracked: true` — also cache any Git-untracked file in `$CI_PROJECT_DIR`.
+- `when:` — `on_success` (default) / `on_failure` / `always`.
+
+Example:
+
+```yaml
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - node_modules/
+  policy: pull-push
+  untracked: true
+```
+
+### `trigger:` (Phase 3 in gita)
+
+`trigger:` spawns a **child pipeline** (same project) or a
+**multi-project pipeline** (different project) as a job outcome.
+
+Same project:
+
+```yaml
+microservice_a:
+  trigger:
+    include: path/to/microservice_a.yml
+```
+
+Or with multiple entries (up to 3):
+
+```yaml
+microservice_a:
+  trigger:
+    include:
+      - local: path/to/microservice_a.yml
+      - template: Security/SAST.gitlab-ci.yml
+    strategy: depend
+```
+
+`strategy: depend` makes the parent pipeline wait for the child to
+finish. Add `rules: - if: $CI_MERGE_REQUEST_ID` to gate on MRs only.
+
+Multi-project:
+
+```yaml
+staging:
+  stage: deploy
+  trigger:
+    project: my-group/deployment-project
+    branch: stable
+```
+
+`forward:` (newer) lets the child pipeline inherit variables from
+the parent: `forward: { yaml_variables: true, pipeline_variables: true }`.
+
+Dynamic child pipelines generate YAML at runtime and trigger via
+`include: artifact: <file> job: <generator>` (since GitLab 13.12).
+
+`$CI_PIPELINE_SOURCE` is set to `parent_pipeline` inside child
+pipelines, useful for `rules:`.
+
+Max child-pipeline depth is 2 (since GitLab 13.4).
+
 We deliberately do **not** ship a vendored copy of those pages. This
 document is a curated mapping from GitLab CI concepts to gita's
 Phases 1–3, and a living record of which keywords work today.
