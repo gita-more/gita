@@ -417,8 +417,7 @@ impl Db {
         &self,
         owner_name: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<Repository>> {
-        let rows = if let Some(owner) = owner_name {
+    ) -> Result<Vec<Repository>> {        let rows = if let Some(owner) = owner_name {
             sqlx::query(
                 "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
                  FROM repositories WHERE owner_name = $2 ORDER BY id DESC LIMIT $1",
@@ -439,12 +438,37 @@ impl Db {
         rows.iter().map(row_to_repo).collect()
     }
 
-    pub async fn delete_repository(&self, id: i64) -> Result<bool> {
+        pub async fn delete_repository(&self, id: i64) -> Result<bool> {
         let res = sqlx::query("DELETE FROM repositories WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    /// Search public repositories by name or description (ILIKE). Hidden
+    /// (`is_private = true`) rows are excluded unless the search query is
+    /// empty — callers that need owner-scoped lookups should use the
+    /// `?owner=` filter on the listing endpoint instead.
+    pub async fn search_repositories(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<Repository>> {
+        let pattern = format!("%{query}%");
+        let rows = sqlx::query(
+            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+             FROM repositories
+             WHERE (name ILIKE $1 OR description ILIKE $1)
+               AND is_private = 0
+             ORDER BY id DESC
+             LIMIT $2",
+        )
+        .bind(pattern)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_repo).collect()
     }
 
     pub async fn update_repository_description(&self, id: i64, description: &str) -> Result<()> {

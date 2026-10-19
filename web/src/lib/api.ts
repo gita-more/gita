@@ -88,6 +88,23 @@ export interface Token {
   created_at: string
 }
 
+export interface RepoSearchHit {
+  id: number
+  owner: string
+  name: string
+  full_name: string
+  description: string
+  is_private: boolean
+}
+
+export interface CodeSearchHit {
+  owner: string
+  repo: string
+  path: string
+  line: number
+  content: string
+}
+
 export interface Group {
   id: number
   name: string
@@ -460,6 +477,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, description, is_private, default_branch }),
     }),
+
+  // search
+  search: (q: string, type_?: 'repos' | 'code' | 'all') =>
+    request<{ repos?: RepoSearchHit[]; code?: CodeSearchHit[] }>(
+      `/api/search?q=${encodeURIComponent(q)}${type_ ? `&type=${type_}` : ''}`,
+    ),
+  searchRepos: (q: string) =>
+    request<{ hits: RepoSearchHit[] }>(
+      `/api/search/repos?q=${encodeURIComponent(q)}`,
+    ),
+  searchCode: (q: string) =>
+    request<{ hits: CodeSearchHit[] }>(
+      `/api/search/code?q=${encodeURIComponent(q)}`,
+    ),
 
   // events
   listEvents: (limit = 50) =>

@@ -261,7 +261,148 @@ impl GitManager {
         Ok(())
     }
 
-    /// Delete a branch.
+    /// Search every repository for `query` across the HEAD tree using
+    /// `gix` (no shell-out, works on bare repositories).
+    ///
+    /// Each hit is returned as `(owner, repo, path, line_number, content)`.
+    /// Repositories without a HEAD (empty, just initialised) are skipped.
+    pub fn search_code(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, String, String, i64, String)>> {
+        let mut out = Vec::new();
+        if !self.root.exists() {
+            return Ok(out);
+        }
+        let owner_entries = match std::fs::read_dir(&self.root) {
+            Ok(e) => e,
+            Err(_) => return Ok(out),
+        };
+        for owner_entry in owner_entries.flatten() {
+            let owner_ft = match owner_entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if !owner_ft.is_dir() {
+                continue;
+            }
+            let owner = owner_entry.file_name().to_string_lossy().to_string();
+            let repo_entries = match std::fs::read_dir(owner_entry.path()) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for repo_entry in repo_entries.flatten() {
+                let repo_ft = match repo_entry.file_type() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                if !repo_ft.is_dir() {
+                    continue;
+                }
+                let repo_with_git = repo_entry.file_name().to_string_lossy().to_string();
+                let repo_name = repo_with_git
+                    .strip_suffix(".git")
+                    .unwrap_or(&repo_with_git)
+                    .to_string();
+                let bare = repo_entry.path();
+                // Skip empty repos (HEAD symbolic ref pointing to a non-existent branch).
+                if bare.join("HEAD").exists() {
+                    if let Ok(head_text) = std::fs::read_to_string(bare.join("HEAD")) {
+                        if let Some(rest) = head_text.trim_start().strip_prefix("ref:") {
+                            let head_ref = rest.trim();
+                            if !bare.join(head_ref).exists() {
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                let Ok(repo_obj) = self.open(&owner, &repo_name) else {
+                    continue;
+                };
+                let head_id = match repo_obj.head().and_then(|r| r.into_peeled_id()) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                let Ok(tree) = repo_obj.find_commit(head_id.detach()).and_then(|c| c.tree()) else {
+                    continue;
+                };
+                Self::scan_tree_for_query(
+                    &repo_obj,
+                    &tree,
+                    "",
+                    query,
+                    &owner,
+                    &repo_name,
+                    limit,
+                    &mut out,
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    /// Recursively walk a tree, scanning every blob's bytes for `query`.
+    fn scan_tree_for_query(
+        repo: &gix::Repository,
+        tree: &gix::Tree<'_>,
+        prefix: &str,
+        query: &str,
+        owner: &str,
+        repo_name: &str,
+        limit: usize,
+        out: &mut Vec<(String, String, String, i64, String)>,
+    ) {
+        for entry in tree.iter() {
+            if out.len() >= limit {
+                return;
+            }
+            let Ok(entry) = entry else { continue };
+            let filename = entry.filename().to_string();
+            let path = if prefix.is_empty() {
+                filename.clone()
+            } else {
+                format!("{prefix}/{filename}")
+            };
+            let Ok(entry_obj) = entry.object() else { continue };
+            if entry_obj.kind == gix::object::Kind::Blob {
+                let Ok(text) = std::str::from_utf8(&entry_obj.data) else {
+                    continue;
+                };
+                for (idx, line) in text.lines().enumerate() {
+                    if line.contains(query) {
+                        out.push((
+                            owner.to_string(),
+                            repo_name.to_string(),
+                            path.clone(),
+                            (idx + 1) as i64,
+                            line.to_string(),
+                        ));
+                        if out.len() >= limit {
+                            return;
+                        }
+                    }
+                }
+            } else if entry_obj.kind == gix::object::Kind::Tree {
+                let Ok(subtree) = repo.find_tree(entry_obj.id) else { continue };
+                Self::scan_tree_for_query(
+                    repo,
+                    &subtree,
+                    &path,
+                    query,
+                    owner,
+                    repo_name,
+                    limit,
+                    out,
+                );
+            }
+        }
+    }
+}
+
+/// Delete a branch.
+impl GitManager {
     pub fn delete_branch(&self, owner: &str, name: &str, branch: &str) -> Result<()> {
         let repo = self.open(owner, name)?;
         let full = gix::refs::FullName::try_from(format!("refs/heads/{branch}").as_str())

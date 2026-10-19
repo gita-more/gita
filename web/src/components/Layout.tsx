@@ -18,6 +18,22 @@ import {
 } from './Icons'
 import { useAuth } from '../hooks/useAuth'
 import { useI18n } from '../i18n'
+import { api, type RepoSearchHit, type CodeSearchHit } from '../lib/api'
+
+// Tiny inline magnifier icon used inside the search box.
+function SearchBoxIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z" />
+    </svg>
+  )
+}
 
 export type NavTarget =
   | 'home'
@@ -102,20 +118,6 @@ function UserMenu({ user, onClose }: { user: { username: string; email: string }
   )
 }
 
-function SearchIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 16 16"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <path d="M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z" />
-    </svg>
-  )
-}
-
 export function Topbar({
   repo,
   actions,
@@ -189,12 +191,7 @@ export function Topbar({
         </nav>
       ) : null}
       <div className="topbar-spacer" />
-      {/* Search placeholder */}
-      <div className="search-box" role="search">
-        <SearchIcon size={14} />
-        <span>{t('common.search')}</span>
-        <kbd>/</kbd>
-      </div>
+      <SearchBox />
       <div className="topbar-actions">
         {actions}
         <div className="user-menu-container" ref={userMenuRef}>
@@ -473,4 +470,118 @@ export function StatusLabel({ status }: { status: string }) {
       {label}
     </span>
   )
+}
+// ---------------------------------------------------------------------------
+// Global search box
+// ---------------------------------------------------------------------------
+
+function SearchBox() {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const [repos, setRepos] = useState<RepoSearchHit[]>([])
+  const [code, setCode] = useState<CodeSearchHit[]>([])
+  const [busy, setBusy] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+        e.preventDefault()
+        setOpen(true)
+        setTimeout(() => inputRef.current?.focus(), 0)
+      } else if (e.key === 'Escape' && open) {
+        setOpen(false)
+        setQ('')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open])
+
+  async function runSearch(value: string) {
+    setQ(value)
+    if (!value.trim()) {
+      setRepos([])
+      setCode([])
+      return
+    }
+    setBusy(true)
+    try {
+      const res = await api.search(value, 'all')
+      setRepos(res.repos ?? [])
+      setCode(res.code ?? [])
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="search-wrapper">
+      <div className="search-box" role="search" onClick={() => inputRef.current?.focus()}>
+        <SearchBoxIcon size={14} />
+        <input
+          ref={inputRef}
+          className="search-input"
+          placeholder={t('common.search')}
+          value={q}
+          onChange={(e) => void runSearch(e.target.value)}
+          onFocus={() => setOpen(true)}
+        />
+        <kbd>/</kbd>
+        {open && q && (
+          <button className="search-clear" onClick={() => { setQ(''); setRepos([]); setCode([]) }} aria-label="clear">
+            <XIcon size={12} />
+          </button>
+        )}
+      </div>
+      {open && q.trim() && (
+        <div className="search-results">
+          {busy && <div className="search-hint">{t('common.loading')}</div>}
+          {!busy && repos.length === 0 && code.length === 0 && (
+            <div className="search-hint">no results</div>
+          )}
+          {repos.length > 0 && (
+            <div className="search-section">
+              <div className="search-section-title">repositories</div>
+              {repos.slice(0, 5).map((r) => (
+                <button
+                  key={r.id}
+                  className="search-row"
+                  onClick={() => { setOpen(false); setQ(''); navigate(`/${r.owner}/${r.name}`) }}
+                >
+                  <BookIcon size={14} />
+                  <span className="search-row-title">{r.full_name}</span>
+                  <span className="search-row-sub">{r.description || ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {code.length > 0 && (
+            <div className="search-section">
+              <div className="search-section-title">code</div>
+              {code.slice(0, 8).map((c, i) => (
+                <button
+                  key={`${c.owner}-${c.repo}-${c.path}-${c.line}-${i}`}
+                  className="search-row search-row-code"
+                  onClick={() => { setOpen(false); setQ(''); navigate(`/${c.owner}/${c.repo}`) }}
+                >
+                  <FileCodeIconPlaceholder />
+                  <div className="search-code-body">
+                    <div className="search-row-title">{c.owner}/{c.repo}/{c.path}:{c.line}</div>
+                    <code className="search-row-line">{c.content}</code>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function FileCodeIconPlaceholder() {
+  return <span className="search-row-icon">📄</span>
 }

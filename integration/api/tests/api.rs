@@ -1226,6 +1226,91 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn search_repos_and_code() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "search-user").await;
+    let full = common::create_repo(&app, &user.token, "awesome-project").await;
+    let (owner, name) = full.split_once('/').unwrap();
+    common::push_initial_commit(&app, owner, name);
+
+    // Update description via PATCH so search hits the description column.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::PATCH,
+        &format!("/api/repos/{owner}/{name}"),
+        Some(serde_json::json!({"description": "totally searchable"})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Search by name.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/search/repos?q=awesome",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let hits = body["hits"].as_array().unwrap();
+    assert!(hits.iter().any(|h| h["name"] == "awesome-project"));
+
+    // Search by description.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/search/repos?q=searchable",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let hits = body["hits"].as_array().unwrap();
+    assert!(hits.iter().any(|h| h["name"] == "awesome-project"));
+
+    // Empty query -> 400.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/search/repos?q=",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+    // Code search: the initial commit contains "world" in hello.txt.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/search/code?q=world",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "code search: {body}");
+    let hits = body["hits"].as_array().unwrap();
+    assert!(
+        hits.iter().any(|h| h["path"] == "hello.txt"),
+        "expected a hit in hello.txt, got {hits:?}"
+    );
+
+    // /api/search combined.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/search?q=awesome&type=repos",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert!(body.get("repos").is_some());
+}
+
+#[tokio::test]
 async fn group_member_management() {
     let (app, _guard) = common::test_app().await;
     let owner = register_user(&app, "grp-owner").await;
