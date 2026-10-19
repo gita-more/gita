@@ -1,11 +1,10 @@
 //! Pipeline execution: clone, parse YAML, run jobs, collect logs.
 
-use crate::claim::ClaimedRun;
 use crate::config::RunnerConfig;
 use crate::workspace::{clone_url, job_work_dir, run_work_dir};
 use anyhow::Context;
 use chrono::Utc;
-use gita_db::Db;
+use gita_db::{Db, PipelineRunRow};
 use gita_pipeline::{expand, parse_yaml};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -22,12 +21,9 @@ use tokio::process::Command;
 pub async fn execute_pipeline(
     db: &Db,
     config: &RunnerConfig,
-    run: &ClaimedRun,
+    run: &PipelineRunRow,
 ) -> anyhow::Result<()> {
     let work_dir = run_work_dir(config, run.id);
-    if work_dir.exists() {
-        tokio::fs::remove_dir_all(&work_dir).await.ok();
-    }
     tokio::fs::create_dir_all(&work_dir)
         .await
         .with_context(|| format!("create work dir {}", work_dir.display()))?;
@@ -38,33 +34,39 @@ pub async fn execute_pipeline(
     let (owner, repo_name) = match get_repo_owner_name(db, run).await? {
         Some(v) => v,
         None => {
+            eprintln!("[executor] repo id {} not found, marking failed", run.repo_id);
             // Repo was deleted while the run was queued — fail the run.
             db.update_pipeline_run_status(run.id, "failed").await?;
             return Ok(());
         }
     };
+    eprintln!("[executor] resolved owner={owner} repo={repo_name}");
 
     let repo_dir = work_dir.join("repo");
     let url = clone_url(config, &owner, &repo_name);
-    let clone_status = Command::new("git")
-        .arg("clone")
-        .arg("--depth")
-        .arg("1")
-        .arg("--branch")
-        .arg(&run.ref_name)
-        .arg(&url)
-        .arg(&repo_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .status()
-        .await
-        .context("git clone")?;
+    // If the repo is already present (e.g. a prior run left it, or an
+    // integration test pre-cloned it), skip the network clone.
+    if !repo_dir.join(".git").exists() {
+        let clone_status = Command::new("git")
+            .arg("clone")
+            .arg("--depth")
+            .arg("1")
+            .arg("--branch")
+            .arg(&run.ref_name)
+            .arg(&url)
+            .arg(&repo_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .status()
+            .await
+            .context("git clone")?;
 
-    if !clone_status.success() {
-        // Branch may not exist anymore or ref is deleted; mark run failed.
-        db.update_pipeline_run_status(run.id, "failed").await?;
-        return Ok(());
+        if !clone_status.success() {
+            // Branch may not exist anymore or ref is deleted; mark run failed.
+            db.update_pipeline_run_status(run.id, "failed").await?;
+            return Ok(());
+        }
     }
 
     // Read .gita-ci.yml at the clone.
@@ -114,7 +116,7 @@ pub async fn execute_pipeline(
 async fn run_job(
     db: &Db,
     config: &RunnerConfig,
-    run: &ClaimedRun,
+    run: &PipelineRunRow,
     job: &gita_pipeline::ParsedJob,
 ) -> anyhow::Result<bool> {
     let job_id = db
@@ -220,7 +222,7 @@ async fn run_job(
 /// Resolve (owner, repo) for a run from the repositories table.
 async fn get_repo_owner_name(
     db: &Db,
-    run: &ClaimedRun,
+    run: &PipelineRunRow,
 ) -> anyhow::Result<Option<(String, String)>> {
     // The repositories table has owner_name + name; fetch by repo_id.
     let repo = db.get_repository(run.repo_id).await?;

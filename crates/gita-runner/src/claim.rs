@@ -4,47 +4,14 @@ use gita_db::Db;
 use sqlx::Row;
 use std::time::Duration;
 
-/// The row returned when a run is successfully claimed.
-#[derive(Debug, Clone)]
-pub struct ClaimedRun {
-    pub id: i64,
-    pub pipeline_id: i64,
-    pub repo_id: i64,
-    pub ref_name: String,
-    pub head_sha: String,
-    pub trigger_event_id: Option<i64>,
-    pub trigger_pusher_id: Option<i64>,
-    pub status: String,
-    pub queued_at: String,
-    pub started_at: Option<String>,
-    pub finished_at: Option<String>,
-    pub claimed_by_runner_id: Option<String>,
-    pub claimed_until: Option<String>,
-}
-
-fn row_to_claimed_run(row: &sqlx::postgres::PgRow) -> sqlx::Result<ClaimedRun> {
-    Ok(ClaimedRun {
-        id: row.try_get("id")?,
-        pipeline_id: row.try_get("pipeline_id")?,
-        repo_id: row.try_get("repo_id")?,
-        ref_name: row.try_get("ref")?,
-        head_sha: row.try_get("head_sha")?,
-        trigger_event_id: row.try_get("trigger_event_id")?,
-        trigger_pusher_id: row.try_get("trigger_pusher_id")?,
-        status: row.try_get("status")?,
-        queued_at: row.try_get("queued_at")?,
-        started_at: row.try_get("started_at")?,
-        finished_at: row.try_get("finished_at")?,
-        claimed_by_runner_id: row.try_get("claimed_by_runner_id")?,
-        claimed_until: row.try_get("claimed_until")?,
-    })
-}
-
+/// Claim the next queued run, stamping `status='running'`,
+/// `claimed_by_runner_id`, and `claimed_until`. Returns the run row
+/// directly from the `pipeline_runs` table.
 pub async fn claim_one_run(
     db: &Db,
     runner_name: &str,
     lease: Duration,
-) -> anyhow::Result<Option<ClaimedRun>> {
+) -> anyhow::Result<Option<gita_db::PipelineRunRow>> {
     let now = chrono::Utc::now().to_rfc3339();
     let lease_until = (chrono::Utc::now() + chrono::Duration::from_std(lease).unwrap()).to_rfc3339();
 
@@ -78,5 +45,27 @@ pub async fn claim_one_run(
     .fetch_all(db.pool())
     .await?;
 
-    Ok(rows.first().map(row_to_claimed_run).transpose()?)
+    // Reuse gita-db's row_to_run helper if available — fall back to inline decoding.
+    Ok(match rows.first() {
+        Some(row) => Some(decode_run_row(row)?),
+        None => None,
+    })
+}
+
+fn decode_run_row(row: &sqlx::postgres::PgRow) -> anyhow::Result<gita_db::PipelineRunRow> {
+    Ok(gita_db::PipelineRunRow {
+        id: row.try_get("id")?,
+        pipeline_id: row.try_get("pipeline_id")?,
+        repo_id: row.try_get("repo_id")?,
+        ref_name: row.try_get("ref")?,
+        head_sha: row.try_get("head_sha")?,
+        trigger_event_id: row.try_get("trigger_event_id")?,
+        trigger_pusher_id: row.try_get("trigger_pusher_id")?,
+        status: row.try_get("status")?,
+        queued_at: row.try_get("queued_at")?,
+        started_at: row.try_get("started_at")?,
+        finished_at: row.try_get("finished_at")?,
+        claimed_by_runner_id: row.try_get("claimed_by_runner_id")?,
+        claimed_until: row.try_get("claimed_until")?,
+    })
 }

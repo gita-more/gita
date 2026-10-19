@@ -9,6 +9,7 @@ publish = false
 gita-server = { path = "../../crates/gita-server" }
 gita-db = { path = "../../crates/gita-db" }
 gita-core = { path = "../../crates/gita-core" }
+gita-runner = { path = "../../crates/gita-runner" }
 
 [dev-dependencies]
 axum = { workspace = true }
