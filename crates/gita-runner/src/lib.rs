@@ -9,11 +9,13 @@
 pub mod claim;
 pub mod config;
 pub mod executor;
+pub mod registry;
 pub mod workspace;
 
 use crate::claim::claim_one_run;
 use crate::config::RunnerConfig;
 use crate::executor::execute_pipeline;
+use crate::registry::JobRegistry;
 use anyhow::Context;
 use gita_db::Db;
 use tracing::{debug, error, info};
@@ -64,8 +66,9 @@ pub async fn run(config: RunnerConfig) -> anyhow::Result<()> {
         // claiming while this runs.
         let db = db.clone();
         let cfg = config.clone();
+        let registry = JobRegistry::new();
         tokio::spawn(async move {
-            if let Err(e) = execute_pipeline(&db, &cfg, &run).await {
+            if let Err(e) = execute_pipeline(&db, &cfg, &registry, &run).await {
                 error!("execute_pipeline failed: {e:#}");
             }
         });

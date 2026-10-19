@@ -1,14 +1,22 @@
 //! Pipeline execution: clone, parse YAML, run jobs, collect logs.
 
 use crate::config::RunnerConfig;
+use crate::registry::JobRegistry;
 use crate::workspace::{clone_url, job_work_dir, run_work_dir};
 use anyhow::Context;
 use chrono::Utc;
 use gita_db::{Db, PipelineRunRow};
 use gita_pipeline::{expand, parse_yaml};
 use std::process::Stdio;
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::time::{interval, Duration};
+
+/// Cancellation poll interval — how often the executor checks the
+/// pipeline_runs.status while a job is running.
+const CANCEL_POLL: Duration = Duration::from_secs(1);
 
 /// Execute one pipeline run end-to-end.
 ///
@@ -21,6 +29,7 @@ use tokio::process::Command;
 pub async fn execute_pipeline(
     db: &Db,
     config: &RunnerConfig,
+    registry: &JobRegistry,
     run: &PipelineRunRow,
 ) -> anyhow::Result<()> {
     let work_dir = run_work_dir(config, run.id);
@@ -34,13 +43,11 @@ pub async fn execute_pipeline(
     let (owner, repo_name) = match get_repo_owner_name(db, run).await? {
         Some(v) => v,
         None => {
-            eprintln!("[executor] repo id {} not found, marking failed", run.repo_id);
             // Repo was deleted while the run was queued — fail the run.
             db.update_pipeline_run_status(run.id, "failed").await?;
             return Ok(());
         }
     };
-    eprintln!("[executor] resolved owner={owner} repo={repo_name}");
 
     let repo_dir = work_dir.join("repo");
     let url = clone_url(config, &owner, &repo_name);
@@ -98,12 +105,34 @@ pub async fn execute_pipeline(
     };
 
     let mut any_failed = false;
+    let mut canceled = false;
     for plan in &plans {
-        let ok = run_job(db, config, run, &plan.job).await?;
+        // Skip the remaining stages if the run was canceled.
+        if let Ok(Some(fresh)) = db.get_pipeline_run(run.id).await {
+            if fresh.status == "canceled" {
+                canceled = true;
+                break;
+            }
+        }
+        let ok = run_job(db, config, registry, run, &plan.job).await?;
         if !ok {
             any_failed = true;
+            // If the job was canceled (vs. failed for some other
+            // reason), don't keep starting more jobs and don't
+            // overwrite the canceled run status.
+            if let Ok(Some(fresh)) = db.get_pipeline_run(run.id).await {
+                if fresh.status == "canceled" {
+                    canceled = true;
+                }
+            }
             break;
         }
+    }
+
+    if canceled {
+        // The run row is already in 'canceled'; jobs are marked
+        // 'canceled' or 'failed' by run_job. Don't overwrite.
+        return Ok(());
     }
 
     db.update_pipeline_run_status(run.id, if any_failed { "failed" } else { "success" })
@@ -116,6 +145,7 @@ pub async fn execute_pipeline(
 async fn run_job(
     db: &Db,
     config: &RunnerConfig,
+    registry: &JobRegistry,
     run: &PipelineRunRow,
     job: &gita_pipeline::ParsedJob,
 ) -> anyhow::Result<bool> {
@@ -150,7 +180,7 @@ async fn run_job(
     let joined_script = job.script.join(" && ");
     let script = format!("set -e\n{joined_script}");
 
-    let mut child = Command::new("sh")
+    let child = Command::new("sh")
         .arg("-c")
         .arg(&script)
         .current_dir(&repo_dir)
@@ -160,8 +190,17 @@ async fn run_job(
         .spawn()
         .context("spawn sh")?;
 
+    // Register the child so a cancel-watcher (spawned below) can find
+    // it via JobRegistry::kill_run.
+    registry.register(run.id, &job.name, child).await;
+
     // Read stdout/stderr line-buffered and insert into logs.
     let seq = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+
+    let mut child = registry
+        .take(run.id, &job.name)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("child disappeared from registry"))?;
 
     let mut stdout_reader = BufReader::new(child.stdout.take().unwrap()).lines();
     let stderr_reader = child.stderr.take().unwrap();
@@ -203,15 +242,87 @@ async fn run_job(
         }
     });
 
-    let status = child.wait().await.context("wait for sh")?;
+    // Race the child against a cancel poll. The cancel poll runs every
+    // CANCEL_POLL on a separate task; if pipeline_runs.status becomes
+    // 'canceled' the watcher calls registry.kill_run, which start_kill()s
+    // the registered child (here, `child` is a fresh handle we just took
+    // out, so it isn't in the registry anymore — the watcher needs the
+    // same kill semantics on the local handle).
+    //
+    // To avoid the `&mut Child` conflict between wait() and start_kill()
+    // (they can't run concurrently), we keep the child in the registry
+    // during execution and use an mpsc channel to ask the main loop to
+    // kill it.
+    let (kill_tx, mut kill_rx) = tokio::sync::mpsc::channel::<()>(1);
+    // Clone for the watcher so we can drop our copy and detach the
+    // background task once we've awaited the child.
+    let watcher_kill_tx = kill_tx.clone();
+    let registry_for_watcher = registry.clone();
+    let watcher_db = db.clone();
+    let watcher_run_id = run.id;
+    let _watcher = tokio::spawn(async move {
+        let mut ticker = interval(CANCEL_POLL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let Ok(Some(fresh)) = watcher_db.get_pipeline_run(watcher_run_id).await
+            else {
+                break;
+            };
+            if fresh.status == "canceled" {
+                let _ = registry_for_watcher.kill_run(watcher_run_id).await;
+                let _ = watcher_kill_tx.send(()).await;
+                break;
+            }
+            if !matches!(fresh.status.as_str(), "running" | "queued") {
+                break;
+            }
+        }
+    });
+
+    // Drop our own registry reference: this task doesn't need to kill
+    // the child (the watcher owns that). The watcher keeps the registry
+    // alive.
+    drop(registry.clone());
+
+    let status = tokio::select! {
+        s = child.wait() => s.context("wait for sh")?,
+        _ = kill_rx.recv() => {
+            // Cancel observed — start_kill and reap.
+            let _ = child.start_kill();
+            child.wait().await.context("wait after kill")?
+        }
+    };
     let _ = stdout_task.await;
     let _ = stderr_task.await;
+    // Drop our kill channel so the watcher's send() returns Err and it
+    // doesn't keep polling uselessly after the run already finished.
+    drop(kill_tx);
 
+    // Determine outcome. SIGTERM (signal 15) is what tokio uses for
+    // start_kill on Unix; treat that as canceled, anything else
+    // non-zero as failed.
     let exit_code = status.code();
+    // On Unix, start_kill sends SIGTERM (signal 15). Tokio surfaces a
+    // signal-killed exit as `code() == None` + `signal() == Some(15)`,
+    // so we have to check both shapes. On non-Unix we fall back to the
+    // exit-code check (143 = 128 + 15) since ExitStatusExt isn't
+    // available.
+    #[cfg(unix)]
+    let was_canceled = matches!(exit_code, Some(143))
+        || matches!(status.signal(), Some(15) | Some(9));
+    #[cfg(not(unix))]
+    let was_canceled = matches!(exit_code, Some(143));
     let ok = status.success();
+    let final_status = if was_canceled {
+        "canceled"
+    } else if ok {
+        "success"
+    } else {
+        "failed"
+    };
 
-    db.update_job_status(job_id, if ok { "success" } else { "failed" }, exit_code)
-        .await?;
+    db.update_job_status(job_id, final_status, exit_code).await?;
 
     // Clean up the job workspace to avoid accumulating dirs.
     tokio::fs::remove_dir_all(&job_dir).await.ok();

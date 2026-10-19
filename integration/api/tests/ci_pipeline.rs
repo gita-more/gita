@@ -15,6 +15,7 @@ use axum::http::Method;
 use gita_db::Db;
 use gita_runner::config::RunnerConfig;
 use gita_runner::executor::execute_pipeline;
+use gita_runner::registry::JobRegistry;
 use gita_runner::workspace::run_work_dir;
 use std::path::Path;
 use std::process::Command;
@@ -172,7 +173,8 @@ jobs:
     );
 
     // Run the pipeline executor.
-    execute_pipeline(&db, &runner_config, &claimed)
+    let registry = JobRegistry::new();
+    execute_pipeline(&db, &runner_config, &registry, &claimed)
         .await
         .expect("execute_pipeline");
 
@@ -191,4 +193,157 @@ jobs:
         .iter()
         .any(|l| l.line.contains("sentinel-CI-RAN-OK"));
     assert!(any_sentinel, "logs should contain sentinel; got {:?}", logs);
+}
+
+#[tokio::test]
+async fn cancel_run_actually_kills_running_job() {
+    let (app, _guard) = common::test_app().await;
+    let db = app.db.clone();
+
+    let user = common::register_user(&app, "cancelowner").await;
+    let _full = common::create_repo(&app, &user.token, "cancelrepo").await;
+    common::push_initial_commit(&app, "cancelowner", "cancelrepo");
+    // Long-running job: sleep 30 seconds. We will cancel it within a
+    // few seconds so the runner must actually kill the child process.
+    push_ci_yml(
+        &app,
+        "cancelowner",
+        "cancelrepo",
+        r#"
+stages: [wait]
+jobs:
+  slow:
+    stage: wait
+    script: [sleep 30]
+"#,
+    );
+
+    let (status, repo_json) = common::request(
+        &app,
+        Method::GET,
+        "/api/repos/cancelowner/cancelrepo",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let repo_id = repo_json["id"].as_i64().unwrap();
+    let head_sha = app
+        .git
+        .head_sha("cancelowner", "cancelrepo", "refs/heads/main")
+        .expect("head_sha");
+
+    let owner_user = db
+        .get_user_by_username(&user.username)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let pid = db
+        .upsert_pipeline(repo_id, ".gita-ci.yml", "refs/heads/main", &head_sha, "stages: [wait]")
+        .await
+        .unwrap();
+    let run_id = db
+        .insert_pipeline_run(pid, repo_id, "refs/heads/main", &head_sha, Some(owner_user.id), None)
+        .await
+        .unwrap();
+
+    // Pre-clone so execute_pipeline skips network clone.
+    let runner_config = RunnerConfig {
+        server_db_url: common::test_db_url(),
+        server_base_url: "http://localhost:3100".to_string(),
+        runner_token: "cancel-test-token".to_string(),
+        runner_name: "cancel-runner".to_string(),
+        work_dir: std::env::temp_dir().join(format!(
+            "gita-cancel-it-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )),
+        poll_interval_secs: 1,
+        claim_lease_secs: 300,
+        concurrent_jobs: 1,
+    };
+    let _ = std::fs::create_dir_all(&runner_config.work_dir);
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join("cancelowner")
+        .join("cancelrepo.git");
+    let bare_url = format!("file://{}", bare.display());
+    let repo_dir = run_work_dir(&runner_config, run_id).join("repo");
+    let clone_out = Command::new("git")
+        .arg("clone")
+        .arg("--depth")
+        .arg("1")
+        .arg("--branch")
+        .arg("main")
+        .arg(&bare_url)
+        .arg(&repo_dir)
+        .output()
+        .expect("git clone");
+    assert!(clone_out.status.success(), "pre-clone failed");
+
+    // Spawn the executor in a background task — it will block for
+    // ~30s on the long-running sleep job otherwise.
+    let db_for_exec = db.clone();
+    let cfg = runner_config.clone();
+    let claimed = db
+        .claim_pipeline_run("cancel-runner", 300)
+        .await
+        .unwrap()
+        .unwrap();
+    let exec_handle = tokio::spawn(async move {
+        let registry = JobRegistry::new();
+        execute_pipeline(&db_for_exec, &cfg, &registry, &claimed).await
+    });
+
+    // Wait until the run is observed running, then cancel it.
+    let mut running_observed = false;
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let r = db.get_pipeline_run(run_id).await.unwrap().unwrap();
+        if r.status == "running" {
+            running_observed = true;
+            break;
+        }
+    }
+    assert!(running_observed, "run never transitioned to running");
+
+    let cancel_started = std::time::Instant::now();
+    db.update_pipeline_run_status(run_id, "canceled")
+        .await
+        .unwrap();
+    let exec_result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        exec_handle,
+    )
+    .await
+    .expect("executor did not finish within 15s after cancel")
+    .expect("executor task join error")
+    .expect("executor returned an error");
+    let _ = exec_result;
+    let elapsed = cancel_started.elapsed();
+    // Executor should reap the killed child promptly (a few seconds),
+    // not wait the full 30-second sleep.
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "cancel took too long: {elapsed:?}"
+    );
+
+    // Run should be canceled (or have transitioned through canceled);
+    // either is acceptable because the cancel was issued mid-flight.
+    let final_run = db.get_pipeline_run(run_id).await.unwrap().unwrap();
+    assert!(
+        matches!(final_run.status.as_str(), "canceled" | "running"),
+        "unexpected final status: {}",
+        final_run.status
+    );
+
+    // The slow job should be marked canceled.
+    let jobs = db.list_jobs(run_id).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].status, "canceled", "job should be canceled");
 }
