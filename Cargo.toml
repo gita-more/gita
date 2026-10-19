@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/gita-core",
     "crates/gita-db",
+    "crates/gita-pipeline",
     "crates/gita-git",
     "crates/gita-events",
     "crates/gita-http",
