@@ -1,5 +1,5 @@
 use clap::Parser;
-use gita_server::{Args, Config, run};
+use gita_server::{Args, Command, Config, WorkerCommand, run, worker_register};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -12,6 +12,19 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
-    let config = Config::load(&args.config)?;
-    run(config).await
+    match args.command.unwrap_or(Command::Serve) {
+        Command::Serve => {
+            let config = Config::load(&args.config)?;
+            run(config).await
+        }
+        Command::Worker { action } => match action {
+            WorkerCommand::Register { name, user } => {
+                let config = Config::load(&args.config)?;
+                let token = worker_register(&config, &name, &user).await?;
+                println!("runner token: {token}");
+                println!("export GITA_RUNNER_TOKEN={token}");
+                Ok(())
+            }
+        },
+    }
 }

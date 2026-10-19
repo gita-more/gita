@@ -16,9 +16,39 @@ use tracing::{info, warn};
 #[derive(Debug, Parser)]
 #[command(name = "gita", version, about = "AI-native Git server")]
 pub struct Args {
-    /// Path to the configuration file.
-    #[arg(short, long, default_value = "config/gita.toml")]
+    /// Subcommand; defaults to `serve` when omitted.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    /// Path to the configuration file (used by `serve`).
+    #[arg(short, long, default_value = "config/gita.toml", global = true)]
     pub config: PathBuf,
+}
+
+/// Top-level commands.
+#[derive(Debug, clap::Subcommand)]
+pub enum Command {
+    /// Start the server (default).
+    Serve,
+    /// Register a CI runner and mint its token.
+    Worker {
+        #[command(subcommand)]
+        action: WorkerCommand,
+    },
+}
+
+/// Worker-related subcommands.
+#[derive(Debug, clap::Subcommand)]
+pub enum WorkerCommand {
+    /// Mint a runner token for a user and print it.
+    Register {
+        /// Human-readable runner name (used as the PAT name).
+        #[arg(long)]
+        name: String,
+        /// Username whose account the runner will act as.
+        #[arg(long)]
+        user: String,
+    },
 }
 
 /// Server configuration.
@@ -253,6 +283,30 @@ pub async fn run(config: Config) -> Result<()> {
     info!("Gita listening on http://{addr}");
 
     axum::serve(listener, router).await.context("axum serve error")
+}
+
+/// Mint a runner token for `username`, stored under `name`, and return
+/// the raw token for the caller to print.
+pub async fn worker_register(config: &Config, name: &str, username: &str) -> Result<String> {
+    let db = Db::connect(&config.server.database_url).await?;
+    let user = db
+        .get_user_by_username(username)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("user not found: {username}"))?;
+
+    // 32 random bytes hex-encoded — same shape as the REST PAT flow.
+    let token = random_hex_token();
+    db.create_access_token(user.id, &token, &format!("runner/{name}"))
+        .await?;
+    Ok(token)
+}
+
+/// Generate a random hex token for runner registration.
+fn random_hex_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
 }
 
 #[cfg(test)]
