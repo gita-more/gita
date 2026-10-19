@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import {
   api,
   type Commit,
+  type CommitDetail,
   type FileContent,
   type PullRequest,
   type Issue,
@@ -239,7 +240,7 @@ export function RepoDetail({
           groupName={groupName}
         />
       )}
-      {tab === 'commits' && <CommitsPanel commits={commits} />}
+      {tab === 'commits' && <CommitsPanel commits={commits} owner={owner} name={name} />}
       {tab === 'prs' && <PrPanel owner={owner} name={name} prs={prs} onChanged={() => void loadPrs()} />}
       {tab === 'issues' && <IssuePanel owner={owner} name={name} issues={issues} onChanged={() => void loadIssues()} />}
       {tab === 'pipelines' && (
@@ -377,8 +378,44 @@ function formatSize(bytes: number): string {
 // Commits panel
 // ---------------------------------------------------------------------------
 
-function CommitsPanel({ commits }: { commits: Commit[] }) {
+function CommitsPanel({
+  commits,
+  owner,
+  name,
+}: {
+  commits: Commit[]
+  owner: string
+  name: string
+}) {
   const { t } = useI18n()
+  const translateError = useErrorTranslator()
+  const [openSha, setOpenSha] = useState<string | null>(null)
+  const [detail, setDetail] = useState<{ commit: CommitDetail; diff: string } | null>(null)
+  const [error, setError] = useState('')
+
+  async function openCommit(sha: string) {
+    setOpenSha(sha)
+    setError('')
+    setDetail(null)
+    try {
+      const res = await api.getCommit(owner, name, sha)
+      setDetail({ commit: res.commit, diff: res.diff })
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }
+
+  if (openSha && detail) {
+    return (
+      <SingleCommitView
+        commit={detail.commit}
+        diff={detail.diff}
+        onBack={() => { setOpenSha(null); setDetail(null) }}
+        error={error}
+      />
+    )
+  }
+
   return (
     <>
       <PageHeader
@@ -386,6 +423,7 @@ function CommitsPanel({ commits }: { commits: Commit[] }) {
         title={t('repo.commitsTitle')}
         subtitle={t('repo.commitsSubtitle', { n: commits.length })}
       />
+      {error && <Alert type="error">{error}</Alert>}
       {commits.length === 0 ? (
         <EmptyState
           icon={<GitCommitIcon size={22} />}
@@ -395,7 +433,7 @@ function CommitsPanel({ commits }: { commits: Commit[] }) {
       ) : (
         <div className="commit-list">
           {commits.map((c) => (
-            <div key={c.sha} className="commit-item">
+            <div key={c.sha} className="commit-item clickable" onClick={() => void openCommit(c.sha)}>
               <span className="commit-avatar">{c.author_name.slice(0, 1).toUpperCase()}</span>
               <div className="commit-body">
                 <div className="commit-message">{c.message.split('\n')[0]}</div>
@@ -411,6 +449,51 @@ function CommitsPanel({ commits }: { commits: Commit[] }) {
           ))}
         </div>
       )}
+    </>
+  )
+}
+
+function SingleCommitView({
+  commit,
+  diff,
+  onBack,
+  error,
+}: {
+  commit: CommitDetail
+  diff: string
+  onBack: () => void
+  error: string
+}) {
+  const { t } = useI18n()
+  return (
+    <>
+      <PageHeader
+        icon={<GitCommitIcon size={18} />}
+        title={commit.message.split('\n')[0]}
+        actions={
+          <button className="btn btn-ghost" onClick={onBack}>{t('repo.backToList')}</button>
+        }
+      />
+      {error && <Alert type="error">{error}</Alert>}
+      <div className="pr-meta-grid">
+        <div className="pr-meta-item">
+          <span className="label">{t('repo.author')}</span>
+          <span className="value">
+            {commit.author_name} {'<'}{commit.author_email}{'>'}
+          </span>
+        </div>
+        <div className="pr-meta-item">
+          <span className="label">SHA</span>
+          <span className="value mono">{commit.sha.slice(0, 12)}</span>
+        </div>
+        <div className="pr-meta-item">
+          <span className="label">{t('repo.createdTime')}</span>
+          <span className="value">{new Date(commit.authored_at).toLocaleString()}</span>
+        </div>
+      </div>
+      <p className="pr-body">{commit.message || t('repo.noBody')}</p>
+      <h4 style={{ margin: '12px 0 8px' }}>{t('repo.viewDiff')}</h4>
+      <pre className="code-block">{diff || '(no diff)'}</pre>
     </>
   )
 }

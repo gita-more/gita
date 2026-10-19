@@ -71,6 +71,7 @@ pub fn repo_routes() -> Router<AppState> {
         .route("/api/repos/{owner}/{repo}/tree", get(get_tree))
         .route("/api/repos/{owner}/{repo}/file", get(get_file))
         .route("/api/repos/{owner}/{repo}/commits", get(list_commits))
+        .route("/api/repos/{owner}/{repo}/commits/{sha}", get(get_commit))
         .route("/api/repos/{owner}/{repo}/branches", get(list_branches).post(create_branch))
         .route(
             "/api/repos/{owner}/{repo}/branches/{branch}",
@@ -396,6 +397,40 @@ async fn list_commits(
     Ok(Json(serde_json::json!({
         "ref": reference,
         "commits": commits,
+    })))
+}
+
+async fn get_commit(
+    State(state): State<AppState>,
+    Path((owner, repo, sha)): Path<(String, String, String)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let commit = state
+        .git
+        .get_commit(&owner, &repo, &sha)
+        .map_err(ApiError::from)?;
+    let diff = state
+        .git
+        .show_commit(&owner, &repo, &commit.sha)
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({
+        "commit": {
+            "sha": commit.sha,
+            "author_name": commit.author_name,
+            "author_email": commit.author_email,
+            "message": commit.message,
+            "parent_shas": commit.parent_shas,
+            "authored_at": commit.authored_at.to_rfc3339(),
+        },
+        "diff": diff,
+        "repository": {
+            "owner": repository.owner_name,
+            "name": repository.name,
+        }
     })))
 }
 

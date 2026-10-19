@@ -614,7 +614,7 @@ impl GitManager {
         Ok(commits)
     }
 
-    /// Compute a unified diff between two refs using the git CLI.
+    /// Compute the diff between two refs (used for PR review).
     pub fn diff_between(
         &self,
         owner: &str,
@@ -632,6 +632,30 @@ impl GitManager {
         if !output.status.success() {
             return Err(anyhow!(
                 "git diff error: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Run `git show <sha>` and return its combined patch (works for the
+    /// root commit too, which has no parent).
+    pub fn show_commit(
+        &self,
+        owner: &str,
+        name: &str,
+        sha: &str,
+    ) -> Result<String> {
+        let path = self.repo_path(owner, name);
+        let output = git_cmd()
+            .args(["--git-dir"])
+            .arg(&path)
+            .args(["show", "--no-color", "--no-ext-diff", sha])
+            .output()
+            .map_err(|e| anyhow!("git show failed: {e}"))?;
+        if !output.status.success() {
+            return Err(anyhow!(
+                "git show error: {}",
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
@@ -710,6 +734,43 @@ impl GitManager {
         let repo = self.open(owner, name)?;
         let id = resolve_reference_id(&repo, reference)?;
         Ok(id.to_string())
+    }
+
+    /// Fetch a single commit by SHA.
+    pub fn get_commit(
+        &self,
+        owner: &str,
+        name: &str,
+        sha: &str,
+    ) -> Result<gita_core::CommitMeta> {
+        let repo = self.open(owner, name)?;
+        let id = gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes()))
+            .map_err(|e| anyhow!("invalid sha {sha}: {e}"))?;
+        let commit = repo
+            .find_commit(id)
+            .map_err(|e| anyhow!("commit {sha} not found: {e}"))?;
+        let parents: Vec<String> = commit
+            .parent_ids()
+            .map(|p| p.to_string())
+            .collect();
+        let sig = commit
+            .author()
+            .map_err(|e| anyhow!("author error: {e}"))?;
+        let message = commit
+            .message_raw()
+            .map_err(|e| anyhow!("message error: {e}"))?;
+        Ok(gita_core::CommitMeta {
+            sha: commit.id.to_string(),
+            author_name: sig.name.to_string(),
+            author_email: sig.email.to_string(),
+            message: message.to_string(),
+            parent_shas: parents,
+            authored_at: chrono::DateTime::from_timestamp(
+                sig.time.parse().ok().unwrap_or(0),
+                0,
+            )
+            .unwrap_or_else(chrono::Utc::now),
+        })
     }
 
     /// Check whether `candidate` is an ancestor of `target` (i.e. updating

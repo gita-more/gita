@@ -37,6 +37,15 @@ export interface Commit {
   authored_at: string
 }
 
+export interface CommitDetail {
+  sha: string
+  author_name: string
+  author_email: string
+  message: string
+  parent_shas: string[]
+  authored_at: string
+}
+
 export interface FileContent {
   path: string
   content: string
@@ -272,6 +281,10 @@ export const api = {
   getCommits: (owner: string, name: string, ref: string, limit = 30) =>
     request<{ ref: string; commits: Commit[] }>(
       `/api/repos/${owner}/${name}/commits?ref=${encodeURIComponent(ref)}&limit=${limit}`,
+    ),
+  getCommit: (owner: string, name: string, sha: string) =>
+    request<{ commit: CommitDetail; diff: string; repository: { owner: string; name: string } }>(
+      `/api/repos/${owner}/${name}/commits/${sha}`,
     ),
   getBranches: (owner: string, name: string) =>
     request<string[]>(`/api/repos/${owner}/${name}/branches`),

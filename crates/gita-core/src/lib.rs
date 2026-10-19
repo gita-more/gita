@@ -263,6 +263,20 @@ pub struct FileContent {
     pub sha: String,
 }
 
+/// Metadata for a single git commit returned by the API. Used by
+/// `GET /api/repos/{owner}/{repo}/commits/{sha}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommitMeta {
+    pub sha: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub message: String,
+    pub parent_shas: Vec<String>,
+    /// Stored as a string to mirror the rest of the codebase's
+    /// RFC3339-text conventions.
+    pub authored_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1226,6 +1226,52 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn commit_detail_endpoint() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "commit-user").await;
+    let full = common::create_repo(&app, &user.token, "commit-repo").await;
+    let (owner, name) = full.split_once('/').unwrap();
+    common::push_initial_commit(&app, owner, name);
+
+    let (_, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner}/{name}/commits"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    let sha = body["commits"][0]["sha"].as_str().unwrap().to_string();
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner}/{name}/commits/{sha}"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "get commit: {body}");
+    assert_eq!(body["commit"]["sha"], sha);
+    assert_eq!(body["commit"]["author_name"], "Test");
+    assert!(body["diff"].as_str().unwrap().contains("world"));
+
+    // Invalid SHA -> 500 (gix returns Err).
+    let (status, _) = request(
+        &app,
+        axum::http::Method::GET,
+        &format!("/api/repos/{owner}/{name}/commits/deadbeef"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert!(
+        status == axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            || status == axum::http::StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
 async fn search_repos_and_code() {
     let (app, _guard) = common::test_app().await;
     let user = register_user(&app, "search-user").await;
