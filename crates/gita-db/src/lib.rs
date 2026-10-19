@@ -1372,6 +1372,10 @@ mod tests {
             "access_tokens",
             "groups",
             "group_members",
+            "pipelines",
+            "pipeline_runs",
+            "jobs",
+            "logs",
         ];
         for table in expected {
             let row: (i64,) = sqlx::query_as(&format!(
