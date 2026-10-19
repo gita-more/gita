@@ -18,8 +18,10 @@ export function PipelinesPanel({
   const { t } = useI18n()
   const [runs, setRuns] = useState<PipelineRun[]>([])
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null)
+  const [triggering, setTriggering] = useState(false)
+  const [triggerError, setTriggerError] = useState('')
 
-  useEffect(() => {
+  const refreshRuns = () => {
     if (pipelines.length === 0) {
       setRuns([])
       return
@@ -28,7 +30,26 @@ export function PipelinesPanel({
       .listRuns(owner, name, pipelines[0].path)
       .then((r) => setRuns(r.runs))
       .catch(() => setRuns([]))
+  }
+
+  useEffect(() => {
+    refreshRuns()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, name, pipelines])
+
+  async function handleTrigger() {
+    if (pipelines.length === 0 || triggering) return
+    setTriggering(true)
+    setTriggerError('')
+    try {
+      await api.triggerRun(owner, name, pipelines[0].path)
+      refreshRuns()
+    } catch (e) {
+      setTriggerError(String(e))
+    } finally {
+      setTriggering(false)
+    }
+  }
 
   return (
     <>
@@ -36,7 +57,24 @@ export function PipelinesPanel({
         icon={<RocketIcon size={18} />}
         title={t('repo.pipelinesTitle')}
         subtitle={t('repo.pipelinesSubtitle', { n: runs.length })}
+        actions={
+          pipelines.length > 0 ? (
+            <button
+              className="btn btn-primary"
+              onClick={() => void handleTrigger()}
+              disabled={triggering}
+            >
+              {triggering
+                ? t('repo.triggerRunning')
+                : t('repo.runPipeline')}
+            </button>
+          ) : undefined
+        }
       />
+
+      {triggerError && (
+        <div className="alert alert-error">{triggerError}</div>
+      )}
 
       {pipelines.length === 0 ? (
         <EmptyState

@@ -214,6 +214,81 @@ async fn get_run(
     }))
 }
 
+/// Manually trigger a new pipeline run from the current `.gita-ci.yml`
+/// on the pipeline's stored ref + SHA. Auth required; only the
+/// repository owner may re-run.
+async fn trigger_run(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path((owner, repo, path)): Path<(String, String, String)>,
+) -> ApiResult<Json<RunTriggerResponse>> {
+    let repo = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repo.owner_id != user.id {
+        return Err(ApiError::Forbidden(
+            "only the repository owner may trigger a run".into(),
+        ));
+    }
+    let pipeline = state
+        .db
+        .get_pipeline_by_path(repo.id, &path)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("pipeline not found".into()))?;
+
+    // Re-resolve head sha at the pipeline's ref so the run reflects the
+    // current tip, not necessarily the SHA that last enqueued a run.
+    let head_sha = state
+        .git
+        .head_sha(&owner, &repo.name, &pipeline.ref_name)
+        .map_err(ApiError::from)?;
+
+    let run_id = state
+        .db
+        .insert_pipeline_run(
+            pipeline.id,
+            repo.id,
+            &pipeline.ref_name,
+            &head_sha,
+            Some(user.id),
+            None,
+        )
+        .await?;
+
+    // Mirror what the push handler does so the rest of the system
+    // observes a PipelineRequested event for the new run.
+    state.bus.publish(
+        gita_core::EventType::PipelineRequested,
+        Some(repo.id),
+        Some(user.id),
+        serde_json::json!({
+            "owner": owner,
+            "repo": repo.name,
+            "run_id": run_id,
+            "pipeline_id": pipeline.id,
+            "ref": pipeline.ref_name,
+            "head_sha": head_sha,
+            "trigger": "manual",
+        }),
+    );
+
+    let run = state
+        .db
+        .get_pipeline_run(run_id)
+        .await?
+        .ok_or_else(|| ApiError::Internal("inserted run vanished".into()))?;
+    Ok(Json(RunTriggerResponse {
+        run: PipelineRunResponse::from(run),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunTriggerResponse {
+    pub run: PipelineRunResponse,
+}
+
 async fn cancel_run(
     State(state): State<AppState>,
     _user: AuthUserExtractor,
@@ -368,7 +443,7 @@ pub fn pipeline_routes() -> Router<AppState> {
         )
         .route(
             "/api/repos/{owner}/{repo}/pipelines/{path}/runs",
-            get(list_runs),
+            get(list_runs).post(trigger_run),
         )
         .route(
             "/api/repos/{owner}/{repo}/runs/{run_id}",

@@ -136,6 +136,8 @@ export const messages = {
     emptyRunsDescription: 'Push a commit to trigger the first run.',
     runQueuedAt: 'queued at {ts}',
     noLogsYet: '(no log output yet)',
+    runPipeline: 'Run pipeline',
+    triggerRunning: 'Queuing…',
     empty: {
       title: 'Quick setup',
       desc: 'This repository is empty. Push an existing repository from the command line, or create a new one below.',

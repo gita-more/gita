@@ -287,6 +287,11 @@ export const api = {
     request<{ runs: PipelineRun[] }>(
       `/api/repos/${owner}/${name}/pipelines/${encodeURIComponent(path)}/runs`,
     ),
+  triggerRun: (owner: string, name: string, path = '.gita-ci.yml') =>
+    request<{ run: PipelineRun }>(
+      `/api/repos/${owner}/${name}/pipelines/${encodeURIComponent(path)}/runs`,
+      { method: 'POST' },
+    ),
   getRun: (owner: string, name: string, runId: number) =>
     request<{ run: PipelineRun; jobs: Job[] }>(
       `/api/repos/${owner}/${name}/runs/${runId}`,

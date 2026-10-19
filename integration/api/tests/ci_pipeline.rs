@@ -711,3 +711,121 @@ async fn sse_log_stream_emits_lines_and_closes_on_terminal() {
          status_status={status_status}; buffer={buffer}"
     );
 }
+
+#[tokio::test]
+async fn manual_trigger_creates_new_run() {
+    let (app, _guard) = common::test_app().await;
+    let db = app.db.clone();
+
+    let owner_user = common::register_user(&app, "triggerowner").await;
+    let other_user = common::register_user(&app, "triggerother").await;
+    let _full = common::create_repo(&app, &owner_user.token, "triggerrepo").await;
+    common::push_initial_commit(&app, "triggerowner", "triggerrepo");
+    push_ci_yml(
+        &app,
+        "triggerowner",
+        "triggerrepo",
+        r#"
+stages: [build]
+jobs:
+  hello:
+    stage: build
+    script: [echo "triggered"]
+"#,
+    );
+
+    // Pre-create a pipeline row so the trigger has something to enqueue
+    // against. We have to call the helper directly because the trigger
+    // endpoint only enqueues; it does not upsert pipelines.
+    let (status, repo_json) = common::request(
+        &app,
+        Method::GET,
+        "/api/repos/triggerowner/triggerrepo",
+        None,
+        Some(&owner_user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let repo_id = repo_json["id"].as_i64().unwrap();
+    let head_sha = app
+        .git
+        .head_sha("triggerowner", "triggerrepo", "refs/heads/main")
+        .expect("head_sha");
+    db.upsert_pipeline(
+        repo_id,
+        ".gita-ci.yml",
+        "refs/heads/main",
+        &head_sha,
+        "stages: [build]",
+    )
+    .await
+    .unwrap();
+
+    // POST /api/repos/.../pipelines/.gita-ci.yml/runs as the owner.
+    let (status, body) = common::request(
+        &app,
+        Method::POST,
+        "/api/repos/triggerowner/triggerrepo/pipelines/.gita-ci.yml/runs",
+        None,
+        Some(&owner_user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "trigger: {body}");
+    let triggered_run_id = body["run"]["id"].as_i64().unwrap();
+    assert_eq!(body["run"]["status"], "queued");
+    assert_eq!(body["run"]["head_sha"], head_sha);
+
+    // The new run is observable via list_runs.
+    let (status, list_body) = common::request(
+        &app,
+        Method::GET,
+        "/api/repos/triggerowner/triggerrepo/pipelines/.gita-ci.yml/runs",
+        None,
+        Some(&owner_user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let listed: Vec<i64> = list_body["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_i64().unwrap())
+        .collect();
+    assert!(
+        listed.contains(&triggered_run_id),
+        "newly-triggered run {triggered_run_id} should appear in list; got {listed:?}"
+    );
+
+    // Non-owner is forbidden (403).
+    let (status, _) = common::request(
+        &app,
+        Method::POST,
+        "/api/repos/triggerowner/triggerrepo/pipelines/.gita-ci.yml/runs",
+        None,
+        Some(&other_user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+    // Missing pipeline -> 404.
+    let (status, _) = common::request(
+        &app,
+        Method::POST,
+        "/api/repos/triggerowner/triggerrepo/pipelines/nonexistent.yml/runs",
+        None,
+        Some(&owner_user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+
+    // Unauthenticated -> 401 (handler requires AuthUserExtractor).
+    let (status, _) = common::request(
+        &app,
+        Method::POST,
+        "/api/repos/triggerowner/triggerrepo/pipelines/.gita-ci.yml/runs",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+}
