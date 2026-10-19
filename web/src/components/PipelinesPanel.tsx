@@ -119,28 +119,32 @@ function RunDetail({
     }
   }, [owner, name, runId])
 
-  // Poll logs every 2s while any job is running.
+  // Subscribe to live log + status events via SSE. One connection per
+  // job streams its own logs and emits a status event when it enters
+  // a terminal state. The backend auto-closes each connection when
+  // the job is done.
   useEffect(() => {
-    if (!jobs.some((j) => j.status === 'running' || j.status === 'queued')) return
-    const id = setInterval(async () => {
-      const updates: Record<number, JobLogLine[]> = {}
-      for (const job of jobs) {
-        const since = (logs[job.id] ?? []).length > 0
-          ? (logs[job.id]!.at(-1)?.seq ?? -1) + 1
-          : -1
-        const { lines } = await api.getJobLogs(owner, name, runId, job.id, since)
-        updates[job.id] = lines
-      }
-      setLogs((prev) => {
-        const next = { ...prev }
-        for (const [k, v] of Object.entries(updates)) {
-          next[Number(k)] = [...(prev[Number(k)] ?? []), ...v]
-        }
-        return next
-      })
-    }, 2000)
-    return () => clearInterval(id)
-  }, [owner, name, runId, jobs, logs])
+    if (jobs.length === 0) return
+    const jobConns = jobs.map((j) =>
+      api.streamJobLogs(owner, name, runId, j.id, {
+        onLog: (line) => {
+          setLogs((prev) => ({
+            ...prev,
+            [j.id]: [...(prev[j.id] ?? []), line],
+          }))
+        },
+        onStatus: (job) => {
+          setJobs((prev) =>
+            prev.map((pj) => (pj.id === job.id ? job : pj)),
+          )
+        },
+        onError: (e) => {
+          console.warn(`log stream for job ${j.id} errored`, e)
+        },
+      }),
+    )
+    return () => jobConns.forEach((c) => c.close())
+  }, [owner, name, runId, jobs.length])
 
   if (!run) return null
   return (

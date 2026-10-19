@@ -15,6 +15,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+futures-util = "0.3"
+tokio-stream = { version = "0.1", features = ["sync", "time"] }
+async-stream = "0.3"
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
 uuid = { workspace = true }

@@ -10,6 +10,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use gita_db::{JobRow, LogRow, PipelineRow, PipelineRunRow};
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 
 // ----- Response shapes --------------------------------------------------
 
@@ -257,6 +258,83 @@ async fn get_logs(
     }))
 }
 
+/// SSE stream of log lines for one job.
+///
+/// Emits an `event: log\ndata: <line-json>\n\n` event for each new log
+/// line, plus an `event: status\ndata: <status-json>\n\n` event when
+/// the job transitions to a terminal state. The stream closes when
+/// the job is in a terminal state AND there are no further log rows to
+/// flush.
+///
+/// Phase 1 polls the DB at ~1 Hz to discover new rows. A future
+/// revision could switch to LISTEN/NOTIFY for lower latency.
+async fn stream_logs(
+    State(state): State<AppState>,
+    Path((_owner, _repo, _run_id, job_id)): Path<(String, String, i64, i64)>,
+) -> Result<
+    axum::response::sse::Sse<
+        impl futures_util::Stream<Item = Result<axum::response::sse::Event, Infallible>>,
+    >,
+    ApiError,
+> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use std::convert::Infallible;
+    use std::time::Duration;
+
+    let db = state.db.clone();
+
+    // Resolve the job once so we can 404 cleanly.
+    let _ = db
+        .get_job(job_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("job not found".into()))?;
+
+    // The stream polls the DB every second, emits any new log rows as
+    // `event: log` events, and one `event: status` event once the job
+    // reaches a terminal state. When the job is terminal AND we've
+    // drained all rows, the inner stream ends and the SSE response
+    // closes.
+    let stream = async_stream::stream! {
+        let mut next_seq: i64 = -1;
+        loop {
+            // Push any new log lines.
+            if let Ok(rows) = db.list_logs_since(job_id, next_seq, 1000).await {
+                for row in rows {
+                    let seq = row.seq;
+                    let payload = serde_json::to_string(&LogLineResponse::from(row))
+                        .unwrap_or_else(|_| "{}".into());
+                    next_seq = next_seq.max(seq + 1);
+                    yield Ok::<_, Infallible>(Event::default().event("log").data(payload));
+                }
+            }
+
+            // Check job status; emit `status` if terminal.
+            let job_terminal = if let Ok(Some(fresh_job)) = db.get_job(job_id).await {
+                let terminal = matches!(
+                    fresh_job.status.as_str(),
+                    "success" | "failed" | "skipped" | "canceled"
+                );
+                if terminal {
+                    let payload = serde_json::to_string(&JobResponse::from(fresh_job))
+                        .unwrap_or_else(|_| "{}".into());
+                    yield Ok::<_, Infallible>(Event::default().event("status").data(payload));
+                }
+                terminal
+            } else {
+                true // job vanished — stop streaming
+            };
+
+            if job_terminal {
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new()))
+}
+
 // ----- Envelope types ---------------------------------------------------
 
 #[derive(Debug, Serialize)]
@@ -303,5 +381,9 @@ pub fn pipeline_routes() -> Router<AppState> {
         .route(
             "/api/repos/{owner}/{repo}/runs/{run_id}/jobs/{job_id}/logs",
             get(get_logs),
+        )
+        .route(
+            "/api/repos/{owner}/{repo}/runs/{run_id}/jobs/{job_id}/logs/stream",
+            get(stream_logs),
         )
 }

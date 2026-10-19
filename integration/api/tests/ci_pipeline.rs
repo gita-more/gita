@@ -12,6 +12,7 @@
 mod common;
 
 use axum::http::Method;
+use chrono::Utc;
 use gita_db::Db;
 use gita_runner::config::RunnerConfig;
 use gita_runner::executor::execute_pipeline;
@@ -523,4 +524,190 @@ async fn first_ts(db: &Db, job_id: i64) -> Option<String> {
         .await
         .ok()
         .and_then(|rows| rows.into_iter().next().map(|r| r.ts))
+}
+
+#[tokio::test]
+async fn sse_log_stream_emits_lines_and_closes_on_terminal() {
+    // We don't need a real runner here — directly drive the DB so we
+    // can deterministically observe SSE events.
+    use http_body_util::BodyExt;
+    use std::time::Duration;
+
+    let (app, _guard) = common::test_app().await;
+    let db = app.db.clone();
+
+    let user = common::register_user(&app, "sseowner").await;
+    let _full = common::create_repo(&app, &user.token, "sserepo").await;
+
+    let (status, repo_json) = common::request(
+        &app,
+        Method::GET,
+        "/api/repos/sseowner/sserepo",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let repo_id = repo_json["id"].as_i64().unwrap();
+    let owner_user = db
+        .get_user_by_username(&user.username)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Insert a queued pipeline + run + job so we have a job_id to stream.
+    let pid = db
+        .upsert_pipeline(
+            repo_id,
+            ".gita-ci.yml",
+            "refs/heads/main",
+            "deadbeef",
+            "stages: [s]",
+        )
+        .await
+        .unwrap();
+    let run_id = db
+        .insert_pipeline_run(
+            pid,
+            repo_id,
+            "refs/heads/main",
+            "deadbeef",
+            Some(owner_user.id),
+            None,
+        )
+        .await
+        .unwrap();
+    let job_id = db
+        .insert_job(run_id, "slow", "s", &[], &["sleep 5".into()])
+        .await
+        .unwrap();
+    db.update_job_status(job_id, "running", None).await.unwrap();
+
+    // Pre-seed three log lines so the first stream read sees them all.
+    for (i, line) in ["seeded line 0", "seeded line 1", "seeded line 2"]
+        .iter()
+        .enumerate()
+    {
+        db.insert_log(job_id, i as i64, "stdout", line, &Utc::now().to_rfc3339())
+            .await
+            .unwrap();
+    }
+
+    // Spawn a producer that, after a short delay, appends more lines
+    // and then marks the job as success — that should close the SSE
+    // stream on the server side.
+    let producer_db = db.clone();
+    let producer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        // Each line pushed with an explicit ts so we can spot it in
+        // the stream's emitted JSON.
+        for i in 3..6 {
+            producer_db
+                .insert_log(
+                    job_id,
+                    i,
+                    "stdout",
+                    &format!("late-updated line {i}"),
+                    &Utc::now().to_rfc3339(),
+                )
+                .await
+                .ok();
+        }
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        producer_db
+            .update_job_status(job_id, "success", Some(0))
+            .await
+            .ok();
+    });
+
+    // Drive the SSE endpoint via tower's oneshot — for a long-lived
+    // stream we rely on the response body streaming. axum's Sse wraps
+    // the body in a Stream; we read it via axum::body::Body stream.
+    use tower::ServiceExt;
+    let req = axum::http::Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "/api/repos/sseowner/sserepo/runs/{run_id}/jobs/{job_id}/logs/stream"
+        ))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+    let mut body = resp.into_body();
+    let mut buffer = String::new();
+    let timeout = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut seeded_count = 0;
+    let mut late_count = 0;
+    let mut saw_status = false;
+    let mut status_status = String::new();
+    while tokio::time::Instant::now() < timeout {
+        let remaining = timeout.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(remaining, body.frame()).await {
+            Ok(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref().as_ref() {
+                    let chunk = String::from_utf8_lossy(data).to_string();
+                    buffer.push_str(&chunk);
+                    // SSE events are separated by double newlines.
+                    // Pull out complete `event: ..\ndata: ..\n\n` blocks.
+                    while let Some(idx) = buffer.find("\n\n") {
+                        let block: String = buffer.drain(..idx + 2).collect();
+                        let event = block
+                            .lines()
+                            .find_map(|l| l.strip_prefix("event: "))
+                            .unwrap_or("unknown");
+                        let data = block
+                            .lines()
+                            .find_map(|l| l.strip_prefix("data: "))
+                            .unwrap_or("");
+                        match event {
+                            "log" => {
+                                // Should always be JSON, but just count
+                                // the lines so we don't crash on a
+                                // multipart framing edge.
+                                let trimmed: String = data
+                                    .chars()
+                                    .skip_while(|c| c.is_whitespace())
+                                    .take_while(|c| *c != '\n')
+                                    .collect();
+                                if !trimmed.is_empty() {
+                                    if trimmed.contains("seeded") {
+                                        seeded_count += 1;
+                                    } else if trimmed.contains("late-updated") {
+                                        late_count += 1;
+                                    }
+                                }
+                            }
+                            "status" => {
+                                saw_status = true;
+                                status_status = data.to_string();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if saw_status && status_status.contains("\"success\"") {
+                    break;
+                }
+            }
+            Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+        }
+    }
+    producer.await.ok();
+
+    // We expect at least 3 seeded lines (history) and the late updates
+    // (3..=5) to have streamed across.
+    assert!(
+        seeded_count >= 3,
+        "expected ≥3 seeded log events, saw {seeded_count}; buffer={buffer}"
+    );
+    assert!(
+        late_count >= 1,
+        "expected ≥1 late-updated log event, saw {late_count}; buffer={buffer}"
+    );
+    assert!(
+        saw_status && status_status.contains("\"success\""),
+        "expected final status=success event; saw saw_status={saw_status} \
+         status_status={status_status}; buffer={buffer}"
+    );
 }

@@ -301,6 +301,52 @@ export const api = {
     request<{ lines: JobLogLine[] }>(
       `/api/repos/${owner}/${name}/runs/${runId}/jobs/${jobId}/logs?since=${since}`,
     ),
+  /**
+   * Subscribe to live log + status events for one job over Server-Sent
+   * Events. Returns an EventSource-like object:
+   *   - onLog(line) is called for every new log row.
+   *   - onStatus(job) is called once when the job enters a terminal state.
+   *   - onError() is called on a network or parse error.
+   * Call .close() to abort the connection.
+   */
+  streamJobLogs: (
+    owner: string,
+    name: string,
+    runId: number,
+    jobId: number,
+    handlers: {
+      onLog: (line: JobLogLine) => void
+      onStatus: (job: Job) => void
+      onError?: (e: unknown) => void
+    },
+  ): { close: () => void } => {
+    const url = `/api/repos/${owner}/${name}/runs/${runId}/jobs/${jobId}/logs/stream`
+    const es = new EventSource(url, { withCredentials: true })
+    const onLog = (e: MessageEvent) => {
+      try {
+        handlers.onLog(JSON.parse(e.data) as JobLogLine)
+      } catch (err) {
+        handlers.onError?.(err)
+      }
+    }
+    const onStatus = (e: MessageEvent) => {
+      try {
+        handlers.onStatus(JSON.parse(e.data) as Job)
+      } catch (err) {
+        handlers.onError?.(err)
+      }
+    }
+    es.addEventListener('log', onLog as EventListener)
+    es.addEventListener('status', onStatus as EventListener)
+    es.onerror = (e) => handlers.onError?.(e)
+    return {
+      close: () => {
+        es.removeEventListener('log', onLog as EventListener)
+        es.removeEventListener('status', onStatus as EventListener)
+        es.close()
+      },
+    }
+  },
   cancelRun: (owner: string, name: string, runId: number) =>
     request<{ message: string }>(
       `/api/repos/${owner}/${name}/runs/${runId}/cancel`,
