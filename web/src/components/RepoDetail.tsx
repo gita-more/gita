@@ -436,19 +436,6 @@ function PrPanel({
     }
   }
 
-  async function mergePr() {
-    if (!selected) return
-    setError('')
-    try {
-      await api.mergePr(owner, name, selected.number)
-      setDetail(null)
-      setSelected(null)
-      onChanged()
-    } catch (err) {
-      setError(translateError(err))
-    }
-  }
-
   async function closePr() {
     if (!selected) return
     setError('')
@@ -469,7 +456,11 @@ function PrPanel({
         owner={owner}
         name={name}
         onBack={() => { setSelected(null); setDetail(null) }}
-        onMerge={() => void mergePr()}
+        onMerged={async () => {
+          setDetail(null)
+          setSelected(null)
+          onChanged()
+        }}
         onClose={() => void closePr()}
       />
     )
@@ -554,14 +545,14 @@ function PrDetail({
   owner,
   name,
   onBack,
-  onMerge,
+  onMerged,
   onClose,
 }: {
   pr: PullRequest
   owner: string
   name: string
   onBack: () => void
-  onMerge: () => void
+  onMerged: () => void
   onClose: () => void
 }) {
   const { t } = useI18n()
@@ -569,6 +560,10 @@ function PrDetail({
   const [comments, setComments] = useState<Comment[]>([])
   const [commentText, setCommentText] = useState('')
   const [commentError, setCommentError] = useState('')
+  const [diff, setDiff] = useState<string | null>(null)
+  const [showDiff, setShowDiff] = useState(false)
+  const [mergeError, setMergeError] = useState('')
+  const [merging, setMerging] = useState(false)
 
   const loadComments = useCallback(async () => {
     try {
@@ -583,6 +578,34 @@ function PrDetail({
     void loadComments()
   }, [loadComments])
 
+  async function toggleDiff() {
+    if (diff !== null || showDiff) {
+      setShowDiff(!showDiff)
+      return
+    }
+    setMergeError('')
+    try {
+      const res = await api.getPrDiff(owner, name, pr.number)
+      setDiff(res.diff)
+      setShowDiff(true)
+    } catch (err) {
+      setMergeError(translateError(err))
+    }
+  }
+
+  async function merge() {
+    setMerging(true)
+    setMergeError('')
+    try {
+      await api.mergePr(owner, name, pr.number)
+      onMerged()
+    } catch (err) {
+      setMergeError(translateError(err))
+    } finally {
+      setMerging(false)
+    }
+  }
+
   return (
     <>
       <div className="pr-detail-header">
@@ -595,12 +618,31 @@ function PrDetail({
           <button className="btn btn-ghost" onClick={onBack}>{t('repo.backToList')}</button>
           {pr.status === 'open' && (
             <>
-              <button className="btn btn-primary" onClick={onMerge}>{t('repo.merge')}</button>
+              <button className="btn btn-ghost" onClick={() => void toggleDiff()}>
+                {showDiff ? t('repo.hideDiff') : t('repo.viewDiff')}
+              </button>
+              <button className="btn btn-primary" disabled={merging} onClick={() => void merge()}>
+                {t('repo.merge')}
+              </button>
               <button className="btn btn-danger" onClick={onClose}>{t('repo.close')}</button>
             </>
           )}
         </div>
       </div>
+
+      {mergeError && <Alert type="error">{mergeError}</Alert>}
+
+      {pr.conflicts && pr.conflicts.length > 0 && pr.status === 'open' && (
+        <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+          <strong>{t('repo.mergeConflictTitle')}:</strong>{' '}
+          {t('repo.mergeConflictDesc')} {pr.conflicts.join(', ')}
+        </div>
+      )}
+      {pr.status === 'open' && pr.conflicts.length === 0 && (
+        <div className="alert alert-success" style={{ marginBottom: 12 }}>
+          {t('repo.noConflicts')}
+        </div>
+      )}
 
       <div className="pr-meta-grid">
         <div className="pr-meta-item">
@@ -622,6 +664,13 @@ function PrDetail({
       </div>
 
       <p className="pr-body">{pr.body || t('repo.noBody')}</p>
+
+      {showDiff && diff !== null && (
+        <div className="pr-diff-box">
+          <h4>{t('repo.viewDiff')}</h4>
+          <pre className="code-block">{diff}</pre>
+        </div>
+      )}
 
       <CommentSection
         comments={comments}

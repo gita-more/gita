@@ -37,6 +37,10 @@ pub struct PrResponse {
     pub head_sha: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Files that conflict when merging `head_sha` into `target_branch`
+    /// (empty when the PR can be merged cleanly or is not open).
+    pub conflicts: Vec<String>,
+    pub merged_at: Option<String>,
 }
 
 impl From<PullRequest> for PrResponse {
@@ -54,6 +58,24 @@ impl From<PullRequest> for PrResponse {
             head_sha: p.head_sha,
             created_at: p.created_at.to_rfc3339(),
             updated_at: p.updated_at.to_rfc3339(),
+            conflicts: Vec::new(),
+            merged_at: p.merged_at.map(|d| d.to_rfc3339()),
+        }
+    }
+}
+
+impl PrResponse {
+    /// Attach the conflict file list (computed lazily only for open PRs).
+    async fn with_conflicts(self, state: &AppState, owner: &str, repo_name: &str) -> ApiResult<Self> {
+        if self.status != "open" {
+            return Ok(self);
+        }
+        match state
+            .git
+            .check_merge_conflict(owner, repo_name, &self.target_branch, &self.head_sha)
+        {
+            Ok(files) => Ok(Self { conflicts: files, ..self }),
+            Err(_) => Ok(self),
         }
     }
 }
@@ -64,6 +86,8 @@ pub fn pr_routes() -> Router<AppState> {
         .route("/api/repos/{owner}/{repo}/prs/{number}", get(get_pr))
         .route("/api/repos/{owner}/{repo}/prs/{number}/merge", post(merge_pr))
         .route("/api/repos/{owner}/{repo}/prs/{number}/close", post(close_pr))
+        .route("/api/repos/{owner}/{repo}/prs/{number}/diff", get(pr_diff))
+        .route("/api/repos/{owner}/{repo}/prs/{number}/files", get(pr_files))
 }
 
 async fn create_pr(
@@ -130,7 +154,7 @@ async fn list_prs(
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<ListPrQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repo = state
+    let repository = state
         .db
         .get_repository_by_name(&owner, &repo)
         .await?
@@ -143,9 +167,13 @@ async fn list_prs(
         Some(_) => return Err(ApiError::BadRequest("invalid status".into())),
     };
     let limit = q.limit.unwrap_or(30).min(200);
-    let prs = state.db.list_pull_requests(repo.id, status, limit).await?;
+    let prs = state.db.list_pull_requests(repository.id, status, limit).await?;
+    let mut out = Vec::with_capacity(prs.len());
+    for pr in prs {
+        out.push(PrResponse::from(pr).with_conflicts(&state, &owner, &repo).await?);
+    }
     Ok(Json(serde_json::json!({
-        "prs": prs.into_iter().map(PrResponse::from).collect::<Vec<_>>(),
+        "prs": out,
     })))
 }
 
@@ -153,18 +181,21 @@ async fn get_pr(
     State(state): State<AppState>,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repo = state
+    let repository = state
         .db
         .get_repository_by_name(&owner, &repo)
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
     let pr = state
         .db
-        .get_pull_request(repo.id, number)
+        .get_pull_request(repository.id, number)
         .await?
         .ok_or_else(|| ApiError::NotFound("pull request not found".into()))?;
+    let resp = PrResponse::from(pr)
+        .with_conflicts(&state, &owner, &repo)
+        .await?;
     Ok(Json(serde_json::json!({
-        "pr": PrResponse::from(pr),
+        "pr": resp,
     })))
 }
 
@@ -172,46 +203,108 @@ async fn merge_pr(
     State(state): State<AppState>,
     user: AuthUserExtractor,
     Path((owner, repo, number)): Path<(String, String, i64)>,
-) -> ApiResult<Json<crate::error::MessageResponse>> {
-    let repo = state
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
         .db
         .get_repository_by_name(&owner, &repo)
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
     let pr = state
         .db
-        .get_pull_request(repo.id, number)
+        .get_pull_request(repository.id, number)
         .await?
         .ok_or_else(|| ApiError::NotFound("pull request not found".into()))?;
     if pr.status != PrStatus::Open {
         return Err(ApiError::Conflict("pull request is not open".into()));
     }
 
-    // Perform the merge: fast-forward target branch to head SHA.
-    let head_sha = pr.head_sha.clone();
+    // Detect conflicts before attempting the merge so a conflicting PR
+    // returns a clear 409 instead of a generic 500.
+    let conflicts = state
+        .git
+        .check_merge_conflict(&owner, &repo, &pr.target_branch, &pr.head_sha)
+        .map_err(ApiError::from)?;
+    if !conflicts.is_empty() {
+        return Err(ApiError::Conflict(format!(
+            "merge conflict in: {}",
+            conflicts.join(", ")
+        )));
+    }
+
+    // Perform the merge (fast-forward or merge commit).
     state
         .git
-        .merge_branch(&owner, &repo.name, &pr.target_branch, &head_sha)
+        .merge_branch(&owner, &repo, &pr.target_branch, &pr.head_sha)
         .map_err(ApiError::from)?;
 
+    let merged_at = chrono::Utc::now();
     state
         .db
-        .update_pr_status(pr.id, PrStatus::Merged, Some(chrono::Utc::now()))
+        .update_pr_status(pr.id, PrStatus::Merged, Some(merged_at))
         .await?;
+
+    let new_head = state
+        .git
+        .head_sha(&owner, &repo, &pr.target_branch)
+        .map_err(ApiError::from)?;
 
     state.bus.publish(
         EventType::PullRequestMerged,
-        Some(repo.id),
+        Some(repository.id),
         Some(user.id),
         serde_json::json!({
             "pr": pr.number,
             "title": pr.title,
+            "merge_sha": new_head,
         }),
     );
 
-    Ok(Json(crate::error::MessageResponse {
-        message: "pull request merged".to_string(),
-    }))
+    Ok(Json(serde_json::json!({
+        "message": "pull request merged",
+        "merge_sha": new_head,
+    })))
+}
+
+async fn pr_diff(
+    State(state): State<AppState>,
+    Path((owner, repo, number)): Path<(String, String, i64)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let pr = state
+        .db
+        .get_pull_request(repository.id, number)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("pull request not found".into()))?;
+    let diff = state
+        .git
+        .diff_between(&owner, &repo, &pr.base_sha, &pr.head_sha)
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({ "diff": diff })))
+}
+
+async fn pr_files(
+    State(state): State<AppState>,
+    Path((owner, repo, number)): Path<(String, String, i64)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository = state
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let pr = state
+        .db
+        .get_pull_request(repository.id, number)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("pull request not found".into()))?;
+    let files = state
+        .git
+        .diff_files_between(&owner, &repo, &pr.base_sha, &pr.head_sha)
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({ "files": files })))
 }
 
 async fn close_pr(

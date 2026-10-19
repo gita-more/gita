@@ -1542,6 +1542,22 @@ select {
   font-size: 14px;
 }
 
+.pr-diff-box {
+  margin-bottom: 16px;
+}
+
+.pr-diff-box h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-default);
+}
+
+.pr-diff-box .code-block {
+  max-height: 50vh;
+  background: var(--bg-inset);
+}
+
 /* ============================ Comments ============================ */
 
 .comments-section {

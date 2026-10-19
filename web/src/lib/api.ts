@@ -56,6 +56,9 @@ export interface PullRequest {
   head_sha: string
   created_at: string
   updated_at: string
+  /** Files that conflict when merging head into target (empty = clean). */
+  conflicts: string[]
+  merged_at: string | null
 }
 
 export interface Issue {
@@ -266,8 +269,12 @@ export const api = {
     ),
   getPr: (owner: string, name: string, number: number) =>
     request<{ pr: PullRequest }>(`/api/repos/${owner}/${name}/prs/${number}`),
+  getPrDiff: (owner: string, name: string, number: number) =>
+    request<{ diff: string }>(`/api/repos/${owner}/${name}/prs/${number}/diff`),
+  getPrFiles: (owner: string, name: string, number: number) =>
+    request<{ files: [string, string][] }>(`/api/repos/${owner}/${name}/prs/${number}/files`),
   mergePr: (owner: string, name: string, number: number) =>
-    request<{ message: string }>(`/api/repos/${owner}/${name}/prs/${number}/merge`, {
+    request<{ message: string; merge_sha: string }>(`/api/repos/${owner}/${name}/prs/${number}/merge`, {
       method: 'POST',
     }),
   closePr: (owner: string, name: string, number: number) =>
