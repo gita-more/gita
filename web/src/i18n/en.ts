@@ -127,6 +127,18 @@ export const messages = {
     backToDir: 'Back to directory',
     emptyDirTitle: 'Empty directory',
     emptyDirDescription: 'This directory has no files yet.',
+    empty: {
+      title: 'Quick setup',
+      desc: 'This repository is empty. Push an existing repository from the command line, or create a new one below.',
+      cliTitleA: '…or create a new repository on the command line',
+      cliTitleB: '…or push an existing repository from the command line',
+      protoHttps: 'HTTPS',
+      protoSsh: 'SSH',
+      sshPending: 'SSH is not configured yet — use the HTTPS URL instead.',
+      copy: 'Copy',
+      copied: 'Copied!',
+      protip: 'ProTip! Use the URL above when adding this repository as a remote.',
+    },
   },
   status: {
     open: 'open',

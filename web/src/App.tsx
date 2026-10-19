@@ -90,10 +90,16 @@ function GroupDetailContainer() {
 function RepoDetailContainer() {
   const params = useParams()
   const navigate = useNavigate()
+  // When the URL matches /groups/:name/:repo (params.name is the group,
+  // params.repo is the repo), forward group metadata so EmptyRepoWelcome can
+  // build the correct clone URL.
+  const isGroup = typeof params.name === 'string' && typeof params.repo === 'string' && params.owner === undefined
   return (
     <RepoDetail
       owner={params.owner ?? params.name ?? ''}
       name={params.repo ?? ''}
+      repoKind={isGroup ? 'group' : 'personal'}
+      groupName={isGroup ? params.name : undefined}
       onBack={() => {
         if (params.name) navigate(`/groups/${params.name}`)
         else navigate('/')

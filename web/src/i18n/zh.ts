@@ -127,6 +127,18 @@ export const messages = {
     backToDir: '返回目录',
     emptyDirTitle: '目录为空',
     emptyDirDescription: '这个目录里还没有文件。',
+    empty: {
+      title: '快速设置',
+      desc: '这个仓库还是空的 — 下面是从命令行推送已有代码、或从头新建的方法。',
+      cliTitleA: '…或者从命令行创建一个新仓库',
+      cliTitleB: '…或者从命令行推送一个已有仓库',
+      protoHttps: 'HTTPS',
+      protoSsh: 'SSH',
+      sshPending: 'SSH 暂未配置 — 请用 HTTPS URL 推送。',
+      copy: '复制',
+      copied: '已复制！',
+      protip: 'ProTip：上面那个 URL 可以直接用作 git remote。',
+    },
   },
   status: {
     open: 'open',
