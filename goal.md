@@ -126,7 +126,7 @@ gita/
 ### v0.4+ —— 多租户与扩展
 - [ ] 团队/组织/角色权限（RBAC）
 - [ ] 对象存储抽象（S3 兼容）
-- [ ] Webhook 出站（对接 CI/CD）
+- [x] **In-repo CI**（Phase 1，§10.3 已完成）
 - [ ] 高可用：任务队列独立化、AI 服务水平扩展
 
 ---
@@ -338,9 +338,45 @@ gita/
 ## 9. 非目标（明确不做）
 
 - 不做原生 SSH Git 协议（第一版仅 HTTP；后续可用 `gix` 或集成 ssh 服务扩展）。
-- 不做 CI/CD 平台（Webhook 出站对接外部 CI）。
+- **不做外部 CI 集成 / 出站 webhook**。CI 改由内置的 In-repo CI（见 §10）承担。
 - 不做多租户 SaaS 计费（v0.4 后才考虑）。
 - 不重造 git 对象格式（信任 gitoxide）。
+
+---
+
+## 10. In-repo CI（按阶段推进）
+
+gita 自带一个轻量级 in-repo CI，借鉴 GitLab CI / GitHub Actions 的形态，但只做仓库内 CI（不替代 SaaS 大流水线）。
+
+### 10.1 设计要点
+
+- **DSL：`.gita-ci.yml`**，贴近 GitLab CI 风格。Phase 1 仅支持 `stages`、`script`、`needs` 三种 key，其他字段（`image`、`artifacts`、`only/except`、`when`、`cache`）会被 serde 严格拒绝并在 UI 上报错。
+- **Pipeline 定义 in-repo**，由仓库自己管理；没有 server-side 管理面板。
+- **Runner 是独立二进制** `gita-runner`，与 `gita-server` 解耦，跨进程通过 PostgreSQL 共享状态（`pipeline_runs` 表 + `FOR UPDATE SKIP LOCKED` 抢单），gitlab-runner 模型。
+- **Phase 1 runtime 仅 shell**（`sh -c "<joined script>"`）；Docker / Podman 推迟到 Phase 3。
+- 触发器：push（Phase 1）；PR 状态检查、SSE 日志流、定时触发推迟到 Phase 2。
+
+### 10.2 三阶段路线
+
+| Phase | 内容 | 收尾标准 |
+|-------|------|----------|
+| **1（本阶段）** | push 触发 → `.gita-ci.yml` 解析 → shell 跑 job → 写 logs → UI 上看 run + 日志 | 推一个有 `.gita-ci.yml` 的仓，能在 SPA Pipelines 标签看到 run 列表和 job stdout |
+| **2** | stages DAG + artifacts + cache + `only/except` + SSE 日志流 + cancel / re-run + PR status check | 一个完整 stage graph 跑起来，PR 合并前能等 CI pass |
+| **3** | Docker 运行时（`image:`/`services:`）+ secrets 加密存储 + worker 注册 API + pipeline YAML Monaco 编辑器 | 类似 GitHub Actions 基本可用 |
+
+### 10.3 已完成（Phase 1）
+
+- DB migration `20261020000000_pipelines.sql`：`pipelines` / `pipeline_runs` / `jobs` / `logs` 四张表 + 抢单用的 partial index。
+- `crates/gita-pipeline/` —— `.gita-ci.yml` 解析 + stages DAG 展开。
+- `crates/gita-runner/` —— 独立二进制。`FOR UPDATE SKIP LOCKED` 抢单、`git clone --depth 1`、`sh -c` 执行、stdout/stderr 行级写入 `logs`。
+- `gita worker register --name <n> --user <u>` CLI 子命令，铸 PAT 给 runner 用作 clone 时的 Basic-auth 密码。
+- `crates/gita-http/`：push 事件 payload 升级到 `{ref, old_sha, new_sha, pusher_id}`（顺手修了 `actor_id: None` 那个旧 bug）；enqueue 路径检测新 commit 上的 `.gita-ci.yml`、upsert pipeline、insert run、发 `PipelineRequested` 事件。
+- `crates/gita-api/`：5 个 REST 端点（list pipelines / list runs / get run / cancel / logs）。
+- SPA `web/`：Tab 多了 `pipelines`，Sidebar 加 RocketIcon 入口，`<PipelinesPanel>` 列出 run、点击展开 job 日志（2s 轮询）。
+
+### 10.4 取消的旧条目
+
+> 原 §9 那行 "不做 CI/CD 平台（Webhook 出站对接外部 CI）" 已替换为现在的 §10。出站 webhook 与 in-repo CI 是两件事，本节只否决前者。
 
 ---
 
