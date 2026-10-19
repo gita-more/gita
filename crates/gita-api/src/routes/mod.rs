@@ -1,6 +1,7 @@
 //! Route modules.
 
 pub mod auth;
+pub mod comment;
 pub mod group;
 pub mod issue;
 pub mod misc;
@@ -10,6 +11,7 @@ pub mod repo;
 
 // Re-export route functions.
 pub use auth::auth_routes;
+pub use comment::comment_routes;
 pub use group::group_routes;
 pub use repo::repo_routes;
 pub use pr::pr_routes;

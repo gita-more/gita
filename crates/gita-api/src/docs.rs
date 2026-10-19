@@ -631,6 +631,18 @@ pub const OPENAPI_JSON: &str = r##"{
           "line": { "type": "string" },
           "ts": { "type": "string", "format": "date-time" }
         }
+      },
+      "Comment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "repo_id": { "type": "integer" },
+          "pr_id": { "type": "integer", "nullable": true },
+          "issue_id": { "type": "integer", "nullable": true },
+          "author": { "type": "string" },
+          "body": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
       }
     }
   }

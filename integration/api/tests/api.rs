@@ -718,6 +718,148 @@ async fn read_file_for_directory_path_returns_400() {
 }
 
 #[tokio::test]
+async fn pull_request_comments_lifecycle() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "cmt-pr-user").await;
+    let full = common::create_repo(&app, &user.token, "cmt-pr").await;
+    let (owner, name) = full.split_once('/').unwrap();
+    common::push_initial_commit(&app, owner, name);
+
+    // Create a PR.
+    let uri_prs = format!("/api/repos/{owner}/{name}/prs");
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        &uri_prs,
+        Some(serde_json::json!({
+            "title": "comment me",
+            "body": "body",
+            "source_branch": "main",
+            "target_branch": "main",
+        })),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create pr: {body}");
+    let pr_number = body["number"].as_i64().unwrap();
+
+    let uri_comments = format!("/api/repos/{owner}/{name}/prs/{pr_number}/comments");
+
+    // Initially empty.
+    let (status, body) = request(&app, axum::http::Method::GET, &uri_comments, None, Some(&user.token)).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["comments"].as_array().unwrap().len(), 0);
+
+    // Add a comment.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        &uri_comments,
+        Some(serde_json::json!({"body": "looks good"})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create comment: {body}");
+    let comment_id = body["id"].as_i64().unwrap();
+    assert_eq!(body["author"], "cmt-pr-user");
+    assert_eq!(body["body"], "looks good");
+
+    // Now list -> 1.
+    let (status, body) = request(&app, axum::http::Method::GET, &uri_comments, None, Some(&user.token)).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["comments"].as_array().unwrap().len(), 1);
+
+    // Empty body -> 400.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        &uri_comments,
+        Some(serde_json::json!({"body": "  "})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+    // Delete the comment.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/comments/{comment_id}"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "delete comment");
+
+    // List -> 0 again.
+    let (status, body) = request(&app, axum::http::Method::GET, &uri_comments, None, Some(&user.token)).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(body["comments"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn issue_comments_lifecycle() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "cmt-issue-user").await;
+    let full = common::create_repo(&app, &user.token, "cmt-issue").await;
+    let (owner, name) = full.split_once('/').unwrap();
+    common::push_initial_commit(&app, owner, name);
+
+    let uri_issues = format!("/api/repos/{owner}/{name}/issues");
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        &uri_issues,
+        Some(serde_json::json!({"title": "bug", "body": "details"})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create issue: {body}");
+    let issue_number = body["number"].as_i64().unwrap();
+
+    let uri_comments = format!("/api/repos/{owner}/{name}/issues/{issue_number}/comments");
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        &uri_comments,
+        Some(serde_json::json!({"body": "I can repro"})),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create comment: {body}");
+    let comment_id = body["id"].as_i64().unwrap();
+
+    let (status, body) = request(&app, axum::http::Method::GET, &uri_comments, None, Some(&user.token)).await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let comments = body["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0]["body"], "I can repro");
+
+    // A second user cannot delete another user's comment.
+    let intruder = register_user(&app, "cmt-intruder").await;
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/comments/{comment_id}"),
+        None,
+        Some(&intruder.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+    // Author can delete.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::DELETE,
+        &format!("/api/comments/{comment_id}"),
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+}
+
+#[tokio::test]
 async fn register_then_login_chain_succeeds_for_second_user() {
     // Verifies a fresh user can complete both flows in one test without
     // hidden state from a previous test (token issuing/signing).

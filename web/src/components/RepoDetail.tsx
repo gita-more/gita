@@ -8,6 +8,7 @@ import {
   type Issue,
   type TreeEntry,
   type Pipeline,
+  type Comment,
 } from '../lib/api'
 import { PageHeader, Alert, EmptyState, StatusLabel } from './Layout'
 import {
@@ -22,6 +23,7 @@ import {
   PlusIcon,
   XIcon,
   CheckIcon,
+  MessageSquareIcon,
 } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
 import { EmptyRepoWelcome } from './EmptyRepoWelcome'
@@ -464,6 +466,8 @@ function PrPanel({
     return (
       <PrDetail
         pr={detail}
+        owner={owner}
+        name={name}
         onBack={() => { setSelected(null); setDetail(null) }}
         onMerge={() => void mergePr()}
         onClose={() => void closePr()}
@@ -547,16 +551,38 @@ function PrPanel({
 
 function PrDetail({
   pr,
+  owner,
+  name,
   onBack,
   onMerge,
   onClose,
 }: {
   pr: PullRequest
+  owner: string
+  name: string
   onBack: () => void
   onMerge: () => void
   onClose: () => void
 }) {
   const { t } = useI18n()
+  const translateError = useErrorTranslator()
+  const [comments, setComments] = useState<Comment[]>([])
+  const [commentText, setCommentText] = useState('')
+  const [commentError, setCommentError] = useState('')
+
+  const loadComments = useCallback(async () => {
+    try {
+      const res = await api.listPrComments(owner, name, pr.number)
+      setComments(res.comments)
+    } catch (err) {
+      setCommentError(translateError(err))
+    }
+  }, [owner, name, pr.number, translateError])
+
+  useEffect(() => {
+    void loadComments()
+  }, [loadComments])
+
   return (
     <>
       <div className="pr-detail-header">
@@ -596,6 +622,34 @@ function PrDetail({
       </div>
 
       <p className="pr-body">{pr.body || t('repo.noBody')}</p>
+
+      <CommentSection
+        comments={comments}
+        text={commentText}
+        setText={setCommentText}
+        error={commentError}
+        submitLabel={t('repo.commentSubmit')}
+        emptyText={t('repo.commentEmpty')}
+        onSubmit={async () => {
+          setCommentError('')
+          try {
+            await api.createPrComment(owner, name, pr.number, commentText)
+            setCommentText('')
+            await loadComments()
+          } catch (err) {
+            setCommentError(translateError(err))
+          }
+        }}
+        onDelete={async (id) => {
+          setCommentError('')
+          try {
+            await api.deleteComment(id)
+            await loadComments()
+          } catch (err) {
+            setCommentError(translateError(err))
+          }
+        }}
+      />
     </>
   )
 }
@@ -621,6 +675,10 @@ function IssuePanel({
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [error, setError] = useState('')
+  const [selected, setSelected] = useState<Issue | null>(null)
+  const [comments, setComments] = useState<Comment[]>([])
+  const [commentText, setCommentText] = useState('')
+  const [commentError, setCommentError] = useState('')
 
   async function createIssue() {
     setError('')
@@ -643,6 +701,64 @@ function IssuePanel({
     } catch (err) {
       setError(translateError(err))
     }
+  }
+
+  const loadComments = useCallback(async (issueNumber: number) => {
+    try {
+      const res = await api.listIssueComments(owner, name, issueNumber)
+      setComments(res.comments)
+    } catch (err) {
+      setCommentError(translateError(err))
+    }
+  }, [owner, name, translateError])
+
+  async function openIssue(issue: Issue) {
+    setSelected(issue)
+    setCommentError('')
+    await loadComments(issue.number)
+  }
+
+  if (selected) {
+    return (
+      <IssueDetail
+        issue={selected}
+        comments={comments}
+        commentText={commentText}
+        setCommentText={setCommentText}
+        commentError={commentError}
+        onBack={() => setSelected(null)}
+        onClose={async () => {
+          setError('')
+          try {
+            await closeIssue(selected.number)
+            const updated = { ...selected, status: 'closed' as const }
+            setSelected(updated)
+            onChanged()
+          } catch (err) {
+            setError(translateError(err))
+          }
+        }}
+        onSubmitComment={async () => {
+          setCommentError('')
+          try {
+            await api.createIssueComment(owner, name, selected.number, commentText)
+            setCommentText('')
+            await loadComments(selected.number)
+          } catch (err) {
+            setCommentError(translateError(err))
+          }
+        }}
+        onDeleteComment={async (id) => {
+          setCommentError('')
+          try {
+            await api.deleteComment(id)
+            await loadComments(selected.number)
+          } catch (err) {
+            setCommentError(translateError(err))
+          }
+        }}
+      />
+    )
   }
 
   return (
@@ -690,7 +806,7 @@ function IssuePanel({
       ) : (
         <div className="row-list">
           {issues.map((issue) => (
-            <div key={issue.id} className="row-item">
+            <div key={issue.id} className="row-item" onClick={() => void openIssue(issue)}>
               <span className={`row-icon ${issue.status === 'open' ? 'open' : 'closed'}`}>
                 {issue.status === 'open' ? <CircleDotIcon size={16} /> : <CheckIcon size={16} />}
               </span>
@@ -714,5 +830,157 @@ function IssuePanel({
         </div>
       )}
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Issue detail (with comments)
+// ---------------------------------------------------------------------------
+
+function IssueDetail({
+  issue,
+  comments,
+  commentText,
+  setCommentText,
+  commentError,
+  onBack,
+  onClose,
+  onSubmitComment,
+  onDeleteComment,
+}: {
+  issue: Issue
+  comments: Comment[]
+  commentText: string
+  setCommentText: (s: string) => void
+  commentError: string
+  onBack: () => void
+  onClose: () => void
+  onSubmitComment: () => void
+  onDeleteComment: (id: number) => void
+}) {
+  const { t } = useI18n()
+  return (
+    <>
+      <div className="pr-detail-header">
+        <div className="pr-detail-title">
+          <span className="pr-number">#{issue.number}</span>
+          {issue.title}
+          <StatusLabel status={issue.status} />
+        </div>
+        <div className="page-actions">
+          <button className="btn btn-ghost" onClick={onBack}>{t('repo.backToList')}</button>
+          {issue.status === 'open' && (
+            <button className="btn btn-danger" onClick={onClose}>{t('repo.close')}</button>
+          )}
+        </div>
+      </div>
+
+      <div className="pr-meta-grid">
+        <div className="pr-meta-item">
+          <span className="label">{t('repo.author')}</span>
+          <span className="value">{issue.author}</span>
+        </div>
+        <div className="pr-meta-item">
+          <span className="label">{t('repo.createdTime')}</span>
+          <span className="value">{new Date(issue.created_at).toLocaleString()}</span>
+        </div>
+      </div>
+
+      <p className="pr-body">{issue.body || t('repo.noBody')}</p>
+
+      <CommentSection
+        comments={comments}
+        text={commentText}
+        setText={setCommentText}
+        error={commentError}
+        submitLabel={t('repo.commentSubmit')}
+        emptyText={t('repo.commentEmpty')}
+        onSubmit={onSubmitComment}
+        onDelete={onDeleteComment}
+      />
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Comments
+// ---------------------------------------------------------------------------
+
+function CommentSection({
+  comments,
+  text,
+  setText,
+  error,
+  submitLabel,
+  emptyText,
+  onSubmit,
+  onDelete,
+}: {
+  comments: Comment[]
+  text: string
+  setText: (s: string) => void
+  error: string
+  submitLabel: string
+  emptyText: string
+  onSubmit: () => void
+  onDelete: (id: number) => void
+}) {
+  const { t } = useI18n()
+  const [busy, setBusy] = useState(false)
+
+  return (
+    <div className="comments-section">
+      <h3 className="comments-title">
+        <MessageSquareIcon size={14} />
+        {t('repo.commentsTitle')}
+      </h3>
+
+      {error && <Alert type="error">{error}</Alert>}
+
+      {comments.length === 0 ? (
+        <p className="comments-empty">{emptyText}</p>
+      ) : (
+        <div className="comment-list">
+          {comments.map((c) => (
+            <div key={c.id} className="comment-item">
+              <div className="comment-meta">
+                <span className="comment-author">{c.author}</span>
+                <span className="comment-time">{new Date(c.created_at).toLocaleString()}</span>
+                <button
+                  className="btn btn-ghost btn-xs"
+                  onClick={() => void onDelete(c.id)}
+                  title={t('repo.deleteComment')}
+                >
+                  {t('repo.deleteComment')}
+                </button>
+              </div>
+              <div className="comment-body">{c.body}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="comment-form">
+        <textarea
+          className="textarea"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={t('repo.commentPlaceholder')}
+        />
+        <div className="comment-form-actions">
+          <button
+            className="btn btn-primary"
+            disabled={busy || text.trim() === ''}
+            onClick={() => {
+              setBusy(true)
+              onSubmit()
+              setBusy(false)
+            }}
+          >
+            {submitLabel}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }

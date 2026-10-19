@@ -29,6 +29,7 @@ pub fn api_router(state: AppState) -> axum::Router {
         .merge(routes::repo_routes())
         .merge(routes::pr_routes())
         .merge(routes::issue_routes())
+        .merge(routes::comment_routes())
         .merge(routes::group_routes())
         .merge(routes::event_routes())
         .merge(routes::misc_routes())

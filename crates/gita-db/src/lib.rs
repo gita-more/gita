@@ -820,6 +820,132 @@ impl Db {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Comments (PR + Issue)
+// ---------------------------------------------------------------------------
+
+impl Db {
+    /// Add a comment to a pull request. `author_id`/`author_name` are the
+    /// authenticated user; `repo_id` is denormalized for cascade deletes.
+    pub async fn create_pr_comment(
+        &self,
+        repo_id: i64,
+        pr_id: i64,
+        author_id: i64,
+        author_name: &str,
+        body: &str,
+    ) -> Result<Comment> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "INSERT INTO comments (repo_id, pr_id, issue_id, author_id, author_name, body, created_at, updated_at)
+             VALUES ($1, $2, NULL, $3, $4, $5, $6, $6)
+             RETURNING id, repo_id, pr_id, issue_id, author_id, author_name, body, created_at, updated_at",
+        )
+        .bind(repo_id)
+        .bind(pr_id)
+        .bind(author_id)
+        .bind(author_name)
+        .bind(body)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row_to_comment(&row)?)
+    }
+
+    /// Add a comment to an issue.
+    pub async fn create_issue_comment(
+        &self,
+        repo_id: i64,
+        issue_id: i64,
+        author_id: i64,
+        author_name: &str,
+        body: &str,
+    ) -> Result<Comment> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "INSERT INTO comments (repo_id, pr_id, issue_id, author_id, author_name, body, created_at, updated_at)
+             VALUES ($1, NULL, $2, $3, $4, $5, $6, $6)
+             RETURNING id, repo_id, pr_id, issue_id, author_id, author_name, body, created_at, updated_at",
+        )
+        .bind(repo_id)
+        .bind(issue_id)
+        .bind(author_id)
+        .bind(author_name)
+        .bind(body)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row_to_comment(&row)?)
+    }
+
+    /// List comments for a pull request, oldest first.
+    pub async fn list_pr_comments(&self, pr_id: i64, limit: usize) -> Result<Vec<Comment>> {
+        let rows = sqlx::query(
+            "SELECT id, repo_id, pr_id, issue_id, author_id, author_name, body, created_at, updated_at
+             FROM comments WHERE pr_id = $1 ORDER BY id ASC LIMIT $2",
+        )
+        .bind(pr_id)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_comment).collect()
+    }
+
+    /// List comments for an issue, oldest first.
+    pub async fn list_issue_comments(&self, issue_id: i64, limit: usize) -> Result<Vec<Comment>> {
+        let rows = sqlx::query(
+            "SELECT id, repo_id, pr_id, issue_id, author_id, author_name, body, created_at, updated_at
+             FROM comments WHERE issue_id = $1 ORDER BY id ASC LIMIT $2",
+        )
+        .bind(issue_id)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_comment).collect()
+    }
+
+    /// Get a single comment by id.
+    pub async fn get_comment(&self, id: i64) -> Result<Option<Comment>> {
+        let rows = sqlx::query(
+            "SELECT id, repo_id, pr_id, issue_id, author_id, author_name, body, created_at, updated_at
+             FROM comments WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.first().map(row_to_comment).transpose()?)
+    }
+
+    /// Delete a comment. Returns whether a row was deleted.
+    pub async fn delete_comment(&self, id: i64) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM comments WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+}
+
+fn row_to_comment(row: &PgRow) -> Result<Comment> {
+    let created_at: String = row.try_get("created_at")?;
+    let updated_at: String = row.try_get("updated_at")?;
+    Ok(Comment {
+        id: row.try_get("id")?,
+        repo_id: row.try_get("repo_id")?,
+        pr_id: row.try_get("pr_id")?,
+        issue_id: row.try_get("issue_id")?,
+        author_id: row.try_get("author_id")?,
+        author_name: row.try_get("author_name")?,
+        body: row.try_get("body")?,
+        created_at: DateTime::parse_from_rfc3339(&created_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+        updated_at: DateTime::parse_from_rfc3339(&updated_at)
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+    })
+}
+
 fn row_to_issue(row: &PgRow) -> Result<Issue> {
     let status: String = row.try_get("status")?;
     let created_at: String = row.try_get("created_at")?;
@@ -1834,6 +1960,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn comment_crud() {
+        let db = fresh_db().await;
+        let owner = db
+            .create_user("commenter", "commenter@example.com", "h")
+            .await
+            .unwrap();
+        let repo = db
+            .create_repository(owner.id, "commenter", "c-repo", "desc", false, "main")
+            .await
+            .unwrap();
+
+        // Issue comment lifecycle
+        let created_issue = db
+            .create_issue(repo.id, "Bug", "details", owner.id, &owner.username)
+            .await
+            .unwrap();
+        // create_issue returns id: 0 (no RETURNING) — fetch the real row.
+        let issue = db
+            .get_issue(repo.id, created_issue.number)
+            .await
+            .unwrap()
+            .expect("issue exists");
+        let c1 = db
+            .create_issue_comment(repo.id, issue.id, owner.id, &owner.username, "first!")
+            .await
+            .unwrap();
+        assert!(c1.id > 0);
+        assert_eq!(c1.issue_id, Some(issue.id));
+        assert_eq!(c1.pr_id, None);
+        assert_eq!(c1.body, "first!");
+
+        let c2 = db
+            .create_issue_comment(repo.id, issue.id, owner.id, &owner.username, "second")
+            .await
+            .unwrap();
+        let list = db.list_issue_comments(issue.id, 10).await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].body, "first!");
+        assert_eq!(list[1].body, "second");
+
+        // PR comment lifecycle
+        let created_pr = db
+            .create_pull_request(repo.id, "PR", "", "main", "main", owner.id, &owner.username, "a", "b")
+            .await
+            .unwrap();
+        // Same as issues: create_pull_request returns id: 0; fetch the real row.
+        let pr = db
+            .get_pull_request(repo.id, created_pr.number)
+            .await
+            .unwrap()
+            .expect("pr exists");
+        let pc = db
+            .create_pr_comment(repo.id, pr.id, owner.id, &owner.username, "pr comment")
+            .await
+            .unwrap();
+        assert_eq!(pc.pr_id, Some(pr.id));
+        assert_eq!(pc.issue_id, None);
+        let pr_list = db.list_pr_comments(pr.id, 10).await.unwrap();
+        assert_eq!(pr_list.len(), 1);
+        assert_eq!(pr_list[0].body, "pr comment");
+
+        // Delete comment
+        assert!(db.delete_comment(c1.id).await.unwrap());
+        assert_eq!(db.get_comment(c1.id).await.unwrap(), None);
+        let remaining = db.list_issue_comments(issue.id, 10).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+
+        drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
     async fn all_tables_exist_after_migration() {
         let db = fresh_db().await;
         let expected: &[&str] = &[
@@ -1850,6 +2047,7 @@ mod tests {
             "pipeline_runs",
             "jobs",
             "logs",
+            "comments",
         ];
         for table in expected {
             let row: (i64,) = sqlx::query_as(&format!(

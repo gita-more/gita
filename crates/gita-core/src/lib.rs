@@ -141,6 +141,22 @@ pub struct Issue {
     pub closed_at: Option<DateTime<Utc>>,
 }
 
+/// A comment on a pull request or an issue.
+///
+/// Exactly one of `pr_id` / `issue_id` is `Some`; the other is `None`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Comment {
+    pub id: i64,
+    pub repo_id: i64,
+    pub pr_id: Option<i64>,
+    pub issue_id: Option<i64>,
+    pub author_id: i64,
+    pub author_name: String,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// The category of an event in the AI-readable event stream.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -153,6 +169,8 @@ pub enum EventType {
     PullRequestClosed,
     IssueCreated,
     IssueClosed,
+    CommentCreated,
+    CommentDeleted,
     AgentRunStarted,
     AgentRunCompleted,
     // In-repo CI (Phase 1)
@@ -175,6 +193,8 @@ impl fmt::Display for EventType {
             EventType::PullRequestClosed => "pull_request_closed",
             EventType::IssueCreated => "issue_created",
             EventType::IssueClosed => "issue_closed",
+            EventType::CommentCreated => "comment_created",
+            EventType::CommentDeleted => "comment_deleted",
             EventType::AgentRunStarted => "agent_run_started",
             EventType::AgentRunCompleted => "agent_run_completed",
             EventType::PipelineRequested => "pipeline_requested",

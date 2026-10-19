@@ -68,6 +68,16 @@ export interface Issue {
   created_at: string
 }
 
+export interface Comment {
+  id: number
+  repo_id: number
+  pr_id: number | null
+  issue_id: number | null
+  author: string
+  body: string
+  created_at: string
+}
+
 export interface Group {
   id: number
   name: string
@@ -279,6 +289,28 @@ export const api = {
     request<{ message: string }>(`/api/repos/${owner}/${name}/issues/${number}/close`, {
       method: 'POST',
     }),
+
+  // comments
+  listPrComments: (owner: string, name: string, number: number) =>
+    request<{ comments: Comment[] }>(
+      `/api/repos/${owner}/${name}/prs/${number}/comments`,
+    ),
+  createPrComment: (owner: string, name: string, number: number, body: string) =>
+    request<Comment>(`/api/repos/${owner}/${name}/prs/${number}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+  listIssueComments: (owner: string, name: string, number: number) =>
+    request<{ comments: Comment[] }>(
+      `/api/repos/${owner}/${name}/issues/${number}/comments`,
+    ),
+  createIssueComment: (owner: string, name: string, number: number, body: string) =>
+    request<Comment>(`/api/repos/${owner}/${name}/issues/${number}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    }),
+  deleteComment: (id: number) =>
+    request<{ message: string }>(`/api/comments/${id}`, { method: 'DELETE' }),
 
   // pipelines
   listPipelines: (owner: string, name: string) =>
