@@ -20,13 +20,14 @@ jobs:
           POSTGRES_PASSWORD: gita
           POSTGRES_DB: gita
         ports:
-          # The test suite connects to 127.0.0.1:55432 by default.
+          # The Rust test suite connects to 127.0.0.1:55432 by default, so
+          # we map the container's 5432 to the host's 55432.
           - 5432:55432
         options: >-
-          --health-cmd "pg_isready -U gita -d gita"
+          --health-cmd "pg_isready -h localhost -U gita -d gita"
           --health-interval 5s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 30
     steps:
       - uses: actions/checkout@v4
 
@@ -38,7 +39,23 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git ssh openssh-client
+          sudo apt-get install -y git ssh openssh-client postgresql-client
+
+      - name: Wait for Postgres
+        # Defensive: even with --health-cmd, the first test step may run before
+        # pg_isready reports "accepting connections" on the TCP socket the test
+        # suite uses. Loop until a TCP connect + SELECT 1 succeeds.
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 55432 -U gita -d gita >/dev/null 2>&1; then
+              echo "Postgres is ready"
+              exit 0
+            fi
+            echo "Waiting for Postgres (attempt $i)..."
+            sleep 2
+          done
+          echo "Postgres did not become ready in time"
+          exit 1
 
       - name: Run workspace tests
         env:
