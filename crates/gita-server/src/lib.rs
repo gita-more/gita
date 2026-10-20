@@ -73,6 +73,48 @@ pub struct ServerConfig {
     /// per-test schema isolation.
     #[serde(default)]
     pub database_schema: Option<String>,
+    /// Embedded SSH server configuration (Git over SSH).
+    #[serde(default)]
+    pub ssh: SshConfig,
+}
+
+/// Configuration for the embedded SSH server (Git over SSH).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshConfig {
+    /// Whether to start the SSH listener alongside HTTP.
+    #[serde(default = "default_ssh_enabled")]
+    pub enabled: bool,
+    /// Bind address for the SSH listener.
+    #[serde(default = "default_ssh_host")]
+    pub host: String,
+    /// Port for the SSH listener.
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    /// Path to the OpenSSH-format host private key. Defaults to
+    /// `<data_dir>/ssh_host_ed25519_key` and is auto-generated on first run.
+    #[serde(default)]
+    pub host_key: Option<PathBuf>,
+}
+
+fn default_ssh_enabled() -> bool {
+    false
+}
+fn default_ssh_host() -> String {
+    default_host()
+}
+fn default_ssh_port() -> u16 {
+    2222
+}
+
+impl Default for SshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_ssh_enabled(),
+            host: default_ssh_host(),
+            port: default_ssh_port(),
+            host_key: None,
+        }
+    }
 }
 
 impl Default for ServerConfig {
@@ -84,6 +126,7 @@ impl Default for ServerConfig {
             database_url: default_db_url(),
             jwt_secret: default_jwt_secret(),
             database_schema: None,
+            ssh: SshConfig::default(),
         }
     }
 }
@@ -129,6 +172,19 @@ impl Config {
             if !parsed.server.jwt_secret.is_empty() && parsed.server.jwt_secret != default_jwt_secret() {
                 config.server.jwt_secret = parsed.server.jwt_secret;
             }
+            // SSH section (only when present in the file).
+            if parsed.server.ssh.enabled {
+                config.server.ssh.enabled = true;
+            }
+            if !parsed.server.ssh.host.is_empty() {
+                config.server.ssh.host = parsed.server.ssh.host;
+            }
+            if parsed.server.ssh.port != 0 {
+                config.server.ssh.port = parsed.server.ssh.port;
+            }
+            if parsed.server.ssh.host_key.is_some() {
+                config.server.ssh.host_key = parsed.server.ssh.host_key;
+            }
         } else {
             warn!(
                 "config file {} not found, using defaults",
@@ -153,6 +209,8 @@ pub struct App {
     /// tests that need to push real git commits into the repository
     /// before exercising API endpoints that read git history.
     pub data_dir: std::path::PathBuf,
+    /// Running SSH server (Git over SSH), when enabled in config.
+    pub ssh_handle: Option<Arc<gita_ssh::SshServerHandle>>,
 }
 
 impl App {
@@ -262,6 +320,18 @@ impl App {
             auth: Arc::new(auth.clone()),
         };
 
+        // Ensure the SSH host key exists (generated on first run) so a
+        // later `run()` can start the SSH listener with a stable identity.
+        if config.server.ssh.enabled {
+            let host_key_path = config
+                .server
+                .ssh
+                .host_key
+                .clone()
+                .unwrap_or_else(|| config.server.data_dir.join(gita_ssh::DEFAULT_HOST_KEY_NAME));
+            gita_ssh::load_or_create_host_key(&host_key_path)?;
+        }
+
         Ok(Self {
             db,
             git,
@@ -270,6 +340,7 @@ impl App {
             git_http_state,
             data_dir: config.server.data_dir.clone(),
             config,
+            ssh_handle: None,
         })
     }
 
@@ -336,13 +407,37 @@ fn find_web_dist() -> Option<PathBuf> {
 
 /// Run the server.
 pub async fn run(config: Config) -> Result<()> {
-    let app = App::build(config.clone()).await?;
+    let mut app = App::build(config.clone()).await?;
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("bind {addr}"))?;
     info!("Gita listening on http://{addr}");
+
+    // Start the SSH listener (Git over SSH) when enabled.
+    if config.server.ssh.enabled {
+        let ssh_cfg = gita_ssh::SshServerConfig {
+            listen_addr: format!("{}:{}", config.server.ssh.host, config.server.ssh.port),
+            host_key: gita_ssh::load_or_create_host_key(
+                &config
+                    .server
+                    .ssh
+                    .host_key
+                    .clone()
+                    .unwrap_or_else(|| config.server.data_dir.join(gita_ssh::DEFAULT_HOST_KEY_NAME)),
+            )?,
+            repos_root: config.server.data_dir.join("repos"),
+        };
+        let handle = gita_ssh::start(ssh_cfg, app.db.clone()).await?;
+        info!(
+            "Gita SSH listening on {} (git@{}:{}/owner/repo.git)",
+            handle.addr(),
+            config.server.ssh.host,
+            config.server.ssh.port
+        );
+        app.ssh_handle = Some(Arc::new(handle));
+    }
 
     // Per-IP login rate limiter: 5 req/s with burst 10 — slows brute force
     // without affecting normal users.
@@ -428,5 +523,44 @@ mod tests {
         .unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(config.server.jwt_secret, "dev-secret-change-me");
+    }
+
+    #[test]
+    fn config_load_merges_ssh_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [server]
+            host = "0.0.0.0"
+
+            [server.ssh]
+            enabled = true
+            host = "0.0.0.0"
+            port = 2224
+            host_key = "/tmp/custom_host_key"
+            "#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(config.server.ssh.enabled);
+        assert_eq!(config.server.ssh.host, "0.0.0.0");
+        assert_eq!(config.server.ssh.port, 2224);
+        assert_eq!(
+            config.server.ssh.host_key.as_deref(),
+            Some(std::path::Path::new("/tmp/custom_host_key"))
+        );
+        // Defaults are preserved for fields not present in the file.
+        assert_eq!(config.server.port, 3000);
+    }
+
+    #[test]
+    fn config_ssh_defaults_are_disabled() {
+        let missing = PathBuf::from("/nonexistent/gita.toml");
+        let config = Config::load(&missing).unwrap();
+        assert!(!config.server.ssh.enabled);
+        assert_eq!(config.server.ssh.port, 2222);
+        assert!(config.server.ssh.host_key.is_none());
     }
 }

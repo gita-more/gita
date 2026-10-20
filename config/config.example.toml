@@ -13,3 +13,15 @@ data_dir = "data"
 database_url = "postgres://gita:gita@localhost:5432/gita"
 # Secret used to sign JWTs. Change this in production!
 jwt_secret = "dev-secret-change-me"
+
+[server.ssh]
+# Embedded SSH server for Git over SSH (clone/push via git@host:owner/repo.git).
+# Disabled by default; set to true to enable.
+enabled = false
+# Bind address for the SSH listener.
+host = "127.0.0.1"
+# Port for the SSH listener. Use 22 if you want the standard SSH port.
+port = 2222
+# Path to the OpenSSH-format host private key. Defaults to
+# <data_dir>/ssh_host_ed25519_key and is auto-generated on first run.
+# host_key = "data/ssh_host_ed25519_key"
