@@ -59,6 +59,12 @@ jobs:
           echo "Postgres did not become ready in time"
           exit 1
 
+      - name: Build binaries
+        # The CLI integration tests invoke the `gita-server` binary from
+        # `target/debug/gita-server`. `cargo test` only builds the bin for
+        # its own harness under target/debug/deps/, so build it explicitly.
+        run: cargo build -p gita-server
+
       - name: Run workspace tests
         env:
           DATABASE_URL: postgres://gita:gita@localhost:55432/gita
