@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git ssh openssh-client
+
+      - name: Build release binaries
+        run: |
+          cargo build --release
+          cargo build --release -p gita-runner
+
+      - name: Build web frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble release artifacts
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          DIST="dist/gita-${TAG}"
+          mkdir -p "${DIST}"
+          # Server binary + web dist (deployed together; the binary resolves
+          # web/dist relative to its own location).
+          cp target/release/gita-server "${DIST}/gita-server"
+          cp -r web/dist "${DIST}/web"
+          # Standalone CI runner binary.
+          cp target/release/gita-runner "${DIST}/gita-runner"
+          # Deployment templates.
+          cp config/config.example.toml "${DIST}/config.example.toml"
+          cp docker/Dockerfile "${DIST}/Dockerfile"
+          cp docker/docker-entrypoint.sh "${DIST}/docker-entrypoint.sh"
+          cp docker/docker-compose.yml "${DIST}/docker-compose.yml"
+          cp README.md LICENSE "${DIST}/"
+          # Compress.
+          tar -czf "gita-${TAG}.tar.gz" "${DIST}"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "created gita-${TAG}.tar.gz"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            gita-${{ env.TAG }}.tar.gz
+          generate_release_notes: true
+          draft: true
