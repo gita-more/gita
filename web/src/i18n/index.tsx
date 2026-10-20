@@ -121,6 +121,10 @@ const ERROR_MAP: Record<string, string> = {
   'source branch not found': 'error.sourceBranchNotFound',
   'target branch not found': 'error.targetBranchNotFound',
   'repo must be in owner/name format': 'error.repoFormat',
+  'invalid pages path: expected "/" or "/docs"': 'error.invalidPagesPath',
+  'branch not found: no such branch in this repository': 'error.pagesBranchNotFound',
+  'only the repository owner can configure pages': 'error.pagesOwnerOnly',
+  'pages disabled': 'error.pagesDisabled',
 }
 
 export function translateError(message: string, locale: Locale): string {

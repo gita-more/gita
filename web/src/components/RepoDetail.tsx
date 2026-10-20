@@ -31,9 +31,10 @@ import {
 import { useI18n, useErrorTranslator } from '../i18n'
 import { EmptyRepoWelcome } from './EmptyRepoWelcome'
 import { PipelinesPanel } from './PipelinesPanel'
+import { PagesPanel } from './PagesPanel'
 
-type Tab = 'files' | 'commits' | 'prs' | 'issues' | 'pipelines'
-const VALID_TABS: Tab[] = ['files', 'commits', 'prs', 'issues', 'pipelines']
+type Tab = 'files' | 'commits' | 'prs' | 'issues' | 'pipelines' | 'settings'
+const VALID_TABS: Tab[] = ['files', 'commits', 'prs', 'issues', 'pipelines', 'settings']
 
 export function RepoDetail({
   owner,
@@ -285,6 +286,7 @@ export function RepoDetail({
       {tab === 'pipelines' && (
         <PipelinesPanel owner={owner} name={name} pipelines={pipelines} onChanged={() => void loadPipelines()} />
       )}
+      {tab === 'settings' && <PagesPanel owner={owner} name={name} />}
     </>
   )
 }

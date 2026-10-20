@@ -29,6 +29,15 @@ describe('translate()', () => {
     )
   })
 
+  it('translates pages keys in both locales', () => {
+    expect(translate('zh', 'pages.title')).toBe('Pages')
+    expect(translate('en', 'pages.title')).toBe('Pages')
+    expect(translate('zh', 'pages.branch')).toBe('发布分支')
+    expect(translate('en', 'pages.branch')).toBe('Publishing branch')
+    expect(translate('zh', 'pages.visitSite')).toBe('访问站点')
+    expect(translate('en', 'pages.visitSite')).toBe('Visit site')
+  })
+
   it('falls back to en when zh lacks the key', () => {
     // The parity test below is the structural guard against zh/en
     // divergence, so we don't try to manufacture an en-only key here —

@@ -19,6 +19,16 @@ export interface Repository {
   created_at: string
 }
 
+export interface PagesConfig {
+  enabled: boolean
+  branch: string
+  path: string
+  /** Server-computed public URL, e.g. `/alice/docs/`. */
+  url: string
+  /** Whether the configured branch exists in git. */
+  available: boolean
+}
+
 export interface TreeEntry {
   path: string
   name: string
@@ -520,6 +530,21 @@ export const api = {
   // events
   listEvents: (limit = 50) =>
     request<{ events: EventItem[] }>(`/api/events?limit=${limit}`),
+
+  // pages
+  getPagesStatus: (owner: string, name: string) =>
+    request<{ configured: boolean; enabled: boolean }>(
+      `/api/repos/${owner}/${name}/pages/status`,
+    ),
+  getPages: (owner: string, name: string) =>
+    request<PagesConfig>(`/api/repos/${owner}/${name}/pages`),
+  putPages: (owner: string, name: string, enabled: boolean, branch: string, path: string) =>
+    request<PagesConfig>(`/api/repos/${owner}/${name}/pages`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled, branch, path }),
+    }),
+  deletePages: (owner: string, name: string) =>
+    request<{ message: string }>(`/api/repos/${owner}/${name}/pages`, { method: 'DELETE' }),
 
   // health
   health: () => request<{ status: string; db: string; git: string }>('/api/health'),

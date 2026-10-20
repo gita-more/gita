@@ -7,6 +7,7 @@ import {
   CircleDotIcon,
   GitCommitIcon,
   GitPullRequestIcon,
+  GlobeIcon,
   HomeIcon,
   PersonIcon,
   RefreshIcon,
@@ -42,6 +43,7 @@ export type NavTarget =
   | 'prs'
   | 'issues'
   | 'pipelines'
+  | 'settings'
 
 /** Top-level navigation targets shown on the global (home) sidebar. */
 export type GlobalNavTarget = 'projects' | 'groups' | 'issues'
@@ -58,6 +60,7 @@ const SIDEBAR_NAV: { key: NavTarget; labelKey: string; icon: typeof HomeIcon; co
   { key: 'prs', labelKey: 'nav.prs', icon: GitPullRequestIcon, countKey: 'prs' },
   { key: 'issues', labelKey: 'nav.issues', icon: CircleDotIcon, countKey: 'issues' },
   { key: 'pipelines', labelKey: 'nav.pipelines', icon: RocketIcon },
+  { key: 'settings', labelKey: 'nav.pages', icon: GlobeIcon },
 ]
 
 export function Brand({ compact = false }: { compact?: boolean }) {
