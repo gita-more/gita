@@ -153,7 +153,7 @@ async fn serve_site_request(
     };
 
     let ct = content_type_for(&target_path);
-    let mut builder = Response::builder()
+    let builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, ct)
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")

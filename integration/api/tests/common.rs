@@ -248,6 +248,128 @@ pub async fn request(
     (status, value)
 }
 
+/// Like `request`, but returns raw bytes and response headers — for Pages
+/// responses, which are HTML/binary and would be silently nulled by
+/// `request`'s JSON parsing.
+pub async fn request_bytes(
+    app: &gita_server::App,
+    method: axum::http::Method,
+    uri: &str,
+    token: Option<&str>,
+) -> (axum::http::StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    use tower::ServiceExt;
+    let mut builder = axum::http::Request::builder().method(method).uri(uri);
+    if let Some(tok) = token {
+        builder = builder.header("authorization", format!("Bearer {tok}"));
+    }
+    let req = builder.body(axum::body::Body::empty()).unwrap();
+    let resp = app.router().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
+    (status, headers, bytes.to_vec())
+}
+
+/// Push arbitrary files (as raw bytes) into a branch of the bare repository.
+/// Unlike `push_initial_commit`, this supports nested paths and binary
+/// content, and leaves `push_initial_commit` untouched for the other suites.
+pub fn push_files(
+    app: &gita_server::App,
+    owner: &str,
+    name: &str,
+    files: &[(&str, &[u8])],
+    branch: &str,
+    message: &str,
+) {
+    let bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
+    if !bare.exists() {
+        panic!(
+            "bare repo path not found: {} (data_dir={})",
+            bare.display(),
+            app.data_dir.display()
+        );
+    }
+    let bare_url = format!("file://{}", bare.display());
+
+    let work_parent = app.data_dir.join(format!(".work-{}", std::process::id()));
+    std::fs::create_dir_all(&work_parent).unwrap();
+    let work_root = work_parent.join(format!("wktmp-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&work_root).unwrap();
+
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&work_root)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {:?} failed:\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    // Clone into the work tree. A freshly created repo is empty (no main),
+    // so fall back to initializing and committing directly on the target
+    // branch rather than requiring a pre-existing main.
+    let clone_ok = Command::new("git")
+        .args(["clone", "-q", "-b", "main", &bare_url, "."])
+        .current_dir(&work_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !clone_ok {
+        git(&["init", "-q", "-b", branch]);
+        git(&["remote", "add", "origin", &bare_url]);
+    }
+    for (file, content) in files {
+        let dest = work_root.join(file);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&dest, content).unwrap();
+    }
+    if branch != "main" {
+        git(&["checkout", "-q", "-b", branch]);
+    }
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", message]);
+    git(&["push", "-q", "-u", "origin", branch]);
+    let _ = std::fs::remove_dir_all(&work_root);
+}
+
+/// Configure Pages for a repository via the API and return the response.
+pub async fn set_pages(
+    app: &gita_server::App,
+    token: &str,
+    owner: &str,
+    name: &str,
+    enabled: bool,
+    branch: &str,
+    path: &str,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    request(
+        app,
+        axum::http::Method::PUT,
+        &format!("/api/repos/{owner}/{name}/pages"),
+        Some(serde_json::json!({
+            "enabled": enabled,
+            "branch": branch,
+            "path": path,
+        })),
+        Some(token),
+    )
+    .await
+}
+
 /// Convenience: require that a path exists on disk (used to confirm the
 /// git CLI created the expected work directory).
 pub fn ensure_exists(p: &Path) {
