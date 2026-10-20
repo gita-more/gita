@@ -76,6 +76,16 @@ pub struct ServerConfig {
     /// Embedded SSH server configuration (Git over SSH).
     #[serde(default)]
     pub ssh: SshConfig,
+    /// Master switch for GitHub-Pages-style site serving. When false, the
+    /// `/{owner}/{repo}/{*path}` routes are not registered at all and every
+    /// request falls through to the SPA.
+    #[serde(default = "default_pages_enabled")]
+    pub pages_enabled: bool,
+    /// Optional URL prefix for Pages sites, e.g. "/p" serves /p/owner/repo/.
+    /// Empty (the default) serves at /owner/repo/, mirroring GitHub project
+    /// sites.
+    #[serde(default)]
+    pub pages_url_prefix: String,
 }
 
 /// Configuration for the embedded SSH server (Git over SSH).
@@ -117,6 +127,10 @@ impl Default for SshConfig {
     }
 }
 
+fn default_pages_enabled() -> bool {
+    true
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -127,6 +141,8 @@ impl Default for ServerConfig {
             jwt_secret: default_jwt_secret(),
             database_schema: None,
             ssh: SshConfig::default(),
+            pages_enabled: default_pages_enabled(),
+            pages_url_prefix: String::new(),
         }
     }
 }
@@ -173,6 +189,9 @@ impl Config {
                 config.server.jwt_secret = parsed.server.jwt_secret;
             }
             // SSH section (only when present in the file).
+            // NOTE: this pattern is asymmetric — a boolean can only ever be
+            // turned *on* by the file, never off. Pages uses presence-based
+            // merging below instead; keep this block as-is to avoid churn.
             if parsed.server.ssh.enabled {
                 config.server.ssh.enabled = true;
             }
@@ -184,6 +203,30 @@ impl Config {
             }
             if parsed.server.ssh.host_key.is_some() {
                 config.server.ssh.host_key = parsed.server.ssh.host_key;
+            }
+
+            // Pages section. Unlike SSH, these fields must be switchable in
+            // both directions, so check key *presence* in the raw TOML rather
+            // than the defaulted parsed struct (which cannot distinguish
+            // "absent" from "explicitly false"/"empty").
+            let raw: toml::Value = match toml::from_str(&text) {
+                Ok(v) => v,
+                // The same text already parsed successfully above, so this
+                // can only fail if the file changed between reads.
+                Err(_) => toml::Value::Table(Default::default()),
+            };
+            let raw_server = raw.get("server");
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("pages_enabled"))
+                .and_then(|v| v.as_bool())
+            {
+                config.server.pages_enabled = v;
+            }
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("pages_url_prefix"))
+                .and_then(|v| v.as_str())
+            {
+                config.server.pages_url_prefix = v.to_string();
             }
         } else {
             warn!(
@@ -357,7 +400,7 @@ impl App {
             .api_state
             .clone()
             .with_login_limiter(limiter);
-        let api_router = gita_api::api_router(api_state);
+        let api_router = gita_api::api_router(api_state.clone());
         let git_router = gita_http::router(self.git_http_state.clone());
         // Serve the built React frontend (`web/dist`) when present.
         let web_router = match find_web_dist() {
@@ -367,10 +410,25 @@ impl App {
                 gita_web::web_router(None)
             }
         };
+        // Pages static sites, mounted at the server root. When disabled by
+        // config, skip registration entirely so every Pages-shaped URL falls
+        // through to the SPA.
+        let pages_router = if self.config.server.pages_enabled {
+            let opts = gita_api::PagesOptions {
+                url_prefix: self.config.server.pages_url_prefix.clone(),
+            };
+            gita_api::pages_router(api_state, opts)
+        } else {
+            axum::Router::new()
+        };
 
+        // Merge order does not matter: axum tries the path router before any
+        // fallback service, so Pages' explicit routes always win over the SPA
+        // fallback. Do not "reorder" this for readability.
         axum::Router::new()
             .merge(api_router)
             .merge(git_router)
+            .merge(pages_router)
             .merge(web_router)
     }
 }
@@ -562,5 +620,44 @@ mod tests {
         assert!(!config.server.ssh.enabled);
         assert_eq!(config.server.ssh.port, 2222);
         assert!(config.server.ssh.host_key.is_none());
+    }
+
+    #[test]
+    fn config_pages_enabled_defaults_on_and_can_be_turned_off() {
+        // Missing file -> default on.
+        let missing = PathBuf::from("/nonexistent/gita.toml");
+        let config = Config::load(&missing).unwrap();
+        assert!(config.server.pages_enabled);
+        assert_eq!(config.server.pages_url_prefix, "");
+
+        // Explicitly false -> master switch off (the asymmetric SSH merge
+        // pattern would have ignored this; presence-based merging must not).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
+        std::fs::write(
+            &path,
+            "[server]\npages_enabled = false\n",
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(!config.server.pages_enabled, "pages_enabled=false must be honored");
+
+        // Explicitly true -> on.
+        std::fs::write(&path, "[server]\npages_enabled = true\n").unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(config.server.pages_enabled);
+    }
+
+    #[test]
+    fn config_pages_url_prefix_is_loaded() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
+        std::fs::write(
+            &path,
+            "[server]\npages_url_prefix = \"/p\"\n",
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.server.pages_url_prefix, "/p");
     }
 }

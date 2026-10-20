@@ -25,3 +25,12 @@ port = 2222
 # Path to the OpenSSH-format host private key. Defaults to
 # <data_dir>/ssh_host_ed25519_key and is auto-generated on first run.
 # host_key = "data/ssh_host_ed25519_key"
+
+# GitHub-Pages-style static site serving. When enabled (the default), a
+# repository with Pages configured publishes its site at
+#   http://<host>/<owner>/<repo>/
+# from a branch and folder of your choosing ("/" or "/docs").
+pages_enabled = true
+# Optional URL prefix for all Pages sites, e.g. "/p" serves
+# http://<host>/p/<owner>/<repo>/. Empty means no prefix.
+# pages_url_prefix = "/p"

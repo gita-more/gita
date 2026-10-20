@@ -44,3 +44,9 @@ pub fn api_router(state: AppState) -> axum::Router {
         .merge(docs::docs_routes())
         .with_state(state)
 }
+
+/// Build the Pages static-site serving router, mounted at the server root
+/// (not under `/api`).
+pub fn pages_router(state: AppState, opts: PagesOptions) -> axum::Router {
+    pages_site_routes(opts).with_state(state)
+}

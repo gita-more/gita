@@ -32,6 +32,10 @@ jwt_secret = "${jwt_secret}"
 enabled = ${ssh_enabled}
 host = "${GITA_SERVER_SSH_HOST:-0.0.0.0}"
 port = ${GITA_SERVER_SSH_PORT:-2222}
+
+# Pages static-site serving (GitHub Pages style).
+pages_enabled = ${GITA_SERVER_PAGES_ENABLED:-true}
+pages_url_prefix = "${GITA_SERVER_PAGES_URL_PREFIX:-}"
 EOF
 
 # Optionally include a custom host key path (volume-mounted secret).
