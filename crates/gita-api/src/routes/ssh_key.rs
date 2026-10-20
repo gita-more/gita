@@ -62,6 +62,9 @@ async fn add_key(
     if parts.next().is_none() {
         return Err(ApiError::BadRequest("public key missing base64 blob".into()));
     }
+    if !gita_db::ssh_key_is_valid(&pk) {
+        return Err(ApiError::BadRequest("public key is not a valid base64 key blob".into()));
+    }
     let title = req.title.unwrap_or_default();
     let key = state.db.add_ssh_key(user.id, &title, &pk).await?;
     Ok(Json(SshKeyResponse::from(key)))

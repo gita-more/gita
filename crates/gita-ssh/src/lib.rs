@@ -109,6 +109,8 @@ struct GitaHandler {
     db: Arc<Db>,
     repos_root: PathBuf,
     authed_user: Option<i64>,
+    /// Russh handle for pushing channel data from spawned tasks.
+    handle: Option<russh::server::Handle>,
     /// Shared child stdin (channel data -> git receive-pack).
     child_stdin: Option<Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>>,
 }
@@ -119,9 +121,37 @@ impl GitaHandler {
             db,
             repos_root,
             authed_user: None,
+            handle: None,
             child_stdin: None,
         }
     }
+}
+
+/// Resolve an SSH git path (`owner/repo.git`, `/owner/repo.git`, with or
+/// without a trailing `.git`) into an on-disk bare repository path,
+/// refusing path traversal and malformed names.
+fn resolve_repo_path(repos_root: &std::path::Path, rel: &str) -> Option<PathBuf> {
+    let rel = rel.trim_start_matches('/');
+    let rel = rel.strip_suffix(".git").unwrap_or(rel);
+    let mut parts = rel.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    // Reject extra path segments and traversal.
+    if parts.next().is_some() {
+        return None;
+    }
+    if owner.is_empty()
+        || repo.is_empty()
+        || owner.contains("..")
+        || repo.contains("..")
+        || owner.contains('\\')
+        || repo.contains('\\')
+        || owner.contains(':')
+        || repo.contains(':')
+    {
+        return None;
+    }
+    Some(repos_root.join(owner).join(format!("{repo}.git")))
 }
 
 impl russh::server::Handler for GitaHandler {
@@ -159,7 +189,9 @@ impl russh::server::Handler for GitaHandler {
         reply: russh::server::ChannelOpenHandle,
         _session: &mut russh::server::Session,
     ) -> Result<(), Self::Error> {
-        let _ = reply;
+        // Accept the session channel; dropping the handle would reject it
+        // with "administratively prohibited", which breaks git clients.
+        reply.accept().await;
         Ok(())
     }
 
@@ -191,28 +223,84 @@ impl russh::server::Handler for GitaHandler {
             }
         };
 
-        let rel = path
-            .trim_start_matches('/')
-            .trim_start_matches("git/")
-            .trim_end_matches('\0');
-        let bare = self.repos_root.join(format!("{rel}.git"));
+        let rel = path.trim_end_matches('\0');
+        let bare = match resolve_repo_path(&self.repos_root, rel) {
+            Some(p) => p,
+            None => {
+                tracing::debug!("ssh: rejected path rel={:?}", rel);
+                let _ = session.data(channel, bytes::Bytes::from_static(b"repository not found\n"));
+                let _ = session.close(channel);
+                return Ok(());
+            }
+        };
         if !bare.exists() {
+            tracing::debug!("ssh: repo not on disk: {}", bare.display());
             let _ = session.data(channel, bytes::Bytes::from_static(b"repository not found\n"));
             let _ = session.close(channel);
             return Ok(());
         }
 
-        tracing::info!("ssh git: {verb} on {}", bare.display());
+        // Resolve owner/repo from the path for authorization.
+        let rel_norm = rel.trim_start_matches('/');
+        let (owner, repo_name) = match rel_norm
+            .strip_suffix(".git")
+            .unwrap_or(rel_norm)
+            .split_once('/')
+        {
+            Some((o, r)) => (o.to_string(), r.to_string()),
+            None => {
+                let _ = session.data(channel, bytes::Bytes::from_static(b"repository not found\n"));
+                let _ = session.close(channel);
+                return Ok(());
+            }
+        };
+
+        // Load the repository record and enforce the same access rules as
+        // the HTTP layer:
+        //   - writes (receive-pack) require the repository owner
+        //   - reads of private repositories require the owner; public repos
+        //     are readable by any authenticated user
+        let repo = match self.db.get_repository_by_name(&owner, &repo_name).await {
+            Ok(Some(r)) => r,
+            _ => {
+                let _ = session.data(channel, bytes::Bytes::from_static(b"repository not found\n"));
+                let _ = session.close(channel);
+                return Ok(());
+            }
+        };
+        let is_owner = self.authed_user == Some(repo.owner_id);
+        if verb == "receive-pack" && !is_owner {
+            let _ = session.data(
+                channel,
+                bytes::Bytes::from_static(b"permission denied: only the repository owner can push\n"),
+            );
+            let _ = session.close(channel);
+            return Ok(());
+        }
+        if verb == "upload-pack" && repo.is_private && !is_owner {
+            let _ = session.data(
+                channel,
+                bytes::Bytes::from_static(b"permission denied: this repository is private\n"),
+            );
+            let _ = session.close(channel);
+            return Ok(());
+        }
+
+        tracing::info!("ssh git: {verb} on {} by user {:?}", bare.display(), self.authed_user);
+
+        // Acknowledge the exec request so the client starts sending protocol
+        // data, then hand off the git child process to two background tasks:
+        // a pump that copies stdout -> channel data, and a waiter that
+        // reports the exit status and closes the channel. This keeps the
+        // session event loop free so `data()` (channel -> stdin) keeps
+        // flowing; blocking here would deadlock git push/pull.
+        let handle = session.handle();
+        self.handle = Some(handle.clone());
+        let _ = handle.channel_success(channel).await;
 
         let mut child = tokio::process::Command::new("git")
             .arg(verb)
-            .env("GIT_PROJECT_ROOT", &self.repos_root)
-            .env("GIT_HTTP_EXPORT_ALL", "1")
-            .env("PATH_INFO", format!("/{rel}"))
-            .env("REMOTE_USER", "ssh")
-            .env("REMOTE_ADDR", "ssh")
-            .env("CONTENT_TYPE", format!("application/x-{verb}-request"))
-            .env("REQUEST_METHOD", "POST")
+            .arg(&bare)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -223,7 +311,8 @@ impl russh::server::Handler for GitaHandler {
         let child_stderr = child.stderr.take().expect("piped stderr");
 
         // Store the stdin so `data()` can push channel data into git.
-        self.child_stdin = Some(Arc::new(tokio::sync::Mutex::new(Some(child_stdin))));
+        let stdin_arc = Arc::new(tokio::sync::Mutex::new(Some(child_stdin)));
+        self.child_stdin = Some(stdin_arc.clone());
 
         // Drain stderr to tracing asynchronously.
         let mut stderr_reader = child_stderr;
@@ -243,45 +332,45 @@ impl russh::server::Handler for GitaHandler {
             }
         });
 
-        // Pump stdout -> channel data.
-        let mut stdout_reader = child_stdout;
-        let mut out_buf = vec![0u8; 8192];
-
-        loop {
-            match stdout_reader.read(&mut out_buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    let chunk = out_buf[..n].to_vec();
-                    if let Err(e) = session.data(channel, bytes::Bytes::from(chunk)) {
-                        tracing::warn!("ssh channel write failed: {e}");
+        // Pump stdout -> channel data in a background task.
+        let h = handle.clone();
+        let channel_id = channel;
+        tokio::spawn(async move {
+            let mut out_buf = vec![0u8; 8192];
+            let mut stdout_reader = child_stdout;
+            loop {
+                match stdout_reader.read(&mut out_buf).await {
+                    Ok(0) => {
+                        let _ = h.eof(channel_id).await;
                         break;
                     }
+                    Ok(n) => {
+                        let chunk = bytes::Bytes::copy_from_slice(&out_buf[..n]);
+                        if h.data(channel_id, chunk).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
                 }
-                Err(_) => break,
             }
-        }
+        });
 
-        let status = match child.wait().await {
-            Ok(s) => s,
-            Err(e) => anyhow::bail!("wait child failed: {e}"),
-        };
+        // Wait for the child and report its exit status / close the channel.
+        let h2 = handle.clone();
+        tokio::spawn(async move {
+            let status = child.wait().await;
+            stderr_task.abort();
+            if let Ok(s) = status {
+                if let Some(code) = s.code() {
+                    let _ = h2.exit_status_request(channel_id, code as u32).await;
+                }
+            }
+            let _ = h2.close(channel_id).await;
+        });
 
-        stderr_task.abort();
-
-        // Clear stdin so data() no longer writes into a dead process.
-        if let Some(s) = self.child_stdin.take() {
-            let mut guard = s.lock().await;
-            *guard = None;
-        }
-
-        if !status.success() {
-            tracing::warn!(
-                "ssh git {verb} on {} exited with {:?}",
-                bare.display(),
-                status.code()
-            );
-        }
-        let _ = session.close(channel);
+        // Once the child exits, further `data()` writes to its pipe will
+        // fail with BrokenPipe (handled below), so we do not need to
+        // explicitly clear `self.child_stdin` here.
         Ok(())
     }
 
@@ -386,5 +475,42 @@ mod tests {
         );
         assert_eq!(parse_git_command("ls"), None);
         assert_eq!(parse_git_command("git-upload-pack"), None);
+        // Trailing NUL is tolerated (some clients append it).
+        assert_eq!(
+            parse_git_command("git-upload-pack 'owner/repo.git'\0"),
+            Some(("upload-pack", "owner/repo.git".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolve_repo_path_accepts_valid_owner_repo() {
+        let root = PathBuf::from("/data/repos");
+
+        let p = resolve_repo_path(&root, "alice/hello.git").unwrap();
+        assert_eq!(p, root.join("alice").join("hello.git"));
+        // Leading slash and .git suffix variations.
+        let p2 = resolve_repo_path(&root, "/alice/hello.git").unwrap();
+        assert_eq!(p2, root.join("alice").join("hello.git"));
+        let p3 = resolve_repo_path(&root, "/alice/hello").unwrap();
+        assert_eq!(p3, root.join("alice").join("hello.git"));
+    }
+
+    #[test]
+    fn resolve_repo_path_rejects_traversal_and_malformed() {
+        let root = PathBuf::from("/data/repos");
+
+        // Path traversal attempts.
+        assert!(resolve_repo_path(&root, "../secret.git").is_none());
+        assert!(resolve_repo_path(&root, "../../etc/passwd.git").is_none());
+        assert!(resolve_repo_path(&root, "a/../../b").is_none());
+        // Missing owner or repo.
+        assert!(resolve_repo_path(&root, "alice.git").is_none());
+        assert!(resolve_repo_path(&root, "alice").is_none());
+        assert!(resolve_repo_path(&root, "").is_none());
+        // Too many segments.
+        assert!(resolve_repo_path(&root, "a/b/c.git").is_none());
+        // Windows separators / drive letters.
+        assert!(resolve_repo_path(&root, "a\\b\\c.git").is_none());
+        assert!(resolve_repo_path(&root, "C:/x.git").is_none());
     }
 }

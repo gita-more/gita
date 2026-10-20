@@ -11,6 +11,7 @@ gita-api = { path = "../../crates/gita-api" }
 gita-db = { path = "../../crates/gita-db" }
 gita-core = { path = "../../crates/gita-core" }
 gita-runner = { path = "../../crates/gita-runner" }
+gita-ssh = { path = "../../crates/gita-ssh" }
 
 [dev-dependencies]
 axum = { workspace = true }

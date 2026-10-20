@@ -1467,6 +1467,7 @@ dependencies = [
  "gita-db",
  "gita-runner",
  "gita-server",
+ "gita-ssh",
  "http-body-util",
  "rand 0.8.8",
  "serde",

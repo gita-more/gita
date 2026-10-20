@@ -1303,7 +1303,7 @@ impl Db {
 /// Compute the SHA256 fingerprint of an OpenSSH `authorized_keys`-style
 /// public key, returning the same `SHA256:base64` form that `ssh-keygen
 /// -lf` produces. Returns `None` if the key cannot be parsed.
-fn ssh_fingerprint(public_key: &str) -> Option<String> {
+pub fn ssh_fingerprint(public_key: &str) -> Option<String> {
     use sha2::{Digest, Sha256};
     let trimmed = public_key.trim();
     let mut parts = trimmed.split_whitespace();
@@ -1317,6 +1317,13 @@ fn ssh_fingerprint(public_key: &str) -> Option<String> {
     // base64(SHA256) without padding — matches OpenSSH output.
     let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest);
     Some(format!("SHA256:{b64}"))
+}
+
+/// Returns `true` when `public_key` looks like a valid OpenSSH public key
+/// line (algorithm + base64 blob), used by the API to reject junk before
+/// it reaches the `ssh_keys` table.
+pub fn ssh_key_is_valid(public_key: &str) -> bool {
+    ssh_fingerprint(public_key).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -2431,6 +2438,23 @@ mod tests {
             .unwrap();
         assert!(missing.is_none());
         drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
+    async fn ssh_key_validity() {
+        // A real ed25519 OpenSSH public key is accepted.
+        let valid = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAmSSX13Ub9vIWCGFHUJAd04tQPCJxOTY7Gl1OerO+RE";
+        assert!(ssh_key_is_valid(valid));
+
+        // Trailing comment is allowed (fingerprint uses first two fields).
+        let with_comment = format!("{valid} zac@example.com");
+        assert!(ssh_key_is_valid(&with_comment));
+
+        // Junk and malformed keys are rejected.
+        assert!(!ssh_key_is_valid(""));
+        assert!(!ssh_key_is_valid("ssh-ed25519"));
+        assert!(!ssh_key_is_valid("ssh-ed25519 not-base64!!!"));
+        assert!(!ssh_key_is_valid("just-a-word"));
     }
 
     #[tokio::test]
