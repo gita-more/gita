@@ -10,6 +10,7 @@ pub mod pipeline;
 pub mod pr;
 pub mod repo;
 pub mod search;
+pub mod ssh_key;
 
 // Re-export route functions.
 pub use auth::auth_routes;
@@ -25,3 +26,4 @@ pub use misc::misc_routes;
 pub use misc::event_routes;
 pub use pipeline::pipeline_routes;
 pub use search::search_routes;
+pub use ssh_key::ssh_key_routes;

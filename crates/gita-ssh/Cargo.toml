@@ -1,0 +1,28 @@
+[package]
+name = "gita-ssh"
+description = "Embedded SSH server exposing the Git protocol over SSH (clone/push via git@host:...)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gita-db = { path = "../gita-db" }
+gita-events = { path = "../gita-events" }
+gita-git = { path = "../gita-git" }
+gita-core = { path = "../gita-core" }
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa"] }
+tokio = { workspace = true }
+bytes = "1"
+async-trait = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = { version = "0.4", features = ["sys_rng"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"

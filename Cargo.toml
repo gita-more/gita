@@ -11,6 +11,7 @@ members = [
     "crates/gita-server",
     "crates/gita-web",
     "crates/gita-runner",
+    "crates/gita-ssh",
     "integration/cli",
     "integration/api",
 ]

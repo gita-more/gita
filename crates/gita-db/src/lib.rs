@@ -1110,6 +1110,114 @@ impl Db {
 }
 
 // ---------------------------------------------------------------------------
+// SSH keys
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct SshKeyRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub title: String,
+    pub public_key: String,
+    pub created_at: String,
+}
+
+impl Db {
+    pub async fn add_ssh_key(
+        &self,
+        user_id: i64,
+        title: &str,
+        public_key: &str,
+    ) -> Result<SshKeyRow> {
+        let created_at = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "INSERT INTO ssh_keys (user_id, title, public_key, created_at)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id",
+        )
+        .bind(user_id)
+        .bind(title)
+        .bind(public_key)
+        .bind(&created_at)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(SshKeyRow {
+            id: row.try_get("id").unwrap_or(0),
+            user_id,
+            title: title.to_string(),
+            public_key: public_key.to_string(),
+            created_at,
+        })
+    }
+
+    pub async fn list_ssh_keys(&self, user_id: i64) -> Result<Vec<SshKeyRow>> {
+        let rows = sqlx::query(
+            "SELECT id, user_id, title, public_key, created_at FROM ssh_keys
+             WHERE user_id = $1 ORDER BY id DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(SshKeyRow {
+                id: row.try_get("id")?,
+                user_id: row.try_get("user_id")?,
+                title: row.try_get("title")?,
+                public_key: row.try_get("public_key")?,
+                created_at: row.try_get("created_at")?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn list_all_ssh_keys(&self) -> Result<Vec<SshKeyRow>> {
+        let rows = sqlx::query(
+            "SELECT id, user_id, title, public_key, created_at FROM ssh_keys",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(SshKeyRow {
+                id: row.try_get("id")?,
+                user_id: row.try_get("user_id")?,
+                title: row.try_get("title")?,
+                public_key: row.try_get("public_key")?,
+                created_at: row.try_get("created_at")?,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn delete_ssh_key(&self, id: i64, user_id: i64) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM ssh_keys WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    pub async fn find_ssh_key_by_fingerprint(
+        &self,
+        fingerprint: &str,
+    ) -> Result<Option<SshKeyRow>> {
+        // Lookup a key by its SHA256 fingerprint (the form used by ssh-keygen
+        // and OpenSSH starting from release 6.8). We compare against the
+        // stored `public_key`'s decoded SHA256 fingerprint here; the SSH
+        // server computes the fingerprint of the offered key and calls this.
+        let all = self.list_all_ssh_keys().await?;
+        for key in all {
+            if ssh_fingerprint(&key.public_key).as_deref() == Some(fingerprint) {
+                return Ok(Some(key));
+            }
+        }
+        Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Password reset tokens
 // ---------------------------------------------------------------------------
 
@@ -1186,6 +1294,29 @@ impl Db {
             .await?;
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// SSH key helpers
+// ---------------------------------------------------------------------------
+
+/// Compute the SHA256 fingerprint of an OpenSSH `authorized_keys`-style
+/// public key, returning the same `SHA256:base64` form that `ssh-keygen
+/// -lf` produces. Returns `None` if the key cannot be parsed.
+fn ssh_fingerprint(public_key: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let trimmed = public_key.trim();
+    let mut parts = trimmed.split_whitespace();
+    let _alg = parts.next()?;
+    let blob = parts.next()?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(blob).ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let digest = hasher.finalize();
+    // base64(SHA256) without padding — matches OpenSSH output.
+    let b64 = base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest);
+    Some(format!("SHA256:{b64}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2249,6 +2380,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ssh_key_crud() {
+        let db = fresh_db().await;
+        let u = db.create_user("sshuser", "ssh@example.com", "h").await.unwrap();
+        let pk = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAmSSX13Ub9vIWCGFHUJAd04tQPCJxOTY7Gl1OerO+RE";
+
+        let key = db.add_ssh_key(u.id, "laptop", pk).await.unwrap();
+        assert!(key.id > 0);
+        assert_eq!(key.user_id, u.id);
+        assert_eq!(key.title, "laptop");
+        assert_eq!(key.public_key, pk);
+
+        // Listing returns the new key (ordered by id DESC).
+        let keys = db.list_ssh_keys(u.id).await.unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].id, key.id);
+        assert_eq!(keys[0].title, "laptop");
+
+        // Another user cannot see or delete this key.
+        let other = db.create_user("sshother", "ssh2@example.com", "h").await.unwrap();
+        assert!(db.list_ssh_keys(other.id).await.unwrap().is_empty());
+        assert!(!db.delete_ssh_key(key.id, other.id).await.unwrap());
+
+        // Owner can delete.
+        assert!(db.delete_ssh_key(key.id, u.id).await.unwrap());
+        assert!(db.list_ssh_keys(u.id).await.unwrap().is_empty());
+        drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
+    async fn ssh_key_find_by_fingerprint() {
+        let db = fresh_db().await;
+        let u = db.create_user("sshfp", "sshfp@example.com", "h").await.unwrap();
+        let pk = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAmSSX13Ub9vIWCGFHUJAd04tQPCJxOTY7Gl1OerO+RE";
+        let fingerprint = "SHA256:kbyIniKFUf4To+hc/phSRCjc5jOKJdNhVqdCnUblVjA";
+
+        db.add_ssh_key(u.id, "ci-runner", pk).await.unwrap();
+
+        // Matching fingerprint resolves to the key.
+        let found = db.find_ssh_key_by_fingerprint(fingerprint).await.unwrap();
+        assert!(found.is_some());
+        let key = found.unwrap();
+        assert_eq!(key.user_id, u.id);
+        assert_eq!(key.title, "ci-runner");
+
+        // Unknown fingerprint returns None.
+        let missing = db
+            .find_ssh_key_by_fingerprint("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+            .await
+            .unwrap();
+        assert!(missing.is_none());
+        drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
     async fn group_crud() {
         let db = fresh_db().await;
         let owner = db
@@ -2395,7 +2580,7 @@ mod tests {
         assert_eq!(c1.pr_id, None);
         assert_eq!(c1.body, "first!");
 
-        let c2 = db
+        let _c2 = db
             .create_issue_comment(repo.id, issue.id, owner.id, &owner.username, "second")
             .await
             .unwrap();
@@ -2455,6 +2640,7 @@ mod tests {
             "stars",
             "webhooks",
             "password_reset_tokens",
+            "ssh_keys",
         ];
         for table in expected {
             let row: (i64,) = sqlx::query_as(&format!(

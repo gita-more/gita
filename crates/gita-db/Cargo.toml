@@ -15,4 +15,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+sha2 = "0.10"
+base64 = "0.22"
 gita-core = { path = "../gita-core" }

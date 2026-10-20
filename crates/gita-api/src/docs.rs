@@ -123,6 +123,84 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/api/auth/keys": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "List SSH public keys of the current user",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "SSH key list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/SshKey" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Not authenticated" }
+        }
+      },
+      "post": {
+        "tags": ["auth"],
+        "summary": "Register a new SSH public key",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AddSshKeyRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Registered key",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SshKey" }
+              }
+            }
+          },
+          "400": { "description": "Unsupported key algorithm or missing blob" },
+          "401": { "description": "Not authenticated" }
+        }
+      }
+    },
+    "/api/auth/keys/{id}": {
+      "delete": {
+        "tags": ["auth"],
+        "summary": "Delete an SSH public key",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Not authenticated" },
+          "404": { "description": "Key not found" }
+        }
+      }
+    },
     "/api/repos": {
       "get": {
         "tags": ["repos"],
@@ -651,6 +729,24 @@ pub const OPENAPI_JSON: &str = r##"{
           "username": { "type": "string" },
           "email": { "type": "string" },
           "locale": { "type": "string", "enum": ["zh", "en"] }
+        }
+      },
+      "SshKey": {
+        "type": "object",
+        "required": ["id", "title", "public_key", "created_at"],
+        "properties": {
+          "id": { "type": "integer" },
+          "title": { "type": "string" },
+          "public_key": { "type": "string", "description": "OpenSSH authorized_keys line" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AddSshKeyRequest": {
+        "type": "object",
+        "required": ["public_key"],
+        "properties": {
+          "title": { "type": "string" },
+          "public_key": { "type": "string", "description": "OpenSSH public key (e.g. ssh-ed25519 AAAA...)" }
         }
       },
       "CreateRepoRequest": {
