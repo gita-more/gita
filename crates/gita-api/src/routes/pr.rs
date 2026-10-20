@@ -231,10 +231,27 @@ async fn merge_pr(
         )));
     }
 
+    // Resolve merger identity (name + email) for the merge commit author.
+    // Without an explicit identity, `git commit-tree` falls back to whatever
+    // identity is in the surrounding environment's git config, which on a
+    // fresh runner container may be unset and cause the merge to fail.
+    let author_email = match state.db.get_user_by_id(user.id).await? {
+        Some(u) => u.email,
+        None => format!("{}@users.noreply.gita.local", user.username),
+    };
+    let author_name = user.username.clone();
+
     // Perform the merge (fast-forward or merge commit).
     state
         .git
-        .merge_branch(&owner, &repo, &pr.target_branch, &pr.head_sha)
+        .merge_branch(
+            &owner,
+            &repo,
+            &pr.target_branch,
+            &pr.head_sha,
+            &author_name,
+            &author_email,
+        )
         .map_err(ApiError::from)?;
 
     let merged_at = chrono::Utc::now();

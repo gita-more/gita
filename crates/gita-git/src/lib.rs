@@ -938,6 +938,8 @@ impl GitManager {
         name: &str,
         target_branch: &str,
         head_sha: &str,
+        author_name: &str,
+        author_email: &str,
     ) -> Result<()> {
         let repo = self.open(owner, name)?;
         let full_target = format!("refs/heads/{target_branch}");
@@ -1009,6 +1011,7 @@ impl GitManager {
         }
 
         let commit_tree = git_cmd()
+            .args(["-c", &format!("user.name={author_name}"), "-c", &format!("user.email={author_email}")])
             .args(["--git-dir"])
             .arg(&path)
             .args([
@@ -1480,7 +1483,7 @@ mod tests {
         assert!(mgr.is_ancestor("alice", "ff", &main_before, &feature_sha).unwrap());
 
         // Merge should advance main to feature sha.
-        mgr.merge_branch("alice", "ff", "main", &feature_sha).unwrap();
+        mgr.merge_branch("alice", "ff", "main", &feature_sha, "Test", "test@example.com").unwrap();
         let main_after = mgr.head_sha("alice", "ff", "main").unwrap();
         assert_eq!(main_after, feature_sha);
 
@@ -1509,7 +1512,7 @@ mod tests {
         assert!(conflicts.is_empty(), "expected no conflict, got {conflicts:?}");
 
         // Merge should create a merge commit (not fast-forward).
-        mgr.merge_branch("alice", "merge", "main", &feature_sha).unwrap();
+        mgr.merge_branch("alice", "merge", "main", &feature_sha, "Test", "test@example.com").unwrap();
         let main_after = mgr.head_sha("alice", "merge", "main").unwrap();
         assert_ne!(main_after, feature_sha, "merge commit should not equal feature head");
         assert_ne!(main_after, main_diverged, "main should advance");
@@ -1550,7 +1553,7 @@ mod tests {
         );
 
         // merge_branch must fail with a conflict error and leave main untouched.
-        let err = mgr.merge_branch("alice", "conflict", "main", &feature_sha).unwrap_err();
+        let err = mgr.merge_branch("alice", "conflict", "main", &feature_sha, "Test", "test@example.com").unwrap_err();
         assert!(err.to_string().contains("merge conflict"), "got: {err}");
         let main_after = mgr.head_sha("alice", "conflict", "main").unwrap();
         assert_eq!(main_after, main_sha, "main must not change on conflict");
