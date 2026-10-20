@@ -14,6 +14,9 @@ change between releases.
 - **Smart HTTP Git protocol** — clone / push / pull via `git http-backend`,
   with per-repository permissions (public anonymous-read, private owner-only,
   push requires the owner).
+- **Git over SSH** — embedded SSH server (Ed25519 host key), clone / push via
+  `git@host:owner/repo.git`, public-key authentication backed by the
+  `ssh_keys` table.
 - **User accounts & auth** — register / login, JWT sessions, personal access
   tokens (PAT), Argon2 password hashing.
 - **REST API** — repositories, file tree, commits, branches, pull requests
@@ -81,6 +84,10 @@ Configuration is TOML:
 | `server.data_dir` | `data` | Repositories and database location |
 | `server.database_url` | `postgres://gita:gita@localhost:5432/gita` | PostgreSQL connection URL |
 | `server.jwt_secret` | `dev-secret-change-me` | **Change in production!** |
+| `server.ssh.enabled` | `false` | Enable the embedded SSH server (Git over SSH) |
+| `server.ssh.host` | `127.0.0.1` | SSH bind address |
+| `server.ssh.port` | `2222` | SSH port |
+| `server.ssh.host_key` | `data/ssh_host_ed25519_key` | Path to the OpenSSH host private key (auto-generated if missing) |
 
 **Security:** the default `jwt_secret` is a well-known development value.
 Change it before exposing Gita to a network.
@@ -125,6 +132,12 @@ Notes:
 - The app listens on port **3000** inside the container; the host port is
   mapped via `GITA_PORT` in `.env` (default `3100`) to avoid conflicts.
   Open <http://127.0.0.1:3100>.
+- **Git over SSH:** the container runs an embedded SSH server when
+  `GITA_SSH_ENABLED=true` (see `.env.example`). SSH is disabled by default and
+  the `2222` host port mapping is commented out in `docker-compose.yml`; to
+  use it, set `GITA_SSH_ENABLED=true` in `.env`, uncomment the `2222` port
+  mapping, then `git clone ssh://git@<host>:<GITA_SSH_PORT>/owner/repo.git`
+  (register a public key under **Settings → SSH keys** in the web UI first).
 - The bundled `postgres` service is the default. Override `DATABASE_URL` in
   `.env` to point at an external Postgres (for managed DBs or multi-node
   setups).
