@@ -25,6 +25,19 @@ pub struct GitManager {
     pub root: PathBuf,
 }
 
+/// A blob's raw bytes plus the metadata needed to serve them verbatim.
+#[derive(Debug, Clone)]
+pub struct FileBlob {
+    /// The path as requested by the caller (not normalised).
+    pub path: String,
+    /// Raw, undecoded blob contents. Never lossily converted.
+    pub data: Vec<u8>,
+    /// Blob object id, as hex.
+    pub sha: String,
+    /// Blob length in bytes.
+    pub size: u64,
+}
+
 impl GitManager {
     /// Create a new manager rooted at `root`.
     pub fn new(root: PathBuf) -> Self {
@@ -515,15 +528,10 @@ impl GitManager {
     /// Resolve a branch name (or HEAD) to a commit SHA.
     pub fn resolve_branch(&self, owner: &str, name: &str, branch: &str) -> Result<String> {
         let repo = self.open(owner, name)?;
-        let full_name = if branch == "HEAD" || branch.contains("refs/") {
-            branch.to_string()
-        } else {
-            format!("refs/heads/{branch}")
-        };
-        let reference = repo
-            .find_reference(&full_name)
-            .with_context(|| format!("find reference {full_name}"))?;
-        Ok(reference.id().to_string())
+        // Peel rather than calling `id()` directly: `id()` panics on a symbolic
+        // reference such as HEAD.
+        let id = resolve_reference_id(&repo, branch)?;
+        Ok(id.to_string())
     }
 
     /// The default branch (HEAD symbolic ref) of a repository.
@@ -623,6 +631,11 @@ impl GitManager {
             Ok(e) => e,
             Err(_) => return Ok(None),
         };
+        // A directory resolves to a tree entry; there is no text content to
+        // return for it, so treat it as "not a file".
+        if !entry.mode().is_blob() {
+            return Ok(None);
+        }
         let object = entry.object()?.into_blob();
         let content = String::from_utf8_lossy(&object.data).to_string();
         Ok(Some(FileContent {
@@ -630,6 +643,60 @@ impl GitManager {
             content,
             sha: entry.oid().to_string(),
         }))
+    }
+
+    /// Read a file's raw bytes at a given ref and path.
+    ///
+    /// Unlike [`GitManager::read_file`], this never decodes the blob, so it is
+    /// lossless for binary content (images, fonts, wasm). Use it whenever the
+    /// bytes are re-emitted rather than displayed; `read_file` remains the
+    /// right choice for rendering source text, where lossy UTF-8 is a
+    /// tolerable (and currently relied-upon) simplification.
+    pub fn read_file_bytes(
+        &self,
+        owner: &str,
+        name: &str,
+        reference: &str,
+        path: &str,
+    ) -> Result<Option<FileBlob>> {
+        let repo = self.open(owner, name)?;
+        let Some(id) = resolve_reference_id_opt(&repo, reference)? else {
+            return Ok(None);
+        };
+        let commit = repo.find_commit(id)?;
+        let tree = commit.tree()?;
+        let entry = match find_entry_by_path(&tree, path) {
+            Ok(e) => e,
+            Err(_) => return Ok(None),
+        };
+        // Directories and submodules are not servable file content.
+        if !entry.mode().is_blob() {
+            return Ok(None);
+        }
+        let object = entry.object()?.into_blob();
+        // `object` borrows from the repository, so copy the bytes out while it
+        // is still in scope rather than trying to move them.
+        let data = object.data.to_vec();
+        Ok(Some(FileBlob {
+            path: path.to_string(),
+            size: data.len() as u64,
+            data,
+            sha: entry.oid().to_string(),
+        }))
+    }
+
+    /// Whether `reference` resolves to an existing commit in the repository.
+    pub fn ref_exists(&self, owner: &str, name: &str, reference: &str) -> bool {
+        let Ok(repo) = self.open(owner, name) else {
+            return false;
+        };
+        let Ok(Some(id)) = resolve_reference_id_opt(&repo, reference) else {
+            return false;
+        };
+        // Bind the result before returning: `find_commit` yields a value that
+        // borrows `repo`, and a trailing expression would drop it too late.
+        let exists = repo.find_commit(id).is_ok();
+        exists
     }
 
     /// List recent commits of a repository, newest first.
@@ -1110,6 +1177,21 @@ fn classify_reference(reference: &str) -> RefSpec<'_> {
     })
 }
 
+/// Resolve a ref name to the object id it ultimately points at.
+///
+/// Symbolic refs (`HEAD`, or a symbolic tag) must be *peeled*: asking gix for
+/// `id()` on one panics with "BUG: tries to obtain object id from symbolic
+/// target". Callers immediately run `find_commit` on the result, which peels
+/// anyway, so peeling here changes nothing for them and removes the panic.
+fn resolve_ref_id(repo: &Repository, full: &str) -> Option<gix::ObjectId> {
+    let mut reference = repo.find_reference(full).ok()?;
+    match reference.peel_to_id() {
+        Ok(id) => Some(id.detach()),
+        // A ref we found but cannot peel is not a usable target.
+        Err(_) => None,
+    }
+}
+
 fn resolve_reference_id(repo: &Repository, reference: &str) -> Result<gix::ObjectId> {
     match classify_reference(reference) {
         RefSpec::ObjectId(sha) => {
@@ -1117,10 +1199,7 @@ fn resolve_reference_id(repo: &Repository, reference: &str) -> Result<gix::Objec
                 .map_err(|e| anyhow!("invalid sha {sha}: {e}"))
         }
         RefSpec::Ref(full) => {
-            let reference = repo
-                .find_reference(&full)
-                .with_context(|| format!("find reference {full}"))?;
-            Ok(reference.id().detach())
+            resolve_ref_id(repo, &full).with_context(|| format!("find reference {full}"))
         }
     }
 }
@@ -1135,10 +1214,7 @@ fn resolve_reference_id_opt(repo: &Repository, reference: &str) -> Result<Option
             Ok(id) => Ok(Some(id)),
             Err(_) => Ok(None),
         },
-        RefSpec::Ref(full) => match repo.find_reference(&full) {
-            Ok(reference) => Ok(Some(reference.id().detach())),
-            Err(_) => Ok(None),
-        },
+        RefSpec::Ref(full) => Ok(resolve_ref_id(repo, &full)),
     }
 }
 
@@ -1568,6 +1644,146 @@ mod tests {
         assert!(mgr.list_tree("alice", "deep", "main", "README.md").unwrap().is_empty());
         // A path that does not exist yields an empty listing.
         assert!(mgr.list_tree("alice", "deep", "main", "nope").unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A real 1x1 PNG. Chosen because it contains bytes that are invalid
+    /// UTF-8, so any lossy decode mangles it visibly.
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x26, 0x08, 0x02, 0x00, 0x00, 0x00, 0x39, 0x1D, 0x09,
+        0x7C, 0x11, 0xFF, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01,
+        0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+        0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    #[tokio::test]
+    async fn read_file_bytes_roundtrips_binary_content() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let path = mgr.create_repo("alice", "bin", "main").await.unwrap();
+        push_initial_commit(&mgr, "alice", "bin", &path);
+        push_branch_bytes(
+            &mgr,
+            "alice",
+            "bin",
+            "main",
+            &[
+                ("assets/logo.png", TINY_PNG),
+                ("index.html", b"<h1>hi</h1>\n"),
+            ],
+            "add binary asset",
+        );
+
+        let blob = mgr
+            .read_file_bytes("alice", "bin", "main", "assets/logo.png")
+            .unwrap()
+            .expect("png should be found");
+
+        // Byte-exact: this is the guarantee a lossless read exists to provide.
+        assert_eq!(
+            blob.data, TINY_PNG,
+            "binary content must round-trip exactly"
+        );
+        assert_eq!(blob.size as usize, TINY_PNG.len());
+        assert_eq!(blob.size, blob.data.len() as u64);
+        assert_eq!(blob.path, "assets/logo.png");
+        assert_eq!(blob.sha.len(), 40, "blob sha should be a full hex id");
+
+        // The lossy text path mangles it, which is exactly why this method
+        // exists. Assert the difference rather than just trusting it.
+        let lossy = mgr
+            .read_file("alice", "bin", "main", "assets/logo.png")
+            .unwrap()
+            .expect("read_file still returns the blob");
+        assert_ne!(
+            lossy.content.as_bytes(),
+            TINY_PNG,
+            "read_file is lossy by design; read_file_bytes must not be"
+        );
+
+        // Text files come through unchanged on both paths.
+        let html = mgr.read_file_bytes("alice", "bin", "main", "index.html").unwrap().unwrap();
+        assert_eq!(html.data, b"<h1>hi</h1>\n");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn read_file_bytes_returns_none_for_missing_and_directory_paths() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let path = mgr.create_repo("alice", "bytes", "main").await.unwrap();
+        push_initial_commit(&mgr, "alice", "bytes", &path);
+        push_branch_bytes(
+            &mgr,
+            "alice",
+            "bytes",
+            "main",
+            &[("docs/index.html", b"<h1>hi</h1>\n")],
+            "add docs",
+        );
+
+        // Missing file.
+        assert!(
+            mgr.read_file_bytes("alice", "bytes", "main", "nope.png")
+                .unwrap()
+                .is_none(),
+            "missing file should be None"
+        );
+        // A directory resolves to a tree entry; that is not file content and
+        // must not blow up in `into_blob`.
+        assert!(
+            mgr.read_file_bytes("alice", "bytes", "main", "docs").unwrap().is_none(),
+            "a directory path should be None, not a panic"
+        );
+        // Same for read_file, which previously would have decoded a tree.
+        assert!(
+            mgr.read_file("alice", "bytes", "main", "docs").unwrap().is_none(),
+            "read_file on a directory should be None"
+        );
+        // Missing reference.
+        assert!(
+            mgr.read_file_bytes("alice", "bytes", "no-such-branch", "docs/index.html")
+                .unwrap()
+                .is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn ref_exists_reports_branch_presence() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let path = mgr.create_repo("alice", "refs", "main").await.unwrap();
+        push_initial_commit(&mgr, "alice", "refs", &path);
+
+        assert!(mgr.ref_exists("alice", "refs", "main"));
+        assert!(mgr.ref_exists("alice", "refs", "HEAD"));
+        assert!(!mgr.ref_exists("alice", "refs", "no-such-branch"));
+        assert!(!mgr.ref_exists("alice", "refs", "refs/heads/nope"));
+        // A well-formed but absent SHA is not a commit.
+        assert!(!mgr.ref_exists("alice", "refs", &"0".repeat(40)));
+        // An unknown repository must not panic.
+        assert!(!mgr.ref_exists("alice", "no-such-repo", "main"));
+
+        // A real commit sha does exist.
+        let sha = mgr.head_sha("alice", "refs", "main").unwrap();
+        assert!(mgr.ref_exists("alice", "refs", &sha));
 
         let _ = std::fs::remove_dir_all(&root);
     }
