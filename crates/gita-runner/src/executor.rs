@@ -187,6 +187,7 @@ async fn run_job(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
+        .process_group(0)
         .spawn()
         .context("spawn sh")?;
 
@@ -290,11 +291,26 @@ async fn run_job(
         _ = kill_rx.recv() => {
             // Cancel observed — start_kill and reap.
             let _ = child.start_kill();
+            // The child is a process-group leader (process_group(0)), so
+            // kill the whole group (-pid) to make sure grandchildren (e.g.
+            // `sleep 30` spawned by a non-exec-optimizing shell) do not
+            // keep the stdout/stderr pipes open after the shell exits.
+            // Note the `--`: without it, `kill -TERM -<pid>` interprets
+            // `-<pid>` as an invalid signal number and hangs.
+            #[cfg(unix)]
+            {
+                if let Some(pid) = child.id() {
+                    let _ = Command::new("kill")
+                        .args(["-TERM", "--", &format!("-{pid}")])
+                        .status()
+                        .await;
+                }
+            }
             child.wait().await.context("wait after kill")?
         }
     };
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stdout_task).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stderr_task).await;
     // Drop our kill channel so the watcher's send() returns Err and it
     // doesn't keep polling uselessly after the run already finished.
     drop(kill_tx);
