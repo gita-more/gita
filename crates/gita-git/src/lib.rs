@@ -626,8 +626,15 @@ impl GitManager {
         let Some(id) = resolve_reference_id_opt(&repo, reference)? else {
             return Ok(Vec::new());
         };
+        // Peel the id to a commit first: a reference may legitimately point at
+        // something that is not a commit, and a bare object id may not exist in
+        // this repository at all. Both mean "no commits here" rather than an
+        // error — `rev_walk` would otherwise fail hard on a missing object.
+        let Ok(commit_id) = repo.find_commit(id).map(|c| c.id) else {
+            return Ok(Vec::new());
+        };
         let walk = repo
-            .rev_walk([id])
+            .rev_walk([commit_id])
             .sorting(gix::revision::walk::Sorting::ByCommitTime(
                 gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
             ))
@@ -1058,16 +1065,46 @@ fn git_cmd() -> std::process::Command {
     std::process::Command::new("git")
 }
 
-fn resolve_reference_id(repo: &Repository, reference: &str) -> Result<gix::ObjectId> {
-    let full = if reference == "HEAD" || reference.contains("refs/") {
+/// How a user-supplied `reference` string should be interpreted: either a
+/// literal object id (a full 40-hex SHA) or the name of a git ref.
+enum RefSpec<'a> {
+    /// A full 40-hex object id.
+    ObjectId(&'a str),
+    /// A ref name, already expanded to its fully-qualified form.
+    Ref(String),
+}
+
+/// Interpret a user-supplied `reference` as either a full 40-hex object id or
+/// a ref name.
+///
+/// Historically every caller assumed a bare name meant `refs/heads/<name>`,
+/// which meant a raw commit SHA silently resolved to `refs/heads/<sha>` and
+/// failed — so reading a file at an explicit SHA always returned `Ok(None)`.
+/// Short-circuiting full SHAs here lets callers pass whichever they have.
+fn classify_reference(reference: &str) -> RefSpec<'_> {
+    if reference.len() == 40 && reference.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return RefSpec::ObjectId(reference);
+    }
+    RefSpec::Ref(if reference == "HEAD" || reference.contains("refs/") {
         reference.to_string()
     } else {
         format!("refs/heads/{reference}")
-    };
-    let reference = repo
-        .find_reference(&full)
-        .with_context(|| format!("find reference {full}"))?;
-    Ok(reference.id().detach())
+    })
+}
+
+fn resolve_reference_id(repo: &Repository, reference: &str) -> Result<gix::ObjectId> {
+    match classify_reference(reference) {
+        RefSpec::ObjectId(sha) => {
+            gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes()))
+                .map_err(|e| anyhow!("invalid sha {sha}: {e}"))
+        }
+        RefSpec::Ref(full) => {
+            let reference = repo
+                .find_reference(&full)
+                .with_context(|| format!("find reference {full}"))?;
+            Ok(reference.id().detach())
+        }
+    }
 }
 
 /// Like [`resolve_reference_id`], but returns `Ok(None)` when the reference
@@ -1075,14 +1112,15 @@ fn resolve_reference_id(repo: &Repository, reference: &str) -> Result<gix::Objec
 /// empty repository (or a request for a not-yet-created branch) yields an
 /// empty result instead of an error/500.
 fn resolve_reference_id_opt(repo: &Repository, reference: &str) -> Result<Option<gix::ObjectId>> {
-    let full = if reference == "HEAD" || reference.contains("refs/") {
-        reference.to_string()
-    } else {
-        format!("refs/heads/{reference}")
-    };
-    match repo.find_reference(&full) {
-        Ok(reference) => Ok(Some(reference.id().detach())),
-        Err(_) => Ok(None),
+    match classify_reference(reference) {
+        RefSpec::ObjectId(sha) => match gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes())) {
+            Ok(id) => Ok(Some(id)),
+            Err(_) => Ok(None),
+        },
+        RefSpec::Ref(full) => match repo.find_reference(&full) {
+            Ok(reference) => Ok(Some(reference.id().detach())),
+            Err(_) => Ok(None),
+        },
     }
 }
 
@@ -1247,6 +1285,111 @@ mod tests {
         assert!(file.unwrap().content.contains("Hello"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reference_accepts_full_commit_sha() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let repo_path = rt.block_on(async {
+            mgr.create_repo("alice", "sha", "main").await.unwrap()
+        });
+        push_initial_commit(&mgr, "alice", "sha", &repo_path);
+
+        let sha = mgr.head_sha("alice", "sha", "main").unwrap();
+        assert_eq!(sha.len(), 40, "head_sha should be a full 40-hex id");
+
+        // A full SHA must resolve exactly like the branch name does.
+        let by_branch = mgr.list_commits("alice", "sha", "main", 10).unwrap();
+        let by_sha = mgr.list_commits("alice", "sha", &sha, 10).unwrap();
+        assert_eq!(by_branch.len(), 1);
+        assert_eq!(
+            by_sha.len(),
+            1,
+            "a full SHA should resolve; it previously fell through to refs/heads/<sha> and yielded nothing"
+        );
+        assert_eq!(by_sha[0].sha, by_branch[0].sha);
+
+        // Reading a file at the SHA works too.
+        let file = mgr.read_file("alice", "sha", &sha, "README.md").unwrap();
+        assert!(file.is_some(), "read_file should accept a full SHA");
+        assert!(file.unwrap().content.contains("Hello"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reference_rejects_malformed_sha_without_erroring() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let repo_path = rt.block_on(async {
+            mgr.create_repo("alice", "badsha", "main").await.unwrap()
+        });
+        push_initial_commit(&mgr, "alice", "badsha", &repo_path);
+
+        // 40 chars but not hex: must degrade to an empty result, not panic or error.
+        let bogus = "z".repeat(40);
+        assert!(
+            mgr.list_commits("alice", "badsha", &bogus, 10).unwrap().is_empty(),
+            "malformed sha should yield no commits"
+        );
+        assert!(
+            mgr.read_file("alice", "badsha", &bogus, "README.md").unwrap().is_none(),
+            "read_file at a malformed sha should return None"
+        );
+
+        // A well-formed SHA that simply doesn't exist in this repo.
+        let absent = "0".repeat(40);
+        assert!(mgr.list_commits("alice", "badsha", &absent, 10).unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn classify_reference_treats_only_full_hex_shas_as_object_ids() {
+        // Branch-ish names keep the refs/heads prefix.
+        assert!(matches!(
+            classify_reference("main"),
+            RefSpec::Ref(r) if r == "refs/heads/main"
+        ));
+        assert!(matches!(
+            classify_reference("feature/x"),
+            RefSpec::Ref(r) if r == "refs/heads/feature/x"
+        ));
+        assert!(matches!(
+            classify_reference("HEAD"),
+            RefSpec::Ref(r) if r == "HEAD"
+        ));
+        assert!(matches!(
+            classify_reference("refs/tags/v1"),
+            RefSpec::Ref(r) if r == "refs/tags/v1"
+        ));
+
+        // Abbreviated SHAs are NOT object ids — too short to be unambiguous.
+        assert!(matches!(
+            classify_reference("abc1234"),
+            RefSpec::Ref(r) if r == "refs/heads/abc1234"
+        ));
+        // 40 hex chars is an object id.
+        assert!(matches!(
+            classify_reference(&"a".repeat(40)),
+            RefSpec::ObjectId(_)
+        ));
+        // 40 chars with a non-hex byte is not.
+        assert!(matches!(
+            classify_reference(&format!("{}z", "a".repeat(39))),
+            RefSpec::Ref(_)
+        ));
     }
 
     #[tokio::test]
