@@ -241,4 +241,45 @@ mod tests {
         let html = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(html.contains("SPA Index"));
     }
+
+    /// An explicit route must win over the SPA `fallback_service`, no matter
+    /// the merge order. This is the mechanism Pages relies on: a repo with
+    /// Pages enabled serves its own content while everything else falls
+    /// through to the React app. Without an explicit route, axum consults the
+    /// fallback service only after the path router misses — and the fallback
+    /// rewrites *any* extensionless path to index.html, which would silently
+    /// swallow a Pages site root like `/alice/docs/`.
+    #[tokio::test]
+    async fn explicit_route_beats_spa_fallback_service() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<!DOCTYPE html><html><body>SPA Index</body></html>",
+        )
+        .unwrap();
+        let mut app = web_router(Some(dir.path().to_path_buf()));
+        app = app.route(
+            "/{owner}/{repo}/{*path}",
+            axum::routing::get(|| async { "PAGES_CONTENT" }),
+        );
+
+        // The explicit route wins for Pages-shaped paths.
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri("/alice/docs/index.html").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], b"PAGES_CONTENT");
+
+        // Non-Pages paths still reach the SPA fallback.
+        let res = app
+            .oneshot(Request::builder().uri("/groups").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("SPA Index"));
+    }
 }
