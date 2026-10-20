@@ -627,6 +627,52 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/api/repos/{owner}/{repo}/pages": {
+      "get": {
+        "tags": ["repos"],
+        "summary": "Get the Pages publishing configuration for a repository",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Pages configuration (defaults when unset)" },
+          "403": { "description": "Private repository, not the owner" }
+        }
+      },
+      "put": {
+        "tags": ["repos"],
+        "summary": "Set the Pages publishing configuration",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "branch": { "type": "string" },
+                  "path": { "type": "string", "enum": ["/", "/docs"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Pages configuration saved" },
+          "400": { "description": "Invalid branch or path" },
+          "403": { "description": "Not the owner" },
+          "404": { "description": "Repository not found" }
+        }
+      },
+      "delete": {
+        "tags": ["repos"],
+        "summary": "Disable Pages for a repository",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Pages disabled" },
+          "403": { "description": "Not the owner" }
+        }
+      }
+    },
     "/api/groups/{group}/members": {
       "get": {
         "tags": ["groups"],
