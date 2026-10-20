@@ -21,8 +21,9 @@ jobs:
           POSTGRES_DB: gita
         ports:
           # The Rust test suite connects to 127.0.0.1:55432 by default, so
-          # we map the container's 5432 to the host's 55432.
-          - 5432:55432
+          # we map the container's 5432 (where postgres listens) to the host's
+          # 55432. Format is HOST:CONTAINER.
+          - 55432:5432
         options: >-
           --health-cmd "pg_isready -h localhost -U gita -d gita"
           --health-interval 5s
@@ -44,10 +45,11 @@ jobs:
       - name: Wait for Postgres
         # Defensive: even with --health-cmd, the first test step may run before
         # pg_isready reports "accepting connections" on the TCP socket the test
-        # suite uses. Loop until a TCP connect + SELECT 1 succeeds.
+        # suite uses. Loop until psql can connect on the host port the test
+        # suite will use.
         run: |
           for i in $(seq 1 30); do
-            if pg_isready -h localhost -p 55432 -U gita -d gita >/dev/null 2>&1; then
+            if PGPASSWORD=gita psql -h localhost -p 55432 -U gita -d gita -c 'SELECT 1' >/dev/null 2>&1; then
               echo "Postgres is ready"
               exit 0
             fi
