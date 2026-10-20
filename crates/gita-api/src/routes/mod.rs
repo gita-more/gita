@@ -7,6 +7,7 @@ pub mod group;
 pub mod issue;
 pub mod misc;
 pub mod pages;
+pub mod pages_site;
 pub mod pipeline;
 pub mod pr;
 pub mod repo;
