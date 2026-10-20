@@ -1416,6 +1416,93 @@ impl Db {
 }
 
 // ---------------------------------------------------------------------------
+// Pages
+// ---------------------------------------------------------------------------
+
+/// GitHub-Pages-style publishing configuration for a repository.
+#[derive(Debug, Clone)]
+pub struct PagesRow {
+    pub repo_id: i64,
+    pub enabled: bool,
+    pub branch: String,
+    pub path: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl Db {
+    /// Read the Pages configuration for a repository, if any.
+    pub async fn get_pages(&self, repo_id: i64) -> Result<Option<PagesRow>> {
+        let rows = sqlx::query(
+            "SELECT repo_id, enabled, branch, path, created_at, updated_at FROM repo_pages
+             WHERE repo_id = $1",
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        Ok(Some(PagesRow {
+            repo_id: row.try_get("repo_id")?,
+            enabled: row.try_get("enabled")?,
+            branch: row.try_get("branch")?,
+            path: row.try_get("path")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        }))
+    }
+
+    /// Insert or update the Pages configuration for a repository. A repository
+    /// has at most one Pages site, so the second PUT updates the existing row
+    /// rather than creating a duplicate.
+    pub async fn upsert_pages(
+        &self,
+        repo_id: i64,
+        enabled: bool,
+        branch: &str,
+        path: &str,
+    ) -> Result<PagesRow> {
+        let now = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "INSERT INTO repo_pages (repo_id, enabled, branch, path, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $5)
+             ON CONFLICT (repo_id) DO UPDATE
+               SET enabled = EXCLUDED.enabled,
+                   branch  = EXCLUDED.branch,
+                   path    = EXCLUDED.path,
+                   updated_at = EXCLUDED.updated_at
+             RETURNING repo_id, enabled, branch, path, created_at, updated_at",
+        )
+        .bind(repo_id)
+        .bind(enabled)
+        .bind(branch)
+        .bind(path)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(PagesRow {
+            repo_id: row.try_get("repo_id")?,
+            enabled: row.try_get("enabled")?,
+            branch: row.try_get("branch")?,
+            path: row.try_get("path")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
+    /// Remove the Pages configuration for a repository. Returns true when a
+    /// row was actually deleted.
+    pub async fn delete_pages(&self, repo_id: i64) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM repo_pages WHERE repo_id = $1")
+            .bind(repo_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Stars
 // ---------------------------------------------------------------------------
 
@@ -2665,6 +2752,7 @@ mod tests {
             "webhooks",
             "password_reset_tokens",
             "ssh_keys",
+            "repo_pages",
         ];
         for table in expected {
             let row: (i64,) = sqlx::query_as(&format!(
@@ -2827,6 +2915,75 @@ mod tests {
         assert_eq!(finished.status, "success");
         assert!(finished.finished_at.is_some());
         assert!(finished.claimed_until.is_none());
+
+        drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
+    async fn pages_crud_roundtrip() {
+        let db = fresh_db().await;
+        let user = db.create_user("pagesowner", "pages@example.com", "h").await.unwrap();
+        let repo = db
+            .create_repository(user.id, "pagesowner", "site", "desc", false, "main")
+            .await
+            .unwrap();
+
+        // Absent by default.
+        assert!(db.get_pages(repo.id).await.unwrap().is_none());
+
+        // Insert.
+        let created = db.upsert_pages(repo.id, true, "main", "/docs").await.unwrap();
+        assert!(created.enabled);
+        assert_eq!(created.branch, "main");
+        assert_eq!(created.path, "/docs");
+        assert!(!created.created_at.is_empty());
+        assert!(!created.updated_at.is_empty());
+
+        let fetched = db.get_pages(repo.id).await.unwrap().expect("row should exist");
+        assert_eq!(fetched.repo_id, repo.id);
+        assert!(fetched.enabled);
+        assert_eq!(fetched.branch, "main");
+        assert_eq!(fetched.path, "/docs");
+
+        // Upsert updates the same row rather than duplicating.
+        let updated = db.upsert_pages(repo.id, false, "gh-pages", "/").await.unwrap();
+        assert!(!updated.enabled);
+        assert_eq!(updated.branch, "gh-pages");
+        assert_eq!(updated.path, "/");
+        let all = db.get_pages(repo.id).await.unwrap().unwrap();
+        assert_eq!(all.branch, "gh-pages");
+        assert_eq!(all.path, "/");
+
+        // Delete removes the row; a second delete reports no-op.
+        assert!(db.delete_pages(repo.id).await.unwrap());
+        assert!(db.get_pages(repo.id).await.unwrap().is_none());
+        assert!(!db.delete_pages(repo.id).await.unwrap());
+
+        drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
+    async fn pages_are_deleted_with_their_repository() {
+        let db = fresh_db().await;
+        let user = db.create_user("pagescascade", "pc@example.com", "h").await.unwrap();
+        let repo = db
+            .create_repository(user.id, "pagescascade", "gone", "desc", false, "main")
+            .await
+            .unwrap();
+        db.upsert_pages(repo.id, true, "main", "/").await.unwrap();
+
+        db.delete_repository(repo.id).await.unwrap();
+
+        // The FK's ON DELETE CASCADE must have removed the pages row.
+        assert!(db.get_pages(repo.id).await.unwrap().is_none());
+        let rows: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM repo_pages WHERE repo_id = $1",
+        )
+        .bind(repo.id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(rows.0, 0);
 
         drop_test_db(&db).await;
     }
