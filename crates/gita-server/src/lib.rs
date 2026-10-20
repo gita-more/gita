@@ -252,7 +252,8 @@ impl App {
             auth.clone(),
             (*git).clone(),
             bus.clone(),
-        );
+        )
+        .with_avatar_dir(config.server.data_dir.join("avatars"));
 
         let git_http_state = GitHttpState {
             git: git.clone(),

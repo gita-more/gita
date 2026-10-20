@@ -578,6 +578,7 @@ select {
   color: #fff;
   font-size: 12px;
   font-weight: 700;
+  object-fit: cover;
 }
 
 /* 用户下拉菜单 */

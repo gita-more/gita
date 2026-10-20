@@ -4,6 +4,7 @@ use crate::auth::Auth;
 use gita_db::Db;
 use gita_events::EventBus;
 use gita_git::GitManager;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Shared state for all API handlers.
@@ -15,6 +16,8 @@ pub struct AppState {
     pub bus: EventBus,
     /// Per-IP login rate limiter. `None` means rate limiting is disabled.
     pub login_limiter: Option<crate::middleware::SharedLimiter>,
+    /// Directory where user avatar images are stored.
+    pub avatar_dir: PathBuf,
 }
 
 impl AppState {
@@ -25,12 +28,19 @@ impl AppState {
             git: Arc::new(git),
             bus,
             login_limiter: None,
+            avatar_dir: PathBuf::from("data/avatars"),
         }
     }
 
     /// Set the login rate limiter (called by `gita-server::run`).
     pub fn with_login_limiter(mut self, limiter: crate::middleware::SharedLimiter) -> Self {
         self.login_limiter = Some(limiter);
+        self
+    }
+
+    /// Set the avatar storage directory.
+    pub fn with_avatar_dir(mut self, dir: PathBuf) -> Self {
+        self.avatar_dir = dir;
         self
     }
 }

@@ -1226,6 +1226,57 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn avatar_upload_and_fetch() {
+    let (app, _guard) = common::test_app().await;
+    let user = register_user(&app, "avatar-user").await;
+
+    // Upload a tiny PNG (1x1 red pixel).
+    let png: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8,
+        0xFF, 0xFF, 0x3F, 0x00, 0x05, 0xFE, 0x02, 0xFE, 0xDC, 0xCC, 0x59, 0xE7, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    use tower::ServiceExt;
+    let boundary = "----gita-test-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\nContent-Type: image/png\r\n\r\n",
+    );
+    let mut body_bytes = body.into_bytes();
+    body_bytes.extend_from_slice(png);
+    body_bytes.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/api/users/me/avatar")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header("authorization", format!("Bearer {}", user.token))
+        .body(axum::body::Body::from(body_bytes))
+        .unwrap();
+    let resp = app.router().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+    assert_eq!(status, axum::http::StatusCode::OK, "upload: {v}");
+
+    // Fetch the avatar.
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::GET)
+        .uri("/api/users/avatar-user/avatar")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(bytes.len(), png.len());
+}
+
+#[tokio::test]
 async fn webhooks_crud_and_fanout() {
     let (app, _guard) = common::test_app().await;
     let user = register_user(&app, "hook-user").await;

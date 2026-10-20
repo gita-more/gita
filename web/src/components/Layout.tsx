@@ -77,7 +77,18 @@ export function Brand({ compact = false }: { compact?: boolean }) {
 }
 
 function Avatar({ username }: { username: string }) {
-  return <span className="user-avatar">{username.slice(0, 1).toUpperCase()}</span>
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return <span className="user-avatar">{username.slice(0, 1).toUpperCase()}</span>
+  }
+  return (
+    <img
+      className="user-avatar"
+      src={`/api/users/${username}/avatar`}
+      alt={username.slice(0, 1).toUpperCase()}
+      onError={() => setFailed(true)}
+    />
+  )
 }
 
 function UserMenu({ user, onClose }: { user: { username: string; email: string } | null; onClose: () => void }) {
