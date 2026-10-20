@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,6 +63,23 @@ jobs:
           tar -czf "gita-${TAG}.tar.gz" "${DIST}"
           echo "TAG=${TAG}" >> "$GITHUB_ENV"
           echo "created gita-${TAG}.tar.gz"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          IMAGE="ghcr.io/gita-more/gita"
+          docker build -f docker/Dockerfile -t "${IMAGE}:${TAG}" .
+          docker build -f docker/Dockerfile -t "${IMAGE}:latest" .
+          docker push "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:latest"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
