@@ -570,7 +570,10 @@ impl GitManager {
         }
     }
 
-    /// List files in a directory of a repository at a given ref.
+    /// List files at and below a directory of a repository at a given ref.
+    ///
+    /// The listing is recursive: `path = "docs"` returns every entry under
+    /// `docs/`, not just its immediate children.
     pub fn list_tree(
         &self,
         owner: &str,
@@ -582,9 +585,24 @@ impl GitManager {
         let Some(id) = resolve_reference_id_opt(&repo, reference)? else {
             return Ok(Vec::new());
         };
-        let tree = repo.find_commit(id)?.tree()?;
+        let commit_tree = repo.find_commit(id)?.tree()?;
         let mut entries = Vec::new();
-        collect_tree_entries(&tree, path, &mut entries)?;
+        // Scope to the requested subtree first. An empty path means the whole
+        // repository; a path that doesn't exist yields an empty listing rather
+        // than falling back to the root.
+        let scope = path.trim_matches('/');
+        let tree = if scope.is_empty() {
+            commit_tree
+        } else {
+            match commit_tree.lookup_entry_by_path(scope) {
+                Ok(Some(entry)) if entry.mode().is_tree() => {
+                    repo.find_tree(entry.oid().to_owned())?
+                }
+                // Not a directory: an empty listing, same as a missing path.
+                _ => return Ok(Vec::new()),
+            }
+        };
+        collect_tree_entries(&repo, &tree, scope, &mut entries)?;
         Ok(entries)
     }
 
@@ -1124,27 +1142,59 @@ fn resolve_reference_id_opt(repo: &Repository, reference: &str) -> Result<Option
     }
 }
 
-/// Recursively collect entries under `prefix_path`.
+/// Maximum directory nesting `collect_tree_entries` will descend. Deeply
+/// nested trees are legal in git but pathological; past this depth we emit the
+/// directory entry and stop rather than walking an unbounded structure.
+const MAX_TREE_DEPTH: usize = 32;
+
+/// Collect every entry at and below `prefix_path`.
+///
+/// The whole tree below the prefix is flattened into `out`, with each entry's
+/// `path` relative to the repository root. Note this is a *recursive* listing:
+/// `list_tree(owner, name, ref, "docs")` returns every file under `docs/`,
+/// not just `docs`'s immediate children.
 fn collect_tree_entries(
+    repo: &gix::Repository,
     tree: &gix::Tree<'_>,
     prefix_path: &str,
     out: &mut Vec<TreeEntry>,
 ) -> Result<()> {
-    let base = if prefix_path.is_empty() {
-        String::new()
-    } else {
-        format!("{prefix_path}/")
-    };
+    collect_tree_entries_at(repo, tree, prefix_path, 0, out)
+}
+
+fn collect_tree_entries_at(
+    repo: &gix::Repository,
+    tree: &gix::Tree<'_>,
+    prefix_path: &str,
+    depth: usize,
+    out: &mut Vec<TreeEntry>,
+) -> Result<()> {
     for entry in tree.iter() {
         let entry = entry?;
-        let kind = if entry.mode().is_tree() { "tree" } else { "blob" };
-        let path = format!("{}{}", base, entry.filename());
+        let is_tree = entry.mode().is_tree();
+        let path = if prefix_path.is_empty() {
+            entry.filename().to_string()
+        } else {
+            format!("{prefix_path}/{}", entry.filename())
+        };
         out.push(TreeEntry {
             path: path.clone(),
             name: entry.filename().to_string(),
-            kind: kind.to_string(),
+            kind: if is_tree { "tree" } else { "blob" }.to_string(),
             size: None,
         });
+
+        // Descend into directories, stopping at the depth cap. A tree we
+        // cannot read (or that is too deep) still appears as an entry above,
+        // just without its contents — a truncated listing beats an error.
+        if is_tree && depth < MAX_TREE_DEPTH {
+            let entry_obj = entry.object()?;
+            if entry_obj.kind == gix::object::Kind::Tree {
+                if let Ok(subtree) = repo.find_tree(entry_obj.id) {
+                    collect_tree_entries_at(repo, &subtree, &path, depth + 1, out)?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1453,6 +1503,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_tree_descends_into_subtrees() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let path = mgr.create_repo("alice", "deep", "main").await.unwrap();
+        push_initial_commit(&mgr, "alice", "deep", &path);
+        push_branch(
+            &mgr,
+            "alice",
+            "deep",
+            "main",
+            &[
+                ("docs/index.html", "<h1>hi</h1>\n"),
+                ("docs/a/b/deep.txt", "buried\n"),
+            ],
+            "add nested docs",
+        );
+
+        // The whole point: files several levels down must appear. Previously
+        // collect_tree_entries never descended, so only top-level names showed.
+        let entries = mgr.list_tree("alice", "deep", "main", "").unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(
+            paths.contains(&"docs/index.html"),
+            "expected docs/index.html in {paths:?}"
+        );
+        assert!(
+            paths.contains(&"docs/a/b/deep.txt"),
+            "expected a nested file in {paths:?}"
+        );
+
+        // The intermediate directories appear as tree entries too.
+        let doc_dirs: Vec<&TreeEntry> = entries.iter().filter(|e| e.kind == "tree").collect();
+        assert!(
+            doc_dirs.iter().any(|e| e.path == "docs"),
+            "expected a tree entry for docs"
+        );
+        assert!(
+            doc_dirs.iter().any(|e| e.path == "docs/a"),
+            "expected a tree entry for docs/a"
+        );
+
+        // Scoping to a prefix returns that subtree's contents.
+        let scoped = mgr.list_tree("alice", "deep", "main", "docs").unwrap();
+        let scoped_paths: Vec<&str> = scoped.iter().map(|e| e.path.as_str()).collect();
+        assert!(
+            scoped_paths.contains(&"docs/index.html"),
+            "scoped listing should include docs/index.html, got {scoped_paths:?}"
+        );
+        assert!(
+            scoped_paths.contains(&"docs/a/b/deep.txt"),
+            "scoped listing should include nested files, got {scoped_paths:?}"
+        );
+        assert!(
+            !scoped_paths.contains(&"README.md"),
+            "scoped listing must not leak files outside the prefix"
+        );
+
+        // A path that is a file (not a directory) yields an empty listing.
+        assert!(mgr.list_tree("alice", "deep", "main", "README.md").unwrap().is_empty());
+        // A path that does not exist yields an empty listing.
+        assert!(mgr.list_tree("alice", "deep", "main", "nope").unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn head_sha_matches_pushed_commit() {
         let root = temp_dir();
         let mgr = GitManager::new(root.clone());
@@ -1577,6 +1697,32 @@ mod tests {
         files: &[(&str, &str)],
         message: &str,
     ) {
+        let owned: Vec<(&str, &[u8])> = files.iter().map(|(k, v)| (*k, v.as_bytes())).collect();
+        push_branch_bytes(mgr, owner, name, branch, &owned, message)
+    }
+
+    /// Write `files` into the work tree at `work`, creating parent
+    /// directories so nested paths like `docs/a/b.html` work.
+    fn push_branch_files_into(work: &std::path::Path, files: &[(&str, &[u8])]) {
+        for (file, content) in files {
+            let dest = work.join(file);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&dest, content).unwrap();
+        }
+    }
+
+    /// Byte-capable sibling of `push_branch`: writes raw file contents, so
+    /// tests can commit non-UTF-8 blobs (images, fonts, wasm).
+    fn push_branch_bytes(
+        mgr: &GitManager,
+        owner: &str,
+        name: &str,
+        branch: &str,
+        files: &[(&str, &[u8])],
+        message: &str,
+    ) {
         let path = mgr.repo_path(owner, name);
         let work = path.parent().unwrap().join(format!("work-{branch}"));
         let _ = std::fs::remove_dir_all(&work);
@@ -1596,11 +1742,8 @@ mod tests {
             }
         };
         let bare_url = format!("file://{}", path.display());
-        // Clone the existing branch into a fresh worktree.
         run(&["clone", "-q", "-b", "main", &bare_url, "."]);
-        for (file, content) in files {
-            std::fs::write(work.join(file), content).unwrap();
-        }
+        push_branch_files_into(&work, files);
         if branch != "main" {
             run(&["checkout", "-q", "-b", branch]);
         }
