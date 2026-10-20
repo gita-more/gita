@@ -1110,6 +1110,85 @@ impl Db {
 }
 
 // ---------------------------------------------------------------------------
+// Password reset tokens
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct PasswordResetRow {
+    pub token: String,
+    pub user_id: i64,
+    pub expires_at: String,
+    pub used: bool,
+    pub created_at: String,
+}
+
+impl Db {
+    /// Store a new password-reset token (caller is responsible for
+    /// generating a high-entropy random string).
+    pub async fn create_password_reset_token(
+        &self,
+        user_id: i64,
+        token: &str,
+        expires_at: &str,
+    ) -> Result<()> {
+        let created_at = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO password_reset_tokens (token, user_id, expires_at, used, created_at)
+             VALUES ($1, $2, $3, FALSE, $4)",
+        )
+        .bind(token)
+        .bind(user_id)
+        .bind(expires_at)
+        .bind(&created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Look up a token; returns `None` when missing, expired, or used.
+    pub async fn get_valid_password_reset_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<PasswordResetRow>> {
+        let rows = sqlx::query(
+            "SELECT token, user_id, expires_at, used, created_at
+             FROM password_reset_tokens WHERE token = $1",
+        )
+        .bind(token)
+        .fetch_all(&self.pool)
+        .await?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let r = PasswordResetRow {
+            token: row.try_get("token")?,
+            user_id: row.try_get("user_id")?,
+            expires_at: row.try_get("expires_at")?,
+            used: row.try_get("used")?,
+            created_at: row.try_get("created_at")?,
+        };
+        // Best-effort expiry check (parsed later if RFC3339 fails we treat
+        // the token as expired).
+        let expired = DateTime::parse_from_rfc3339(&r.expires_at)
+            .map(|d| d.with_timezone(&Utc) < Utc::now())
+            .unwrap_or(true);
+        if r.used || expired {
+            return Ok(None);
+        }
+        Ok(Some(r))
+    }
+
+    /// Mark the token consumed so it can never be reused.
+    pub async fn mark_password_reset_token_used(&self, token: &str) -> Result<()> {
+        sqlx::query("UPDATE password_reset_tokens SET used = TRUE WHERE token = $1")
+            .bind(token)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Webhooks
 // ---------------------------------------------------------------------------
 
@@ -2375,6 +2454,7 @@ mod tests {
             "comments",
             "stars",
             "webhooks",
+            "password_reset_tokens",
         ];
         for table in expected {
             let row: (i64,) = sqlx::query_as(&format!(

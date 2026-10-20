@@ -1226,6 +1226,127 @@ async fn personal_access_token_revocation() {
 }
 
 #[tokio::test]
+async fn password_reset_flow() {
+    let (app, guard) = common::test_app().await;
+    let schema = guard.schema.clone();
+    let user = register_user(&app, "reset-user").await;
+
+    // Reset request by username — should succeed silently even if no user matches.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "reset-user"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Same identifier via email.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "reset-user@e2e.local"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Non-existent user — still 200 (no enumeration).
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "no-such-user"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Find the freshly-issued token directly in the DB (the production
+    // path would have e-mailed the link; here we read it back for the test).
+    let pool = common::test_db_url();
+    let token: String = {
+        let pg = sqlx::PgPool::connect(&pool).await.unwrap();
+        let row: (String,) = sqlx::query_as(&format!(
+            "SELECT token FROM \"{schema}\".password_reset_tokens WHERE used = FALSE
+             ORDER BY created_at DESC LIMIT 1"
+        ))
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        row.0
+    };
+
+    // Confirm with a new password.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": token, "new_password": "newpass99"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "confirm: {body}");
+
+    // Old password no longer works.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/login",
+        Some(serde_json::json!({"username": "reset-user", "password": "hunter22"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+
+    // New password works.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/login",
+        Some(serde_json::json!({"username": "reset-user", "password": "newpass99"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Reusing the same token is rejected.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": token, "new_password": "another2"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+
+    // Invalid token -> 404.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": "deadbeef", "new_password": "another2"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+
+    // Short new password -> 400.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": "anything", "new_password": "12"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn avatar_upload_and_fetch() {
     let (app, _guard) = common::test_app().await;
     let user = register_user(&app, "avatar-user").await;
@@ -1283,7 +1404,7 @@ async fn webhooks_crud_and_fanout() {
     let full = common::create_repo(&app, &user.token, "hook-repo").await;
     let (owner, name) = full.split_once('/').unwrap();
     common::push_initial_commit(&app, owner, name);
-    let bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
+    let _bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
     let repository_id = {
         let (_, body) = request(
             &app,

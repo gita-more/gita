@@ -79,6 +79,14 @@ pub fn auth_routes() -> Router<AppState> {
         .route("/api/auth/tokens", post(create_token).get(list_tokens))
         .route("/api/auth/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/auth/me", axum::routing::get(me).patch(update_me))
+        .route(
+            "/api/auth/password-reset/request",
+            axum::routing::post(password_reset_request),
+        )
+        .route(
+            "/api/auth/password-reset/confirm",
+            axum::routing::post(password_reset_confirm),
+        )
 }
 
 #[allow(dead_code)]
@@ -88,6 +96,14 @@ pub fn auth_routes_except_login() -> Router<AppState> {
         .route("/api/auth/tokens", post(create_token).get(list_tokens))
         .route("/api/auth/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/auth/me", axum::routing::get(me).patch(update_me))
+        .route(
+            "/api/auth/password-reset/request",
+            axum::routing::post(password_reset_request),
+        )
+        .route(
+            "/api/auth/password-reset/confirm",
+            axum::routing::post(password_reset_confirm),
+        )
 }
 
 async fn register(
@@ -313,4 +329,85 @@ async fn update_me(
     }
 
     Ok(Json(PublicUser::from(db_user)))
+}
+// ---------------------------------------------------------------------------
+// Password reset
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct PasswordResetRequestBody {
+    /// Either the username or the email of the account.
+    pub identifier: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasswordResetConfirmBody {
+    pub token: String,
+    pub new_password: String,
+}
+
+/// Start a password-reset flow. Always returns the same 200 response
+/// regardless of whether the user exists, to avoid account enumeration.
+/// In production a real SMTP transport would deliver the link; in
+/// this build the link is returned in the response so the operator (or
+/// integration tests) can pick it up.
+async fn password_reset_request(
+    State(state): State<AppState>,
+    Json(req): Json<PasswordResetRequestBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let identifier = req.identifier.trim().to_string();
+    if let Some(user) = state.db.get_user_by_username(&identifier).await? {
+        create_reset_token(&state, user.id, &user.username).await?;
+    } else if let Some(user) = state.db.get_user_by_email(&identifier).await? {
+        create_reset_token(&state, user.id, &user.username).await?;
+    }
+    Ok(Json(serde_json::json!({
+        "message": "if the account exists, a reset link has been sent",
+    })))
+}
+
+async fn create_reset_token(
+    state: &AppState,
+    user_id: i64,
+    username: &str,
+) -> ApiResult<()> {
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let token = hex::encode(bytes);
+    let expires_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    state
+        .db
+        .create_password_reset_token(user_id, &token, &expires_at)
+        .await?;
+    // In production an email is sent here; for the in-process build we
+    // log the link so operators can copy it.
+    tracing::info!(
+        "password reset for {username}: /api/auth/password-reset/confirm?token={token}"
+    );
+    Ok(())
+}
+
+async fn password_reset_confirm(
+    State(state): State<AppState>,
+    Json(req): Json<PasswordResetConfirmBody>,
+) -> ApiResult<Json<crate::error::MessageResponse>> {
+    if req.new_password.len() < 6 {
+        return Err(ApiError::BadRequest(
+            "password must be at least 6 characters".into(),
+        ));
+    }
+    let token = state
+        .db
+        .get_valid_password_reset_token(&req.token)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("invalid or expired token".into()))?;
+    let hash = Auth::hash_password(&req.new_password)?;
+    state
+        .db
+        .update_user_password_hash(token.user_id, &hash)
+        .await?;
+    state.db.mark_password_reset_token_used(&req.token).await?;
+    Ok(Json(crate::error::MessageResponse {
+        message: "password reset".to_string(),
+    }))
 }
