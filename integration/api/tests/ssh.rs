@@ -100,13 +100,21 @@ async fn ssh_clone_and_push_public_repo() {
     assert!(add.status.success());
     let commit = Command::new("git")
         .current_dir(&work)
-        .args(["commit", "-m", "add readme"])
+        .args([
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "add readme",
+        ])
         .output()
         .unwrap();
     assert!(commit.status.success(), "commit: {:?}", commit);
     let push = Command::new("git")
         .current_dir(&work)
-        .args(["push", "origin", "HEAD"])
+        .args(["push", "origin", "HEAD:main"])
         .env(
             "GIT_SSH_COMMAND",
             format!(
@@ -307,13 +315,21 @@ async fn ssh_non_owner_cannot_push() {
     assert!(add.status.success());
     let commit = Command::new("git")
         .current_dir(&bob_work)
-        .args(["commit", "-m", "evil"])
+        .args([
+            "-c",
+            "user.name=Bob Hacker",
+            "-c",
+            "user.email=bob@example.com",
+            "commit",
+            "-m",
+            "evil",
+        ])
         .output()
         .unwrap();
     assert!(commit.status.success());
     let push = Command::new("git")
         .current_dir(&bob_work)
-        .args(["push", "origin", "HEAD"])
+        .args(["push", "origin", "HEAD:main"])
         .env(
             "GIT_SSH_COMMAND",
             format!(
