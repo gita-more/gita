@@ -1306,6 +1306,39 @@ impl Db {
             .await?;
         Ok(())
     }
+
+    /// Delete a user's spent or expired reset tokens.
+    ///
+    /// Called when a new token is issued. Tokens that have already been
+    /// used, or whose expiry has passed, can never be redeemed again — so
+    /// removing them keeps the table from growing without bound. Tokens
+    /// that are still valid are left alone: issuing a second link must not
+    /// silently invalidate the first one.
+    ///
+    /// `now` is the current time in RFC3339, the same format the `expires_at`
+    /// column stores.
+    ///
+    /// Note: the migration comment for this table still says the rows are
+    /// "garbage-collected at use time" after 24 hours, but the tokens are
+    /// issued with a one-hour expiry and this method is the cleanup that
+    /// actually runs. The migration file cannot be edited to correct the
+    /// comment — sqlx validates the checksum of migrations it has already
+    /// applied — so the accurate description lives here.
+    pub async fn purge_stale_password_reset_tokens(
+        &self,
+        user_id: i64,
+        now: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM password_reset_tokens
+             WHERE user_id = $1 AND (used = TRUE OR expires_at <= $2)",
+        )
+        .bind(user_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2109,6 +2142,27 @@ impl Db {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.try_get("id").unwrap_or(0))
+    }
+
+    /// Attach the event that triggered a pipeline run.
+    ///
+    /// The run and its triggering event are created in that order: the
+    /// event's payload carries the run id, so the run row has to exist
+    /// first, and the run's `trigger_event_id` can only be filled in once
+    /// the event row does. Returns the number of rows updated.
+    pub async fn set_pipeline_run_trigger_event(
+        &self,
+        run_id: i64,
+        event_id: i64,
+    ) -> Result<u64> {
+        let res = sqlx::query(
+            "UPDATE pipeline_runs SET trigger_event_id = $2 WHERE id = $1",
+        )
+        .bind(run_id)
+        .bind(event_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
     }
 
     pub async fn list_pipeline_runs(

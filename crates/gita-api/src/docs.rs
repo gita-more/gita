@@ -1062,7 +1062,7 @@ pub const OPENAPI_JSON: &str = r##"{
       "post": {
         "tags": ["auth"],
         "summary": "Request a password-reset link",
-        "description": "Always returns 200, whether or not the account exists, so the endpoint cannot be used to enumerate accounts.",
+        "description": "Always returns 200, whether or not the account exists, so the endpoint cannot be used to enumerate accounts. When the server runs with `allow_insecure_password_reset` enabled, the response carries the token in a `reset_token` field; otherwise that field is absent.",
         "requestBody": {
           "required": true,
           "content": {

@@ -376,43 +376,72 @@ pub struct PasswordResetConfirmBody {
 
 /// Start a password-reset flow. Always returns the same 200 response
 /// regardless of whether the user exists, to avoid account enumeration.
-/// In production a real SMTP transport would deliver the link; in
-/// this build the link is returned in the response so the operator (or
-/// integration tests) can pick it up.
+///
+/// The reset token has to reach the user somehow. A deployment with a mail
+/// transport delivers it by mail; one without has no way to do so, so
+/// `server.allow_insecure_password_reset` puts the token in the response
+/// body instead. That switch is off by default: the response is uniform
+/// for existing and non-existent accounts, so returning the token would
+/// let an anonymous caller enumerate accounts *and* take them over.
 async fn password_reset_request(
     State(state): State<AppState>,
     Json(req): Json<PasswordResetRequestBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let identifier = req.identifier.trim().to_string();
+    let mut reset_token: Option<String> = None;
     if let Some(user) = state.db.get_user_by_username(&identifier).await? {
-        create_reset_token(&state, user.id, &user.username).await?;
+        reset_token = Some(create_reset_token(&state, user.id, &user.username).await?);
     } else if let Some(user) = state.db.get_user_by_email(&identifier).await? {
-        create_reset_token(&state, user.id, &user.username).await?;
+        reset_token = Some(create_reset_token(&state, user.id, &user.username).await?);
     }
-    Ok(Json(serde_json::json!({
+    let mut body = serde_json::json!({
         "message": "if the account exists, a reset link has been sent",
-    })))
+    });
+    // The key is absent — not null — when the switch is off, so that its
+    // presence cannot be used to detect an existing account.
+    if state.allow_insecure_password_reset {
+        if let Some(token) = reset_token {
+            body["reset_token"] = serde_json::Value::String(token);
+        }
+    }
+    Ok(Json(body))
 }
 
+/// Issue a reset token and return it.
+///
+/// The token is a 32-byte random value, hex-encoded — 64 hex characters of
+/// entropy, so it cannot be guessed.
 async fn create_reset_token(
     state: &AppState,
     user_id: i64,
     username: &str,
-) -> ApiResult<()> {
+) -> ApiResult<String> {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     let token = hex::encode(bytes);
-    let expires_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let now = chrono::Utc::now();
+    let expires_at = (now + chrono::Duration::hours(1)).to_rfc3339();
+    // Tokens that were already used or have expired can never be redeemed;
+    // drop them now so the table does not grow without bound. Tokens that
+    // are still valid survive — requesting a second link must not silently
+    // invalidate the first one.
+    state
+        .db
+        .purge_stale_password_reset_tokens(user_id, &now.to_rfc3339())
+        .await?;
     state
         .db
         .create_password_reset_token(user_id, &token, &expires_at)
         .await?;
-    // In production an email is sent here; for the in-process build we
-    // log the link so operators can copy it.
+    // No mail transport is wired up, so the token is only reachable through
+    // the server log. The hint shows the exact invocation the endpoint
+    // expects — the confirm endpoint takes a JSON body, it is not a GET
+    // with a query parameter.
     tracing::info!(
-        "password reset for {username}: /api/auth/password-reset/confirm?token={token}"
+        "password reset for {username}: POST /api/auth/password-reset/confirm \
+         with body {{\"token\":\"{token}\",\"new_password\":\"<new password>\"}}"
     );
-    Ok(())
+    Ok(token)
 }
 
 async fn password_reset_confirm(
