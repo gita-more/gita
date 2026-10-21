@@ -681,8 +681,13 @@ pub const OPENAPI_JSON: &str = r##"{
       "get": {
         "tags": ["groups"],
         "summary": "List group members",
+        "description": "Only the group owner or an existing member may read the membership list.",
         "security": [{ "bearerAuth": [] }],
-        "responses": { "200": { "description": "Member list" } }
+        "responses": {
+          "200": { "description": "Member list" },
+          "401": { "description": "Authentication required" },
+          "403": { "description": "Not the group owner or a member" }
+        }
       },
       "post": {
         "tags": ["groups"],
@@ -696,7 +701,7 @@ pub const OPENAPI_JSON: &str = r##"{
                 "type": "object",
                 "properties": {
                   "username": { "type": "string" },
-                  "role": { "type": "string", "enum": ["owner", "maintainer", "developer", "member", "guest"] }
+                  "role": { "type": "string", "enum": ["maintainer", "developer", "member", "guest"] }
                 }
               }
             }
@@ -704,6 +709,7 @@ pub const OPENAPI_JSON: &str = r##"{
         },
         "responses": {
           "200": { "description": "Member added" },
+          "400": { "description": "Unknown role — 'owner' is reserved for the group creator" },
           "403": { "description": "Not the group owner" }
         }
       }
@@ -806,7 +812,8 @@ pub const OPENAPI_JSON: &str = r##"{
       "get": {
         "tags": ["groups"],
         "summary": "Get a group and its repositories",
-        "security": [{ "bearerAuth": [] }],
+        "description": "Readable without authentication, but only public repositories are listed to an anonymous caller.",
+        "security": [{}, { "bearerAuth": [] }],
         "responses": {
           "200": { "description": "Group detail" },
           "404": { "description": "Group not found" }

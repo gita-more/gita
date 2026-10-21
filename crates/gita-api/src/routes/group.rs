@@ -2,7 +2,7 @@
 //! and create a repository inside a group.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::AuthUserExtractor;
+use crate::extract::{AuthUserExtractor, OptionalAuthUser};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::get;
@@ -110,6 +110,7 @@ async fn list_groups(
 
 async fn get_group(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path(group): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let g = state
@@ -120,18 +121,23 @@ async fn get_group(
     let repos = state.db.list_group_repositories(g.id).await?;
     Ok(Json(serde_json::json!({
         "group": GroupResponse::from(g),
+        // A group may own private repositories; do not disclose them to a
+        // caller who cannot read them.
         "repos": repos
             .into_iter()
-            .map(|r| serde_json::json!({
-                "id": r.id,
-                "owner": r.owner_name,
-                "name": r.name,
-                "full_name": format!("{}/{}", r.owner_name, r.name),
-                "description": r.description,
-                "is_private": r.is_private,
-                "default_branch": r.default_branch,
-                "created_at": r.created_at.to_rfc3339(),
-            }))
+            .filter(|r| crate::routes::visibility::can_read(r, user.0.as_ref()))
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "owner": r.owner_name,
+                    "name": r.name,
+                    "full_name": format!("{}/{}", r.owner_name, r.name),
+                    "description": r.description,
+                    "is_private": r.is_private,
+                    "default_branch": r.default_branch,
+                    "created_at": r.created_at.to_rfc3339(),
+                })
+            })
             .collect::<Vec<_>>(),
     })))
 }
@@ -225,6 +231,7 @@ fn require_group_owner(state: &AppState, g: &gita_core::Group, user_id: i64) -> 
 
 async fn list_group_members(
     State(state): State<AppState>,
+    user: AuthUserExtractor,
     Path(group): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let g = state
@@ -232,6 +239,19 @@ async fn list_group_members(
         .get_group_by_name(&group)
         .await?
         .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
+    // Membership is only visible to the group's owner and its own members —
+    // an unauthenticated caller could otherwise enumerate who belongs to
+    // every group in the instance.
+    let is_member = state
+        .db
+        .get_group_member_role(g.id, user.id)
+        .await?
+        .is_some();
+    if g.owner_id != user.id && !is_member {
+        return Err(ApiError::Forbidden(
+            "only the group owner or a member can list members".into(),
+        ));
+    }
     let members = state.db.list_group_members(g.id).await?;
     Ok(Json(serde_json::json!({ "members": members })))
 }
@@ -334,15 +354,19 @@ async fn update_group_member(
     })))
 }
 
-/// Restrict roles to a small known set. `owner` is reserved for the group
-/// creator; assigning it to other users is rejected here so the original
-/// owner stays unique.
+/// Restrict roles to a small known set.
+///
+/// `owner` is reserved for the group creator. The group's `owner_id` is set
+/// when the group is created and never changes, and `create_group` records
+/// the creator in `group_members` with role `owner` — so an `owner` row does
+/// exist in the database. What the API must not do is hand that role to
+/// *anyone else*: a second member with role `owner` would look like an
+/// owner while `require_group_owner` still only honours `groups.owner_id`.
 fn normalize_role(role: &str) -> ApiResult<String> {
     match role {
-        "owner" => Ok("owner".to_string()),
         "maintainer" | "developer" | "member" | "guest" => Ok(role.to_string()),
         _ => Err(ApiError::BadRequest(format!(
-            "invalid role '{role}' (allowed: owner, maintainer, developer, member, guest)"
+            "invalid role '{role}' (allowed: maintainer, developer, member, guest)"
         ))),
     }
 }
