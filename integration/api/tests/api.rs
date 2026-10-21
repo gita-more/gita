@@ -2177,10 +2177,10 @@ async fn group_detail_hides_private_repositories_from_anonymous_callers() {
 async fn login_rate_limit_returns_429() {
     let (app, _guard) = common::test_app().await;
     // Default router uses a 100/200 limiter (effectively off) — install a
-    // tighter limiter (1 req/s, burst 1) so we can demonstrate 429 with a
-    // small loop.
+    // tighter one (burst 1, refilling only once an hour) so we can
+    // demonstrate 429 without racing the clock.
     use tower::ServiceExt;
-    let limiter = gita_api::build_limiter(1, 1);
+    let limiter = gita_api::build_slow_refill_limiter(1);
     let router = app.router_with_limiter(limiter);
     // Single request consumes the only token; the next must be 429.
     let req = axum::http::Request::builder()
@@ -2232,10 +2232,11 @@ async fn login_rate_limit_returns_429() {
 async fn register_rate_limit_returns_429() {
     let (app, _guard) = common::test_app().await;
     use tower::ServiceExt;
-    // 1 req/s, burst 1 — so the second registration is refused.
+    // Burst 1, refilling only once an hour — so the second registration is
+    // refused without the test racing the clock.
     let router = app.router_with_limiters(
         gita_api::build_limiter(100, 200),
-        gita_api::build_limiter(1, 1),
+        gita_api::build_slow_refill_limiter(1),
     );
 
     let body = serde_json::json!({
@@ -2281,10 +2282,11 @@ async fn register_rate_limit_returns_429() {
 async fn login_and_register_use_separate_buckets() {
     let (app, _guard) = common::test_app().await;
     use tower::ServiceExt;
-    // A single-token login bucket and a single-token register bucket.
+    // A single-token login bucket and a single-token register bucket, both
+    // refilling only once an hour.
     let router = app.router_with_limiters(
-        gita_api::build_limiter(1, 1),
-        gita_api::build_limiter(1, 1),
+        gita_api::build_slow_refill_limiter(1),
+        gita_api::build_slow_refill_limiter(1),
     );
 
     // Burn the login bucket.
@@ -2359,7 +2361,7 @@ async fn rate_limit_key_ignores_forged_forwarded_for_hops() {
     let (app, _guard) = common::test_app().await;
     let router = app.router_with_limiters(
         gita_api::build_limiter(100, 200),
-        gita_api::build_limiter(1, 1),
+        gita_api::build_slow_refill_limiter(1),
     );
 
     // The first request carries a forged left-most hop and consumes the
