@@ -21,6 +21,12 @@ pub struct AppState {
     /// bucket with login would let one endpoint's traffic starve the other.
     /// `None` means rate limiting is disabled.
     pub register_limiter: Option<crate::middleware::SharedLimiter>,
+    /// Per-IP password-reset rate limiter, kept separate again: the reset
+    /// endpoints are unauthenticated, and a request for an existing account
+    /// writes a token row and a log line on every call, so an unthrottled
+    /// endpoint lets a script grow the table and the log at request rate.
+    /// `None` means rate limiting is disabled.
+    pub password_reset_limiter: Option<crate::middleware::SharedLimiter>,
     /// Directory where user avatar images are stored.
     pub avatar_dir: PathBuf,
     /// Return the password-reset token in the API response.
@@ -42,6 +48,7 @@ impl AppState {
             bus,
             login_limiter: None,
             register_limiter: None,
+            password_reset_limiter: None,
             avatar_dir: PathBuf::from("data/avatars"),
             allow_insecure_password_reset: false,
         }
@@ -56,6 +63,15 @@ impl AppState {
     /// Set the registration rate limiter (called by `gita-server::run`).
     pub fn with_register_limiter(mut self, limiter: crate::middleware::SharedLimiter) -> Self {
         self.register_limiter = Some(limiter);
+        self
+    }
+
+    /// Set the password-reset rate limiter (called by `gita-server::run`).
+    pub fn with_password_reset_limiter(
+        mut self,
+        limiter: crate::middleware::SharedLimiter,
+    ) -> Self {
+        self.password_reset_limiter = Some(limiter);
         self
     }
 

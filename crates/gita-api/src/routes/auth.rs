@@ -385,8 +385,23 @@ pub struct PasswordResetConfirmBody {
 /// let an anonymous caller enumerate accounts *and* take them over.
 async fn password_reset_request(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    connect_info: crate::extract::OptionalConnectInfo,
     Json(req): Json<PasswordResetRequestBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    // Per-IP rate limiting. The endpoint is unauthenticated, and every
+    // request for an existing account writes a token row and a log line —
+    // an unthrottled endpoint would let a script grow both at request rate.
+    // The bucket is separate from login and registration so that reset
+    // traffic cannot starve them (or the reverse).
+    if let Some(limiter) = state.password_reset_limiter.as_ref() {
+        let key = crate::middleware::client_ip(&headers, connect_info.0);
+        if limiter.check_key(&key).is_err() {
+            return Err(ApiError::RateLimited(
+                "too many password reset attempts; try again later".into(),
+            ));
+        }
+    }
     let identifier = req.identifier.trim().to_string();
     let mut reset_token: Option<String> = None;
     if let Some(user) = state.db.get_user_by_username(&identifier).await? {
@@ -446,8 +461,21 @@ async fn create_reset_token(
 
 async fn password_reset_confirm(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    connect_info: crate::extract::OptionalConnectInfo,
     Json(req): Json<PasswordResetConfirmBody>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
+    // Same bucket as the request endpoint. Confirming a valid token runs an
+    // Argon2 hash, which is deliberately expensive — it must not be
+    // reachable at request rate.
+    if let Some(limiter) = state.password_reset_limiter.as_ref() {
+        let key = crate::middleware::client_ip(&headers, connect_info.0);
+        if limiter.check_key(&key).is_err() {
+            return Err(ApiError::RateLimited(
+                "too many password reset attempts; try again later".into(),
+            ));
+        }
+    }
     if req.new_password.len() < 6 {
         return Err(ApiError::BadRequest(
             "password must be at least 6 characters".into(),

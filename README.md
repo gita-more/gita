@@ -232,6 +232,10 @@ operator can complete the flow by hand. **Leave it off in production**: the
 response is still uniform for existing and non-existent accounts, so returning
 the token lets an anonymous caller both enumerate accounts and take them over.
 
+Both endpoints are rate limited per IP, and a reset token is single-use: it is
+consumed by the same statement that validates it, so it can never be redeemed
+twice.
+
 ## Roadmap
 
 See [goal.md](goal.md) for the full product plan. Notable upcoming work:

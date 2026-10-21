@@ -150,6 +150,16 @@ fn default_pages_enabled() -> bool {
 const REGISTER_RATE_PER_SECOND: u32 = 1;
 const REGISTER_RATE_BURST: u32 = 3;
 
+/// Per-IP password-reset rate limit: one request per second, with a burst of
+/// three — the same shape as registration.
+///
+/// The reset endpoints are unauthenticated. A request for an existing
+/// account writes a token row and a log line, and confirming a valid token
+/// runs an Argon2 hash, so both are worth throttling. The burst of three
+/// lets a user who mistyped their identifier retry without waiting.
+const PASSWORD_RESET_RATE_PER_SECOND: u32 = 1;
+const PASSWORD_RESET_RATE_BURST: u32 = 3;
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -446,28 +456,35 @@ impl App {
 
     /// Build the full axum router with an explicit per-IP login limiter.
     ///
-    /// The registration limiter is the default one; use
-    /// [`App::router_with_limiters`] to control both.
+    /// The registration and password-reset limiters are the default ones;
+    /// use [`App::router_with_limiters`] to control all three.
     pub fn router_with_limiter(&self, limiter: gita_api::SharedLimiter) -> axum::Router {
         self.router_with_limiters(
             limiter,
             gita_api::build_limiter(REGISTER_RATE_PER_SECOND, REGISTER_RATE_BURST),
+            gita_api::build_limiter(
+                PASSWORD_RESET_RATE_PER_SECOND,
+                PASSWORD_RESET_RATE_BURST,
+            ),
         )
     }
 
-    /// Build the full axum router with explicit per-IP limiters for both
-    /// login and registration.
+    /// Build the full axum router with explicit per-IP limiters for login,
+    /// registration and password reset.
     ///
-    /// The two get separate buckets on purpose. Registration is the more
+    /// The three get separate buckets on purpose. Registration is the more
     /// expensive endpoint (every call runs an Argon2 hash) and it creates a
     /// new account per call, so a script could otherwise fill the users
     /// table at full request rate — while brute-forcing a *known* account
     /// was limited. Sharing one bucket would also let login traffic starve
-    /// registration (and the reverse).
+    /// registration (and the reverse). The password-reset endpoints are
+    /// unauthenticated and write a row and a log line per request for an
+    /// existing account, so they get their own bucket for the same reason.
     pub fn router_with_limiters(
         &self,
         login_limiter: gita_api::SharedLimiter,
         register_limiter: gita_api::SharedLimiter,
+        password_reset_limiter: gita_api::SharedLimiter,
     ) -> axum::Router {
         // Install the limiters into AppState so the handlers can check the
         // buckets; the rest of the API is unaffected.
@@ -475,7 +492,8 @@ impl App {
             .api_state
             .clone()
             .with_login_limiter(login_limiter)
-            .with_register_limiter(register_limiter);
+            .with_register_limiter(register_limiter)
+            .with_password_reset_limiter(password_reset_limiter);
         let api_router = gita_api::api_router(api_state.clone());
         let git_router = gita_http::router(self.git_http_state.clone());
         // Serve the built React frontend (`web/dist`) when present.

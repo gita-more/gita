@@ -1062,7 +1062,7 @@ pub const OPENAPI_JSON: &str = r##"{
       "post": {
         "tags": ["auth"],
         "summary": "Request a password-reset link",
-        "description": "Always returns 200, whether or not the account exists, so the endpoint cannot be used to enumerate accounts. When the server runs with `allow_insecure_password_reset` enabled, the response carries the token in a `reset_token` field; otherwise that field is absent.",
+        "description": "Always returns 200, whether or not the account exists, so the endpoint cannot be used to enumerate accounts. When the server runs with `allow_insecure_password_reset` enabled, the response carries the token in a `reset_token` field; otherwise that field is absent. Rate limited per IP.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1074,13 +1074,17 @@ pub const OPENAPI_JSON: &str = r##"{
             }
           }
         },
-        "responses": { "200": { "description": "If the account exists, a reset link has been sent" } }
+        "responses": {
+          "200": { "description": "If the account exists, a reset link has been sent" },
+          "429": { "description": "Rate limited" }
+        }
       }
     },
     "/api/auth/password-reset/confirm": {
       "post": {
         "tags": ["auth"],
         "summary": "Complete a password reset with a token",
+        "description": "The token is single-use: it is consumed by the same statement that validates it, so a token can never be redeemed twice. Rate limited per IP.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1097,7 +1101,9 @@ pub const OPENAPI_JSON: &str = r##"{
         },
         "responses": {
           "200": { "description": "Password reset" },
-          "400": { "description": "Invalid or expired token" }
+          "400": { "description": "The new password is too short" },
+          "404": { "description": "Invalid, expired or already-used token" },
+          "429": { "description": "Rate limited" }
         }
       }
     },

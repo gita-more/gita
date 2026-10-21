@@ -1511,6 +1511,50 @@ async fn a_reset_token_cannot_be_redeemed_twice() {
     assert_eq!(status, axum::http::StatusCode::OK);
 }
 
+/// The password-reset endpoints are rate limited, like login and
+/// registration. They are unauthenticated and each request for an
+/// existing account writes a token row and a log line, so an unthrottled
+/// endpoint lets a script grow the table and the log at request rate.
+#[tokio::test]
+async fn password_reset_rate_limit_returns_429() {
+    let (app, _guard) = common::test_app().await;
+    use tower::ServiceExt;
+    // Burst 1, refilling only once an hour — so the second request is
+    // refused without the test racing the clock.
+    let router = app.router_with_limiters(
+        gita_api::build_limiter(100, 200),
+        gita_api::build_limiter(100, 200),
+        gita_api::build_slow_refill_limiter(1),
+    );
+
+    let make_request = |router: axum::Router| async move {
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri("/api/auth/password-reset/request")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&serde_json::json!({"identifier": "someone"}))
+                    .unwrap(),
+            ))
+            .unwrap();
+        router.oneshot(req).await.unwrap().status()
+    };
+
+    let first = make_request(router.clone()).await;
+    assert_eq!(
+        first,
+        axum::http::StatusCode::OK,
+        "the first request should go through"
+    );
+
+    let second = make_request(router.clone()).await;
+    assert_eq!(
+        second,
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "the second request must be throttled"
+    );
+}
+
 #[tokio::test]
 async fn password_reset_flow() {
     let (app, guard) = common::test_app().await;
@@ -2523,6 +2567,7 @@ async fn register_rate_limit_returns_429() {
     let router = app.router_with_limiters(
         gita_api::build_limiter(100, 200),
         gita_api::build_slow_refill_limiter(1),
+        gita_api::build_limiter(100, 200),
     );
 
     let body = serde_json::json!({
@@ -2573,6 +2618,7 @@ async fn login_and_register_use_separate_buckets() {
     let router = app.router_with_limiters(
         gita_api::build_slow_refill_limiter(1),
         gita_api::build_slow_refill_limiter(1),
+        gita_api::build_limiter(100, 200),
     );
 
     // Burn the login bucket.
@@ -2648,6 +2694,7 @@ async fn rate_limit_key_ignores_forged_forwarded_for_hops() {
     let router = app.router_with_limiters(
         gita_api::build_limiter(100, 200),
         gita_api::build_slow_refill_limiter(1),
+        gita_api::build_limiter(100, 200),
     );
 
     // The first request carries a forged left-most hop and consumes the
