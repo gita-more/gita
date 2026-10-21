@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { loginViaApi, currentToken, BASE } from './helpers'
+import { loginViaApi, setUserLocale, currentToken, BASE } from './helpers'
 
 // ---------------------------------------------------------------------------
 // 侧边栏布局测试
@@ -25,6 +25,9 @@ test.describe('侧边栏布局', () => {
 
   test('仓库详情页：点击导航项后高亮跟随、内容面板切换', async ({ page }) => {
     await loginViaApi(page)
+    // 本用例断言中文标签（代码/提交/合并请求）。账号 locale 是持久化到
+    // 数据库的，之前的运行可能把它留在 en，导致这里找不到元素。
+    await setUserLocale(page, 'zh')
     await page.goto('/')
     await ensureTestRepo(page)
     // Re-navigate so the repo list re-fetches and includes the

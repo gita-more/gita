@@ -1357,6 +1357,7 @@ dependencies = [
  "gita-db",
  "gita-events",
  "gita-git",
+ "gita-web",
  "governor",
  "hex",
  "jsonwebtoken",

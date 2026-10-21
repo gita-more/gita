@@ -12,6 +12,38 @@ use std::fs;
 use std::path::PathBuf;
 use tower_http::services::ServeDir;
 
+/// Locate the built frontend's `index.html`, if a `web/dist` build is present.
+///
+/// Exposed so other routers (e.g. the Pages site router) can serve the SPA
+/// shell for URLs they match but do not own, instead of returning a final 404
+/// that would shadow the SPA fallback.
+pub fn web_dist_index() -> Option<std::path::PathBuf> {
+    find_web_dist().map(|d| d.join("index.html"))
+}
+
+/// Candidate locations for the built frontend, mirroring [`web_router`]'s
+/// lookup so both agree on where the bundle lives.
+fn find_web_dist() -> Option<PathBuf> {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from));
+    let cwd = std::env::current_dir().ok();
+
+    let candidates = [
+        manifest.join("../../web/dist"),
+        exe_dir
+            .as_ref()
+            .map(|d| d.join("web/dist"))
+            .unwrap_or_default(),
+        cwd.as_ref().map(|d| d.join("web/dist")).unwrap_or_default(),
+    ];
+
+    candidates
+        .into_iter()
+        .find(|p| p.join("index.html").is_file())
+}
+
 /// Serves static files from `web/dist` with SPA fallback. Falls back to a
 /// landing page when the frontend hasn't been built yet.
 pub fn web_router(dist_dir: Option<PathBuf>) -> Router {

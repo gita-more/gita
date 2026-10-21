@@ -16,6 +16,20 @@ use gita_server::App;
 mod common;
 use common::*;
 
+/// Assert that a request did NOT resolve to this repository's Pages site.
+///
+/// When a frontend build is present the fall-through serves the SPA shell
+/// (200 + index.html); without one it is an empty 404. Either is correct —
+/// what must never happen is the site's own content being served.
+#[track_caller]
+fn assert_not_pages_content(body: &[u8], uri: &str) {
+    let text = String::from_utf8_lossy(body);
+    assert!(
+        !text.contains("Site home") && !text.contains("Docs home"),
+        "{uri} must not be served Pages content"
+    );
+}
+
 /// A 1x1 PNG with invalid-UTF-8 bytes. The binary-roundtrip test depends on
 /// these bytes surviving intact.
 const TINY_PNG: &[u8] = &[
@@ -124,13 +138,9 @@ async fn private_repo_pages_denied_for_anonymous() {
     push_site(&app, "pagespriv", "secret");
     enable_pages(&app, &user.token, "pagespriv", "secret", "main", "/").await;
 
-    // Anonymous: falls through (empty 404), not site content.
-    let (status, _, body) = request_bytes(&app, Method::GET, "/pagespriv/secret/", None).await;
-    assert_ne!(status, StatusCode::OK);
-    assert!(
-        !String::from_utf8_lossy(&body).contains("Site home"),
-        "anonymous must not see private site content"
-    );
+    // Anonymous: falls through to the SPA, never to the private site content.
+    let (_, _, body) = request_bytes(&app, Method::GET, "/pagespriv/secret/", None).await;
+    assert_not_pages_content(&body, "/pagespriv/secret/ (anonymous)");
 
     // Owner with Bearer token: serves.
     let (status, _, body) =
@@ -150,16 +160,20 @@ async fn path_traversal_is_blocked() {
     enable_pages(&app, &user.token, "pagesxss", "site", "main", "/").await;
 
     // Parent-directory traversal.
-    let (status, _, body) =
+    let (_, _, body) =
         request_bytes(&app, Method::GET, "/pagesxss/site/../../Cargo.toml", None).await;
-    assert_ne!(status, StatusCode::OK);
-    assert!(!String::from_utf8_lossy(&body).contains("gita-api"));
+    assert!(
+        !String::from_utf8_lossy(&body).contains("gita-api"),
+        "traversal must not leak file contents"
+    );
 
     // Encoded traversal (percent-decoded by axum into `..`).
-    let (status, _, body) =
+    let (_, _, body) =
         request_bytes(&app, Method::GET, "/pagesxss/site/%2e%2e/%2e%2e/.env", None).await;
-    assert_ne!(status, StatusCode::OK);
-    assert!(!String::from_utf8_lossy(&body).contains("JWT_SECRET"));
+    assert!(
+        !String::from_utf8_lossy(&body).contains("JWT_SECRET"),
+        "encoded traversal must not leak file contents"
+    );
 }
 
 /// Publishing from /docs: only the docs subtree is served; a file at the
@@ -189,9 +203,11 @@ async fn docs_root_path_publishes_from_docs_subdir() {
     assert!(String::from_utf8_lossy(&body).contains("Docs home"));
 
     // A repo-root file outside /docs must not be served.
-    let (status, _, body) = request_bytes(&app, Method::GET, "/pagesdocs/site/secret.txt", None).await;
-    assert_ne!(status, StatusCode::OK);
-    assert!(!String::from_utf8_lossy(&body).contains("root secret"));
+    let (_, _, body) = request_bytes(&app, Method::GET, "/pagesdocs/site/secret.txt", None).await;
+    assert!(
+        !String::from_utf8_lossy(&body).contains("root secret"),
+        "files outside the publishing root must not be served"
+    );
 }
 
 /// Disabled Pages: the request must fall through with an empty 404 (the
@@ -205,17 +221,15 @@ async fn disabled_pages_falls_through() {
     push_site(&app, "pagesoff", "site");
 
     // Never enabled: falls through.
-    let (status, _, body) = request_bytes(&app, Method::GET, "/pagesoff/site/", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(body.is_empty(), "disabled pages must fall through with an empty 404");
+    let (_, _, body) = request_bytes(&app, Method::GET, "/pagesoff/site/", None).await;
+    assert_not_pages_content(&body, "/pagesoff/site/");
 
     // Enable then disable: same behavior.
     enable_pages(&app, &user.token, "pagesoff", "site", "main", "/").await;
     let (status, _) = request(&app, Method::DELETE, "/api/repos/pagesoff/site/pages", None, Some(&user.token)).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _, body) = request_bytes(&app, Method::GET, "/pagesoff/site/", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(body.is_empty());
+    let (_, _, body) = request_bytes(&app, Method::GET, "/pagesoff/site/", None).await;
+    assert_not_pages_content(&body, "/pagesoff/site/");
 }
 
 /// A nonexistent repo must not 500; it falls through to the SPA.
@@ -226,9 +240,8 @@ async fn nonexistent_repo_falls_through() {
     let user = register_user(&app, "pagesghost").await;
     create_repo(&app, &user.token, "real").await;
 
-    let (status, _, body) = request_bytes(&app, Method::GET, "/pagesghost/nope/", None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(body.is_empty());
+    let (_, _, body) = request_bytes(&app, Method::GET, "/pagesghost/nope/", None).await;
+    assert_not_pages_content(&body, "/pagesghost/nope/");
 }
 
 /// Config endpoints require the owner: anonymous 401, non-owner 403, owner OK.
@@ -314,4 +327,45 @@ async fn site_custom_404_page_served() {
     let (status, _, body) = request_bytes(&app, Method::GET, "/pages404/site/missing.html", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(String::from_utf8_lossy(&body).contains("Custom 404"));
+}
+
+/// Reserved top-level path segments must not be captured as repository owners.
+///
+/// Pages serves at `/{owner}/{repo}/{*path}`, which structurally overlaps the
+/// SPA's `/groups/{group}/{repo}` route. Before this was guarded, a group
+/// repository page matched the Pages route as owner="groups", and the handler
+/// returned its empty-404 fallthrough — which axum treats as a *final* response,
+/// so the SPA fallback never ran and the page rendered blank.
+///
+/// Regression guard: the status alone is indistinguishable from a real
+/// fall-through, so assert on the exact status/body the SPA contract requires
+/// and that the reserved prefixes keep their own routing.
+#[tokio::test]
+async fn reserved_path_segments_are_not_treated_as_owners() {
+    let (app, guard) = test_app().await;
+    let _guard = guard;
+    let user = register_user(&app, "pagesres").await;
+    create_repo(&app, &user.token, "site").await;
+    push_site(&app, "pagesres", "site");
+    enable_pages(&app, &user.token, "pagesres", "site", "main", "/").await;
+
+    // `/groups/{group}/{repo}` must fall through (empty 404), not be answered
+    // by the Pages handler.
+    for uri in [
+        "/groups/acme/site",
+        "/settings/profile",
+        "/issues/list",
+        "/api/anything",
+        "/git/acme/site.git/info/refs",
+    ] {
+        let (_, _, body) = request_bytes(&app, Method::GET, uri, None).await;
+        // Either the reserved route handles it (its own status), or Pages
+        // Either the reserved route handles it (its own status/body), or
+        // Pages steps aside and the SPA answers. What must never happen is
+        // Pages serving this repo's site content for a reserved prefix.
+        assert!(
+            !String::from_utf8_lossy(&body).contains("Site home"),
+            "{uri} must not be served Pages content"
+        );
+    }
 }

@@ -89,6 +89,14 @@ async fn serve_site_request(
     raw_path: &str,
     headers: &HeaderMap,
 ) -> Response {
+    // Reserved top-level path segments are never repository owners. Without
+    // this guard `/groups/acme/site` would be parsed as owner="groups" and
+    // swallow the SPA's group-repository routes: this route *matches*, so the
+    // empty 404 below is a final response and the SPA fallback never runs.
+    if is_reserved_path_segment(owner) {
+        return spa_fallthrough();
+    }
+
     // Load the repository and its Pages config. Any failure here means this
     // URL is not a Pages site: fall through to the SPA with an empty 404.
     let repository = match state.db.get_repository_by_name(owner, repo_name).await {
@@ -236,13 +244,44 @@ async fn serve_not_found_or_fallthrough(
     }
 }
 
-/// The empty-bodied 404 that lets the SPA render. This is the contract the
-/// whole URL scheme depends on.
+/// Hand the request back to the SPA.
+///
+/// A matched-but-not-Pages path must return the SPA shell itself: the app is
+/// mounted as a `fallback_service`, which axum only consults when *no* route
+/// matches. Since this route already matched `/groups/acme/site` (as
+/// owner="groups"), returning a final 404 here would leave the SPA fallback
+/// unreachable and the page blank. Serving index.html keeps the SPA working
+/// for exactly the URLs this router over-matches.
+///
+/// When no frontend build is present (e.g. under test), fall back to an empty
+/// 404, which is also what the contract documents.
 fn spa_fallthrough() -> Response {
+    if let Some(index) = gita_web::web_dist_index() {
+        if let Ok(html) = std::fs::read_to_string(&index) {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .body(Body::from(html))
+                .unwrap_or_default();
+        }
+    }
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .body(Body::empty())
         .unwrap_or_default()
+}
+
+/// Top-level path segments the application reserves for its own routes.
+///
+/// Pages publishes at `/{owner}/{repo}/`, which structurally overlaps the
+/// SPA's `/groups/{group}/{repo}` route and the `/api`, `/git` prefixes. Those
+/// first segments are never repository owners, so the Pages route must step
+/// aside and let the SPA (or the API) handle them.
+fn is_reserved_path_segment(segment: &str) -> bool {
+    matches!(
+        segment,
+        "api" | "git" | "groups" | "settings" | "issues" | "login" | "assets"
+    )
 }
 
 /// Resolve the caller against the Authorization header and check ownership of
@@ -399,6 +438,20 @@ mod tests {
         assert_eq!(cache_control_for("static/style.css"), "public, max-age=31536000, immutable");
         assert_eq!(cache_control_for("data.json"), "public, max-age=300");
         assert_eq!(cache_control_for("app.js"), "public, max-age=300");
+    }
+
+    #[test]
+    fn reserved_segments_are_recognized() {
+        for seg in ["api", "git", "groups", "settings", "issues", "login", "assets"] {
+            assert!(is_reserved_path_segment(seg), "{seg} should be reserved");
+        }
+        // Ordinary owner names must still be routable.
+        for seg in ["alice", "acme", "my-org", "groupies", "apis", "settingsx"] {
+            assert!(
+                !is_reserved_path_segment(seg),
+                "{seg} should not be reserved"
+            );
+        }
     }
 
     #[test]
