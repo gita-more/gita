@@ -19,6 +19,11 @@ change between releases.
   `ssh_keys` table.
 - **User accounts & auth** — register / login, JWT sessions, personal access
   tokens (PAT), Argon2 password hashing.
+- **In-repo CI** — a `.gita-ci.yml` in the repo defines pipeline stages; a push
+  enqueues a run, a runner claims jobs and executes them, with live logs (SSE)
+  and cancellation. See [docs/gita-ci-writing-guide.md](docs/gita-ci-writing-guide.md).
+- **Pages** — GitHub-style static site hosting from a repository branch,
+  served at `/<owner>/<repo>/` (see below).
 - **REST API** — repositories, file tree, commits, branches, pull requests
   (create / merge / close), issues, event stream.
 - **MCP tool discovery** — an API endpoint (`/api/mcp/tools`) exposing
@@ -88,6 +93,8 @@ Configuration is TOML:
 | `server.ssh.host` | `127.0.0.1` | SSH bind address |
 | `server.ssh.port` | `2222` | SSH port |
 | `server.ssh.host_key` | `data/ssh_host_ed25519_key` | Path to the OpenSSH host private key (auto-generated if missing) |
+| `server.pages_enabled` | `true` | Serve GitHub-Pages-style static sites at `/<owner>/<repo>/` |
+| `server.pages_url_prefix` | *(empty)* | Optional URL prefix for Pages, e.g. `/p` serves `/p/<owner>/<repo>/` |
 
 **Security:** the default `jwt_secret` is a well-known development value.
 Change it before exposing Gita to a network.
@@ -178,14 +185,37 @@ cargo test          # run all Rust tests
 cd web && npm run lint && npm run build
 ```
 
+## Pages
+
+Repository sites can be published straight from a branch — the same
+"deploy from a branch" model as GitHub Pages. No build step: the tree at the
+configured ref is served verbatim.
+
+- **Configure** — open a repository → **Pages** tab → pick a branch and a
+  publishing directory. The directory is restricted to the repository root
+  (`/`) or `/docs`, matching GitHub.
+- **Visit** — the site is served at `http://<host>/<owner>/<repo>/`
+  (add a trailing slash for the site root). Pages settings show the exact URL.
+- **Directory URLs** serve `index.html`; a missing file serves the site's own
+  `404.html` (with a 404 status) if present.
+- **Privacy** — a private repository's site requires authentication. In this
+  version that means a client sending `Authorization: Bearer <token>`; a plain
+  browser navigation falls back to the sign-in page.
+- **Serving headers** — `X-Content-Type-Options: nosniff` and a strict
+  Content-Security-Policy are applied, so sites relying on inline scripts or
+  third-party resources may not render as expected.
+
+Turn the feature off entirely with `server.pages_enabled = false`.
+
 ## Roadmap
 
 See [goal.md](goal.md) for the full product plan. Notable upcoming work:
 
-- PR conflict detection and non-fast-forward merges
 - Agent sandbox execution and issue → PR automation
 - MCP streamable HTTP transport
-- Webhooks, RBAC, multi-tenant
+- RBAC, multi-tenant, object-storage abstraction
+- Semantic (embedding-based) code search
+- Pages v2: browser-accessible private sites, configurable CSP
 
 ## License
 

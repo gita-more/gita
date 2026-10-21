@@ -28,14 +28,16 @@ data_dir = "${GITA_SERVER_DATA_DIR:-/data}"
 database_url = "${GITA_SERVER_DATABASE_URL:-postgres://gita:gita@postgres:5432/gita}"
 jwt_secret = "${jwt_secret}"
 
+# Pages static-site serving (GitHub Pages style). These belong to [server],
+# not [server.ssh]: TOML keys are scoped to the most recent table header, so
+# placing them after [server.ssh] would silently nest them under ssh.
+pages_enabled = ${GITA_SERVER_PAGES_ENABLED:-true}
+pages_url_prefix = "${GITA_SERVER_PAGES_URL_PREFIX:-}"
+
 [server.ssh]
 enabled = ${ssh_enabled}
 host = "${GITA_SERVER_SSH_HOST:-0.0.0.0}"
 port = ${GITA_SERVER_SSH_PORT:-2222}
-
-# Pages static-site serving (GitHub Pages style).
-pages_enabled = ${GITA_SERVER_PAGES_ENABLED:-true}
-pages_url_prefix = "${GITA_SERVER_PAGES_URL_PREFIX:-}"
 EOF
 
 # Optionally include a custom host key path (volume-mounted secret).

@@ -692,4 +692,34 @@ mod tests {
         );
         assert_eq!(config.server.pages_url_prefix, "");
     }
+
+    /// The Docker entrypoint generates config.toml from env vars; its Pages
+    /// keys must land under `[server]` too.
+    ///
+    /// Same TOML table-scoping trap as the example config, in a shell script
+    /// that no Rust test otherwise touches — the bug is invisible until
+    /// someone tries to turn Pages off in a container and it stays on.
+    #[test]
+    fn docker_entrypoint_generates_pages_keys_under_server() {
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docker/docker-entrypoint.sh");
+        let text = std::fs::read_to_string(&script)
+            .unwrap_or_else(|e| panic!("read {}: {e}", script.display()));
+
+        // Locate the generated [server] block and the [server.ssh] header.
+        let server_at = text.find("\n[server]\n").expect("entrypoint should emit [server]");
+        let ssh_at = text
+            .find("\n[server.ssh]\n")
+            .expect("entrypoint should emit [server.ssh]");
+        let pages_at = text
+            .find("pages_enabled =")
+            .expect("entrypoint should emit pages_enabled");
+        assert!(
+            pages_at > server_at && pages_at < ssh_at,
+            "pages_enabled is emitted at offset {pages_at}, which falls outside the \
+             [server] table ({server_at}..{ssh_at}) — TOML scopes keys to the most \
+             recent table header, so it would be read as server.ssh.pages_enabled \
+             and silently ignored"
+        );
+    }
 }

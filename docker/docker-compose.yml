@@ -46,6 +46,10 @@ services:
       - GITA_SERVER_SSH_ENABLED=${GITA_SSH_ENABLED:-false}
       - GITA_SERVER_SSH_HOST=0.0.0.0
       - GITA_SERVER_SSH_PORT=2222
+      # Pages: GitHub-style static sites at /<owner>/<repo>/. Enabled by
+      # default; set GITA_PAGES_ENABLED=false to turn the feature off.
+      - GITA_SERVER_PAGES_ENABLED=${GITA_PAGES_ENABLED:-true}
+      - GITA_SERVER_PAGES_URL_PREFIX=${GITA_PAGES_URL_PREFIX:-}
     volumes:
       # Persist repositories (database state lives in the postgres volume)
       - gita-data:/data
