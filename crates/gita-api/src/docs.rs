@@ -28,6 +28,10 @@ pub const OPENAPI_JSON: &str = r##"{
     { "name": "prs", "description": "Pull request workflow" },
     { "name": "issues", "description": "Issue tracking" },
     { "name": "events", "description": "AI-readable event stream" },
+    { "name": "groups", "description": "Groups and membership" },
+    { "name": "search", "description": "Repository and code search" },
+    { "name": "pipelines", "description": "In-repo CI pipelines, runs and job logs" },
+    { "name": "pages", "description": "Static site (Pages) publishing configuration" },
     { "name": "misc", "description": "Health and metadata" }
   ],
   "paths": {
@@ -733,6 +737,423 @@ pub const OPENAPI_JSON: &str = r##"{
           "404": { "description": "Not a member" }
         }
       }
+    },
+    "/api/auth/tokens": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "List personal access tokens",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Token list" } }
+      },
+      "post": {
+        "tags": ["auth"],
+        "summary": "Create a personal access token",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Token created" } }
+      }
+    },
+    "/api/auth/tokens/{id}": {
+      "delete": {
+        "tags": ["auth"],
+        "summary": "Revoke a personal access token",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Token revoked" },
+          "404": { "description": "Token not found" }
+        }
+      }
+    },
+    "/api/groups": {
+      "get": {
+        "tags": ["groups"],
+        "summary": "List groups",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Group list" } }
+      },
+      "post": {
+        "tags": ["groups"],
+        "summary": "Create a group",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "description": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Group created" } }
+      }
+    },
+    "/api/groups/{group}": {
+      "get": {
+        "tags": ["groups"],
+        "summary": "Get a group and its repositories",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Group detail" },
+          "404": { "description": "Group not found" }
+        }
+      }
+    },
+    "/api/groups/{group}/repos": {
+      "post": {
+        "tags": ["groups"],
+        "summary": "Create a repository owned by a group",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "description": { "type": "string" },
+                  "is_private": { "type": "boolean" },
+                  "default_branch": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Repository created" },
+          "403": { "description": "Not the group owner" }
+        }
+      }
+    },
+    "/api/issues": {
+      "get": {
+        "tags": ["issues"],
+        "summary": "List issues across repositories",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Issue list" } }
+      }
+    },
+    "/api/mcp/tools": {
+      "get": {
+        "tags": ["misc"],
+        "summary": "List the tools exposed to MCP clients",
+        "responses": { "200": { "description": "Tool list" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/file": {
+      "get": {
+        "tags": ["repos"],
+        "summary": "Read a file's content at a ref",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "File content" },
+          "404": { "description": "File not found" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/tags": {
+      "get": {
+        "tags": ["repos"],
+        "summary": "List tags",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Tag list" } }
+      },
+      "post": {
+        "tags": ["repos"],
+        "summary": "Create a tag",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "ref": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Tag created" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/prs/{number}/merge": {
+      "post": {
+        "tags": ["prs"],
+        "summary": "Merge a pull request",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Merged" },
+          "409": { "description": "Merge conflict" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/prs/{number}/close": {
+      "post": {
+        "tags": ["prs"],
+        "summary": "Close a pull request",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Closed" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/prs/{number}/diff": {
+      "get": {
+        "tags": ["prs"],
+        "summary": "Get a pull request's diff",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Unified diff" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/prs/{number}/files": {
+      "get": {
+        "tags": ["prs"],
+        "summary": "List the files a pull request changes",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Changed file list" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/issues/{number}": {
+      "get": {
+        "tags": ["issues"],
+        "summary": "Get an issue",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Issue detail" },
+          "404": { "description": "Issue not found" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/issues/{number}/close": {
+      "post": {
+        "tags": ["issues"],
+        "summary": "Close an issue",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Closed" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/pages/status": {
+      "get": {
+        "tags": ["pages"],
+        "summary": "Whether the repository has a Pages configuration",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Pages status" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/pipelines": {
+      "get": {
+        "tags": ["pipelines"],
+        "summary": "List the pipelines defined in the repository's .gita-ci.yml",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Pipeline list" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/pipelines/{path}/runs": {
+      "get": {
+        "tags": ["pipelines"],
+        "summary": "List runs of a pipeline",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Run list" } }
+      },
+      "post": {
+        "tags": ["pipelines"],
+        "summary": "Trigger a run of a pipeline",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Run enqueued" },
+          "404": { "description": "No such pipeline" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/runs/{run_id}": {
+      "get": {
+        "tags": ["pipelines"],
+        "summary": "Get a run with its jobs",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Run detail" },
+          "404": { "description": "Run not found" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/runs/{run_id}/cancel": {
+      "post": {
+        "tags": ["pipelines"],
+        "summary": "Cancel a run",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Cancelled" },
+          "404": { "description": "Run not found" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/runs/{run_id}/jobs/{job_id}/logs": {
+      "get": {
+        "tags": ["pipelines"],
+        "summary": "Get a job's captured logs",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Log lines" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/runs/{run_id}/jobs/{job_id}/logs/stream": {
+      "get": {
+        "tags": ["pipelines"],
+        "summary": "Stream a job's logs as they are produced (SSE)",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "text/event-stream" } }
+      }
+    },
+    "/api/users/me/avatar": {
+      "post": {
+        "tags": ["misc"],
+        "summary": "Upload the current user's avatar image",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": { "file": { "type": "string", "format": "binary" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Avatar uploaded" },
+          "400": { "description": "Not an image, or too large" }
+        }
+      }
+    },
+    "/api/users/{username}/avatar": {
+      "get": {
+        "tags": ["misc"],
+        "summary": "Fetch a user's avatar image",
+        "responses": {
+          "200": { "description": "Avatar image" },
+          "404": { "description": "No avatar" }
+        }
+      }
+    },
+    "/api/auth/password-reset/request": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Request a password-reset link",
+        "description": "Always returns 200, whether or not the account exists, so the endpoint cannot be used to enumerate accounts.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": { "identifier": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "If the account exists, a reset link has been sent" } }
+      }
+    },
+    "/api/auth/password-reset/confirm": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Complete a password reset with a token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "token": { "type": "string" },
+                  "new_password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Password reset" },
+          "400": { "description": "Invalid or expired token" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/branches/{branch}": {
+      "delete": {
+        "tags": ["repos"],
+        "summary": "Delete a branch",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Branch deleted" },
+          "403": { "description": "Not the owner" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/tags/{tag}": {
+      "delete": {
+        "tags": ["repos"],
+        "summary": "Delete a tag",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Tag deleted" },
+          "403": { "description": "Not the owner" }
+        }
+      }
+    },
+    "/api/repos/{owner}/{repo}/prs/{number}/comments": {
+      "get": {
+        "tags": ["prs"],
+        "summary": "List a pull request's comments",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Comment list" } }
+      },
+      "post": {
+        "tags": ["prs"],
+        "summary": "Comment on a pull request",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Comment created" } }
+      }
+    },
+    "/api/repos/{owner}/{repo}/issues/{number}/comments": {
+      "get": {
+        "tags": ["issues"],
+        "summary": "List an issue's comments",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Comment list" } }
+      },
+      "post": {
+        "tags": ["issues"],
+        "summary": "Comment on an issue",
+        "security": [{ "bearerAuth": [] }],
+        "responses": { "200": { "description": "Comment created" } }
+      }
+    },
+    "/api/comments/{id}": {
+      "delete": {
+        "tags": ["misc"],
+        "summary": "Delete a comment",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Comment deleted" },
+          "404": { "description": "Comment not found" }
+        }
+      }
     }
   },
   "components": {
@@ -1045,4 +1466,113 @@ async fn openapi_json() -> impl axum::response::IntoResponse {
 
 async fn swagger_ui() -> impl axum::response::IntoResponse {
     axum::response::Html(SWAGGER_UI_HTML)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The OpenAPI document is a hand-maintained JSON string, so a stray
+    /// comma or brace breaks the endpoint at runtime rather than at compile
+    /// time.
+    #[test]
+    fn openapi_json_is_valid() {
+        serde_json::from_str::<serde_json::Value>(OPENAPI_JSON)
+            .expect("OPENAPI_JSON should be valid JSON");
+    }
+
+    /// Every route the API registers should appear in the spec.
+    ///
+    /// The spec is maintained by hand, so it drifted: 17 of the 35 API
+    /// routes were missing, including the whole pipeline family and every
+    /// PR action. Rather than trust a checklist, this compares the spec
+    /// against the routes the server actually registers.
+    #[test]
+    fn openapi_documents_every_registered_api_route() {
+        let spec: serde_json::Value =
+            serde_json::from_str(OPENAPI_JSON).expect("OPENAPI_JSON should be valid JSON");
+        let paths = spec["paths"].as_object().expect("paths should be an object");
+
+        // Every path key in the spec, with parameter names normalised away
+        // so `{owner}` and `{group}` compare equal.
+        let documented: std::collections::HashSet<String> = paths
+            .keys()
+            .map(|p| normalize_path(p))
+            .collect();
+
+        let mut missing: Vec<String> = Vec::new();
+        for route in registered_api_routes() {
+            if !documented.contains(&normalize_path(&route)) {
+                missing.push(route);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these routes are registered but not documented in the OpenAPI spec: {missing:?}"
+        );
+    }
+
+    /// Normalise `{param}` placeholders so paths compare by shape.
+    fn normalize_path(path: &str) -> String {
+        let mut out = String::with_capacity(path.len());
+        let mut in_param = false;
+        for ch in path.chars() {
+            match ch {
+                '{' => in_param = true,
+                '}' => {
+                    in_param = false;
+                    out.push_str("{}");
+                }
+                _ if !in_param => out.push(ch),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Collect the API route paths registered across the route modules.
+    ///
+    /// The routes are built with `axum::Router`, whose path table is not
+    /// publicly enumerable, so the paths are read out of the source of each
+    /// route module. That keeps the check honest without changing how the
+    /// router is assembled.
+    fn registered_api_routes() -> Vec<String> {
+        let mut routes = Vec::new();
+        for module in [
+            include_str!("routes/auth.rs"),
+            include_str!("routes/repo.rs"),
+            include_str!("routes/pr.rs"),
+            include_str!("routes/issue.rs"),
+            include_str!("routes/comment.rs"),
+            include_str!("routes/group.rs"),
+            include_str!("routes/pipeline.rs"),
+            include_str!("routes/search.rs"),
+            include_str!("routes/avatar.rs"),
+            include_str!("routes/ssh_key.rs"),
+            include_str!("routes/pages.rs"),
+            include_str!("routes/misc.rs"),
+        ] {
+            // A route path is the first string literal following a
+            // `.route(` call. The literal is often on the next line, so
+            // scan forward from each `.route(` rather than line by line.
+            let bytes = module.as_bytes();
+            let mut idx = 0;
+            while let Some(pos) = module[idx..].find(".route(") {
+                let after = idx + pos + ".route(".len();
+                let Some(quote) = module[after..].find('"') else {
+                    break;
+                };
+                let start = after + quote + 1;
+                let Some(end) = module[start..].find('"') else {
+                    break;
+                };
+                let path = &module[start..start + end];
+                if path.starts_with("/api/") {
+                    routes.push(path.to_string());
+                }
+                idx = start + end;
+                let _ = bytes;
+            }
+        }
+        routes
+    }
 }
