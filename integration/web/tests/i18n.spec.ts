@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import {
+  currentToken,
   loginViaApi,
   setUserLocale,
   createRepo,
@@ -49,7 +50,7 @@ test.describe('i18n 切换', () => {
     await createRepo(page, name)
 
     // Create an open issue so the Issues tab has a StatusLabel to read.
-    const token = await page.evaluate(() => localStorage.getItem('gita_token'))
+    const token = await currentToken(page)
     const create = await page.request.post(`${await page.evaluate(() => location.origin)}/api/repos/${owner}/${name}/issues`, {
       headers: { Authorization: `Bearer ${token}` },
       data: { title: 'test issue for status label', body: 'body' },

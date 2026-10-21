@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { loginViaApi, BASE } from './helpers'
+import { loginViaApi, currentToken, BASE } from './helpers'
 
 // ---------------------------------------------------------------------------
 // 侧边栏布局测试
@@ -86,7 +86,7 @@ test.describe('侧边栏布局', () => {
 
 async function ensureTestRepo(page: Page) {
   // 尝试创建测试仓库（已存在会失败，忽略即可）
-  const token = await page.evaluate(() => localStorage.getItem('gita_token'))
+  const token = await currentToken(page)
   const res = await page.request.post(`${BASE}/api/repos`, {
     headers: { Authorization: `Bearer ${token}` },
     data: { name: 'e2e-demo', description: 'created by playwright test', default_branch: 'main' },

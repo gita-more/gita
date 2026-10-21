@@ -57,18 +57,41 @@ export async function loginExisting(page: Page, creds: Creds) {
 }
 
 /**
+ * Read the auth token that `injectAuth` planted in localStorage.
+ *
+ * `injectAuth` uses `page.addInitScript`, which only runs on the *next*
+ * navigation. Reading localStorage before the page has been navigated to a
+ * real http origin therefore throws SecurityError on `about:blank`. Navigating
+ * to the app root first is what applies the init script and makes localStorage
+ * readable, so do that here rather than requiring every caller to remember.
+ */
+export async function currentToken(page: Page): Promise<string | null> {
+  if (page.url() === 'about:blank' || !page.url().startsWith(BASE)) {
+    await page.goto('/')
+  }
+  return page.evaluate(() => localStorage.getItem('gita_token'))
+}
+
+/**
  * Switch the current user's saved locale on the server. Mirrors what
  * Settings.tsx does via api.updateLocale() — PATCH /api/auth/me with the
- * {locale} body. The page is reloaded afterwards so the next render pulls
- * the new locale.
+ * {locale} body.
+ *
+ * Also clears the client's cached `gita_locale`: the app reads that from
+ * localStorage *in preference to* the account value (see i18n/index.tsx
+ * initialLocale), so patching the server alone leaves a stale client-side
+ * locale in place and the reload renders the old language.
  */
 export async function setUserLocale(page: Page, locale: 'zh' | 'en') {
-  const token = await page.evaluate(() => localStorage.getItem('gita_token'))
+  const token = await currentToken(page)
   const res = await page.request.patch(`${BASE}/api/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
     data: { locale },
   })
   expect(res.ok(), `setUserLocale(${locale}) failed: ${res.status()}`).toBeTruthy()
+  await page.evaluate((l) => {
+    localStorage.setItem('gita_locale', l)
+  }, locale)
 }
 
 /**
@@ -84,7 +107,7 @@ export async function createRepo(
   name: string,
   opts: { description?: string; isPrivate?: boolean; group?: string } = {},
 ): Promise<string> {
-  const token = await page.evaluate(() => localStorage.getItem('gita_token'))
+  const token = await currentToken(page)
   const body = {
     name,
     description: opts.description ?? '',
@@ -97,8 +120,12 @@ export async function createRepo(
     data: body,
   })
   if (res.ok()) {
-    const json = (await res.json()) as { repo: { full_name: string } }
-    return json.repo.full_name
+    // POST /api/repos returns the repository object directly; `full_name` is a
+    // top-level field (not nested under a `repo` key).
+    const json = (await res.json()) as { full_name?: string; repo?: { full_name: string } }
+    const fullName = json.full_name ?? json.repo?.full_name
+    if (fullName) return fullName
+    throw new Error(`createRepo: response had no full_name: ${JSON.stringify(json)}`)
   }
   if (res.status() === 409) {
     const owner = opts.group ?? (await currentUsername(page))
@@ -113,7 +140,7 @@ export async function createRepo(
  * /api/repos and we got a 409 on retry.
  */
 async function currentUsername(page: Page): Promise<string> {
-  const token = await page.evaluate(() => localStorage.getItem('gita_token'))
+  const token = await currentToken(page)
   const res = await page.request.get(`${BASE}/api/users/me`, {
     headers: { Authorization: `Bearer ${token}` },
   })
@@ -127,7 +154,7 @@ async function currentUsername(page: Page): Promise<string> {
  * exists" and the function still returns the requested name.
  */
 export async function createGroup(page: Page, name: string, description = ''): Promise<string> {
-  const token = await page.evaluate(() => localStorage.getItem('gita_token'))
+  const token = await currentToken(page)
   const res = await page.request.post(`${BASE}/api/groups`, {
     headers: { Authorization: `Bearer ${token}` },
     data: { name, description },
