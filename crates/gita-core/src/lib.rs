@@ -235,6 +235,28 @@ pub struct Event {
     pub created_at: DateTime<Utc>,
 }
 
+impl Event {
+    /// A new event, stamped with the current time and not yet persisted.
+    ///
+    /// `id` is 0 until the event has been written to the database; see
+    /// `gita_events::EventBus::publish_persisted`.
+    pub fn new(
+        event_type: EventType,
+        repo_id: Option<i64>,
+        actor_id: Option<i64>,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: 0,
+            event_type,
+            repo_id,
+            actor_id,
+            payload,
+            created_at: Utc::now(),
+        }
+    }
+}
+
 /// A credential token (personal access token) for API/MCP access.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AccessToken {
@@ -373,6 +395,25 @@ mod tests {
         let json = serde_json::to_value(&e).unwrap();
         let back: Event = serde_json::from_value(json).unwrap();
         assert_eq!(back, e);
+    }
+
+    /// A freshly built event carries no database id — 0 is the marker the
+    /// persistence hook uses for "not inserted yet".
+    #[test]
+    fn event_new_starts_without_an_id() {
+        let e = Event::new(
+            EventType::PipelineRequested,
+            Some(10),
+            Some(2),
+            json!({"run_id": 7}),
+        );
+        assert_eq!(e.id, 0);
+        assert_eq!(e.event_type, EventType::PipelineRequested);
+        assert_eq!(e.repo_id, Some(10));
+        assert_eq!(e.actor_id, Some(2));
+        assert_eq!(e.payload["run_id"], json!(7));
+        // Stamped with a time, and that time is not in the future.
+        assert!(e.created_at <= Utc::now());
     }
 
     #[test]

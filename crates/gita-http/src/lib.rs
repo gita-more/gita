@@ -177,10 +177,12 @@ async fn handle_git_request(
 
             // Phase 1 CI trigger: if the pushed commit contains
             // `.gita-ci.yml`, upsert the pipeline, enqueue a run, and
-            // emit a PipelineRequested event. `trigger_event_id` is left
-            // NULL — bus.publish() doesn't return a DB id (the persist
-            // hook inserts asynchronously), and the PipelineRequested
-            // payload already carries owner/repo/ref/head_sha/run_id.
+            // emit a PipelineRequested event.
+            //
+            // The event is persisted here instead of by the bus's persist
+            // hook, so its database id is known and can be stored in
+            // `pipeline_runs.trigger_event_id`. The hook cannot report an
+            // id back — it is synchronous, and the insert is not.
             if let Some(rid) = repo_id {
                 for upd in &received_updates {
                     if upd.new_sha.chars().all(|c| c == '0') {
@@ -270,12 +272,42 @@ async fn handle_git_request(
                         "ref": upd.ref_name,
                         "head_sha": upd.new_sha,
                     });
-                    state.bus.publish(
+
+                    // Persist the event here rather than letting the bus's
+                    // persist hook do it, so we can learn its database id
+                    // and point `pipeline_runs.trigger_event_id` at it.
+                    // The hook would insert the row asynchronously and could
+                    // not report the id back — which is why this column was
+                    // always NULL.
+                    let mut event = gita_core::Event::new(
                         EventType::PipelineRequested,
                         Some(rid),
                         pusher_id,
                         req_payload,
                     );
+                    match state.db.insert_event(&event).await {
+                        Ok(event_id) => {
+                            event.id = event_id;
+                            // Backfill the link now that the event exists.
+                            if let Err(e) = state
+                                .db
+                                .set_pipeline_run_trigger_event(run_id, event_id)
+                                .await
+                            {
+                                tracing::warn!(
+                                    "failed to link pipeline run {run_id} to event {event_id}: {e}"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            // The event could not be stored. Publish it
+                            // anyway (with id 0) so subscribers still see
+                            // the request — the bus hook will retry the
+                            // insert.
+                            tracing::warn!("failed to persist PipelineRequested event: {e}");
+                        }
+                    }
+                    state.bus.publish_persisted(event);
                 }
             }
         }

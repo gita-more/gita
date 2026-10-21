@@ -313,8 +313,16 @@ impl App {
             let db = event_db.clone();
             let git_root = event_git_root.clone();
             tokio::spawn(async move {
-                if let Err(e) = db.insert_event(&event).await {
-                    warn!("failed to persist event: {e}");
+                // An event that already carries a database id was inserted by
+                // its publisher — the push handler needs the id to set
+                // `pipeline_runs.trigger_event_id`, and it cannot wait for
+                // this hook (which is synchronous and cannot return the id
+                // it generates). Skip the insert so the row is not written
+                // twice. The webhook fan-out below still happens.
+                if event.id == 0 {
+                    if let Err(e) = db.insert_event(&event).await {
+                        warn!("failed to persist event: {e}");
+                    }
                 }
                 // Webhook fan-out: only when the event has a repo scope.
                 if let Some(repo_id) = event.repo_id {

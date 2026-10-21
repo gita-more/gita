@@ -945,6 +945,204 @@ async fn http_push_with_ci_config_enqueues_run() {
     assert!(!pipeline.ref_sha.is_empty(), "head sha should be recorded");
 }
 
+/// A pipeline run must be linked to the event that triggered it.
+///
+/// `pipeline_runs.trigger_event_id` references `events(id)`, but it was
+/// always NULL: the event was inserted by the bus's persist hook, which is
+/// synchronous and cannot report the id it generated back to the caller
+/// that needed it. The push handler now inserts the event itself and
+/// backfills the link.
+///
+/// The multi-thread runtime flavour is required: the `git push` subprocess
+/// blocks the calling thread while it runs, and the server task that has to
+/// answer it is spawned onto the same runtime. On the default current-thread
+/// runtime the two would deadlock — the push would wait for a response that
+/// the server could never produce.
+#[tokio::test(flavor = "multi_thread")]
+async fn pipeline_run_is_linked_to_its_triggering_event() {
+    let (app, _guard) = common::test_app().await;
+    let schema = {
+        // Read the schema name for the assertions below; the guard itself
+        // must stay alive for the duration of the test.
+        _guard.schema.clone()
+    };
+    let user = common::register_user(&app, "linkci2").await;
+    common::create_repo(&app, &user.token, "cirepo").await;
+
+    // Serve over a real TCP listener so `git push` can reach it.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let router = app.router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("http://127.0.0.1:{port}/git/linkci2/cirepo.git");
+    let dir = tempfile::TempDir::new().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&work)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    std::fs::write(
+        work.join(".gita-ci.yml"),
+        "stages: [build]\njobs:\n  build:\n    stage: build\n    script:\n      - echo built\n",
+    )
+    .unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", &url]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "add ci config"]);
+
+    let push_url = format!("http://linkci2:{}@127.0.0.1:{port}/git/linkci2/cirepo.git", user.token);
+    let push = Command::new("git")
+        .current_dir(&work)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true")
+        .args(["push", &push_url, "main:main"])
+        .output()
+        .expect("git push must run");
+    assert!(
+        push.status.success(),
+        "git push failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&push.stdout),
+        String::from_utf8_lossy(&push.stderr)
+    );
+
+    let repo_id = app
+        .db
+        .get_repository_by_name("linkci2", "cirepo")
+        .await
+        .unwrap()
+        .expect("repo")
+        .id;
+
+    // Wait for the pipeline and its run to appear.
+    let mut runs = Vec::new();
+    for _ in 0..50 {
+        if let Some(pipeline) = app
+            .db
+            .get_pipeline_by_path(repo_id, ".gita-ci.yml")
+            .await
+            .unwrap()
+        {
+            runs = app.db.list_pipeline_runs(pipeline.id, 10).await.unwrap();
+            if !runs.is_empty() {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !runs.is_empty(),
+        "the push should have enqueued a run; pipeline present = {:?}",
+        app.db
+            .get_pipeline_by_path(repo_id, ".gita-ci.yml")
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let trigger_event_id = runs[0]
+        .trigger_event_id
+        .expect("the run must reference the event that triggered it");
+
+    // The referenced id must point at a real `pipeline_requested` event,
+    // and that event's payload must name this run.
+    let pool = sqlx::PgPool::connect(&common::test_db_url()).await.unwrap();
+    let row: (String, String) = sqlx::query_as(&format!(
+        "SELECT event_type, payload FROM \"{schema}\".events WHERE id = $1"
+    ))
+    .bind(trigger_event_id)
+    .fetch_one(&pool)
+    .await
+    .expect("the trigger event id must resolve to an event row");
+    assert_eq!(row.0, "pipeline_requested");
+
+    let payload: serde_json::Value = serde_json::from_str(&row.1).expect("event payload is JSON");
+    assert_eq!(
+        payload["run_id"].as_i64(),
+        Some(runs[0].id),
+        "the event payload must name the run it triggered"
+    );
+
+    // And the event must not have been inserted twice.
+    let count: (i64,) = sqlx::query_as(&format!(
+        "SELECT count(*) FROM \"{schema}\".events
+         WHERE event_type = 'pipeline_requested' AND repo_id = $1"
+    ))
+    .bind(repo_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        count.0, 1,
+        "the event must be stored exactly once, found {} row(s)",
+        count.0
+    );
+}
+
+/// Events published through the ordinary `bus.publish` path must still be
+/// stored — the "already persisted" marker must not swallow them.
+#[tokio::test]
+async fn ordinary_published_events_are_still_persisted() {
+    let (app, guard) = common::test_app().await;
+    let schema = guard.schema.clone();
+    let user = common::register_user(&app, "pubevent").await;
+    common::create_repo(&app, &user.token, "cirepo").await;
+
+    // Creating a repository publishes a RepoCreated event through the
+    // normal path.
+    let repo_id = app
+        .db
+        .get_repository_by_name("pubevent", "cirepo")
+        .await
+        .unwrap()
+        .expect("repo")
+        .id;
+
+    let pool = sqlx::PgPool::connect(&common::test_db_url()).await.unwrap();
+    let mut count: (i64,) = (0,);
+    for _ in 0..50 {
+        count = sqlx::query_as(&format!(
+            "SELECT count(*) FROM \"{schema}\".events
+             WHERE event_type = 'repo_created' AND repo_id = $1"
+        ))
+        .bind(repo_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if count.0 > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        count.0, 1,
+        "an ordinarily published event must be stored exactly once, found {} row(s)",
+        count.0
+    );
+}
+
 /// `GET /api/repos/{owner}/{repo}/pipelines` must list the pipeline defined
 /// by the repo's `.gita-ci.yml`.
 ///

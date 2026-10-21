@@ -5,7 +5,6 @@
 //! published as a structured event. AI agents and internal modules can
 //! subscribe to the stream and react.
 
-use chrono::Utc;
 use gita_core::{Event, EventType};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,14 +42,27 @@ impl EventBus {
         actor_id: Option<i64>,
         payload: serde_json::Value,
     ) -> Event {
-        let event = Event {
-            id: 0,
-            event_type,
-            repo_id,
-            actor_id,
-            payload,
-            created_at: Utc::now(),
-        };
+        let event = Event::new(event_type, repo_id, actor_id, payload);
+        if let Some(persist) = &self.persist {
+            persist(event.clone());
+        }
+        // Ignore errors: a full channel or no receivers is not fatal.
+        let _ = self.tx.send(event.clone());
+        event
+    }
+
+    /// Publish an event the caller has already persisted.
+    ///
+    /// `event.id` carries the id of the row the caller inserted. The
+    /// persistence hook uses a non-zero id as the "already inserted"
+    /// marker and skips the insert, so the row is not written twice.
+    ///
+    /// This exists because the persist hook is synchronous while the
+    /// database write is not: the hook cannot return the id it just
+    /// generated. A caller that needs the id — to set a foreign key, say
+    /// `pipeline_runs.trigger_event_id` — has to insert the row itself
+    /// and then publish the event it built.
+    pub fn publish_persisted(&self, event: Event) -> Event {
         if let Some(persist) = &self.persist {
             persist(event.clone());
         }
@@ -187,6 +199,43 @@ mod tests {
         let bus = EventBus::default();
         bus.publish(EventType::RepoCreated, Some(1), None, serde_json::json!({}));
         // no panic = pass
+    }
+
+    /// A pre-persisted event is handed to subscribers with its database id
+    /// intact, and the persist hook still sees it — the hook is what
+    /// decides whether the row needs inserting, using the id as the marker.
+    #[test]
+    fn publish_persisted_keeps_the_id_and_calls_the_hook() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let bus = EventBus::new(Some(Arc::new(move |e: Event| {
+            seen2.lock().unwrap().push(e);
+        })));
+        let mut rx = bus.subscribe();
+
+        let mut event =
+            Event::new(EventType::PipelineRequested, Some(1), Some(2), serde_json::json!({}));
+        event.id = 42;
+        let returned = bus.publish_persisted(event);
+
+        assert_eq!(returned.id, 42);
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received.id, 42);
+        assert_eq!(received.event_type, EventType::PipelineRequested);
+
+        let hooked = seen.lock().unwrap();
+        assert_eq!(hooked.len(), 1);
+        assert_eq!(hooked[0].id, 42);
+    }
+
+    /// An event published through the ordinary path has no database id yet.
+    #[test]
+    fn publish_leaves_the_id_unset() {
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+        let event = bus.publish(EventType::Push, Some(1), Some(2), serde_json::json!({}));
+        assert_eq!(event.id, 0);
+        assert_eq!(rx.try_recv().unwrap().id, 0);
     }
 
     #[tokio::test]
