@@ -41,8 +41,8 @@ repo root.
 | Keyword | Phase | What it does |
 | --- | --- | --- |
 | `stages:` | **1** | Required ordered list of stage names; jobs run stage-by-stage. |
-| `only:` | 2 | Push-trigger allowlist (`branches` / `paths` globs). |
-| `except:` | 2 | Push-trigger denylist (`branches` / `paths` globs). |
+| `only:` | **1** | Push-trigger allowlist (`branches` / `paths` globs). |
+| `except:` | **1** | Push-trigger denylist (`branches` / `paths` globs). |
 | `variables:` | 3 | Pipeline-level CI/CD variables injected into every job's env. |
 | `include:` | 3 | Import other YAML files (local / remote / template / project / artifact). |
 | `default:` | 3 | Per-keyword defaults applied to every job that omits the keyword. |
@@ -70,7 +70,30 @@ at parse time with `UnknownStage { job, stage, declared }`.
 
 ## Job keywords
 
-Every other top-level (or `jobs:`-nested) entry is a job.
+Every other top-level (or `jobs:`-nested) entry is a job. Both spellings
+are accepted and mean the same thing:
+
+```yaml
+stages: [build]
+
+# top-level form
+build:
+  stage: build
+  script: [cargo build --release]
+```
+
+```yaml
+stages: [build]
+
+# jobs: form
+jobs:
+  build:
+    stage: build
+    script: [cargo build --release]
+```
+
+A name used in both spellings is an error rather than a silent overwrite.
+Jobs run in the order they appear in the file.
 
 | Keyword | Phase | What it does |
 | --- | --- | --- |
@@ -554,7 +577,7 @@ By default every push triggers a run — including pushes to any
 branch. The runner drops branch deletions automatically (the
 receive-pack handler skips zero-SHA `new_sha`).
 
-Use `only:` / `except:` to filter (Phase 2):
+Use `only:` / `except:` to filter:
 
 ```yaml
 only:
@@ -563,6 +586,11 @@ only:
 except:
   paths:    [docs/**, "*.md"]
 ```
+
+Branch globs are matched against the **short branch name** (`main`), not the
+full ref (`refs/heads/main`). Path globs are matched against the files the
+pushed commit changed; for a newly created branch every file counts as
+changed.
 
 Glob semantics:
 - `*` matches any non-`/` characters
