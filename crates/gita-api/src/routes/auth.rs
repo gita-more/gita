@@ -115,6 +115,21 @@ async fn register(
     if username.is_empty() || username.len() < 2 {
         return Err(ApiError::BadRequest("username must be at least 2 characters".into()));
     }
+    // The username becomes a directory name under the repositories root
+    // (`<data_dir>/repos/<username>/`), so it must not be able to escape it.
+    // Same character rule as repository names.
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(ApiError::BadRequest(
+            "username may only contain letters, numbers, '-', '_', '.'".into(),
+        ));
+    }
+    // "." and ".." are valid character-wise but are directory traversal.
+    if username == "." || username == ".." {
+        return Err(ApiError::BadRequest("invalid username".into()));
+    }
     if email.is_empty() || !email.contains('@') {
         return Err(ApiError::BadRequest("invalid email".into()));
     }

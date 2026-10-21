@@ -54,9 +54,43 @@ impl GitManager {
         self.root.join(owner).join(format!("{name}.git"))
     }
 
+    /// The filesystem path of a repository, rejecting any owner or name that
+    /// could escape the repositories root.
+    ///
+    /// The owner segment is a directory name and the name segment becomes a
+    /// `.git` directory, so both must be plain names: a value containing a
+    /// path separator or `..` would let a caller create or delete a
+    /// directory outside the root. Read paths use `repo_path` unchanged
+    /// (a miss there is a miss, not a traversal), but anything that creates,
+    /// moves or removes a repository goes through this check.
+    pub fn safe_repo_path(&self, owner: &str, name: &str) -> Result<PathBuf> {
+        for (label, value) in [("owner", owner), ("repository name", name)] {
+            if value.is_empty() {
+                return Err(anyhow!("{label} must not be empty"));
+            }
+            if value == "." || value == ".." {
+                return Err(anyhow!("invalid {label}: {value}"));
+            }
+            if value.contains('/') || value.contains('\\') || value.contains('\0') {
+                return Err(anyhow!("invalid {label}: {value}"));
+            }
+        }
+        let path = self.repo_path(owner, name);
+        // Belt and braces: confirm the resolved path is still under the root.
+        // `Path::starts_with` compares components, so this also catches
+        // anything the character checks above might have missed.
+        if !path.starts_with(&self.root) {
+            return Err(anyhow!(
+                "repository path escapes the repositories root: {}",
+                path.display()
+            ));
+        }
+        Ok(path)
+    }
+
     /// Initialize a new bare repository.
     pub async fn create_repo(&self, owner: &str, name: &str, default_branch: &str) -> Result<PathBuf> {
-        let path = self.repo_path(owner, name);
+        let path = self.safe_repo_path(owner, name)?;
         if path.exists() {
             return Err(anyhow!("repository already exists: {owner}/{name}"));
         }
@@ -85,7 +119,7 @@ impl GitManager {
 
     /// Delete a repository directory (used when a repo is removed).
     pub fn delete_repo(&self, owner: &str, name: &str) -> Result<()> {
-        let path = self.repo_path(owner, name);
+        let path = self.safe_repo_path(owner, name)?;
         if path.exists() {
             std::fs::remove_dir_all(&path)
                 .with_context(|| format!("remove repo dir {}", path.display()))?;
@@ -101,8 +135,8 @@ impl GitManager {
         new_owner: &str,
         new_name: &str,
     ) -> Result<()> {
-        let old_path = self.repo_path(old_owner, old_name);
-        let new_path = self.repo_path(new_owner, new_name);
+        let old_path = self.safe_repo_path(old_owner, old_name)?;
+        let new_path = self.safe_repo_path(new_owner, new_name)?;
         if !old_path.exists() {
             return Err(anyhow!("repository not found: {old_owner}/{old_name}"));
         }
@@ -127,8 +161,8 @@ impl GitManager {
         dst_owner: &str,
         dst_name: &str,
     ) -> Result<()> {
-        let src = self.repo_path(src_owner, src_name);
-        let dst = self.repo_path(dst_owner, dst_name);
+        let src = self.safe_repo_path(src_owner, src_name)?;
+        let dst = self.safe_repo_path(dst_owner, dst_name)?;
         if !src.exists() {
             return Err(anyhow!("source repository not found: {src_owner}/{src_name}"));
         }
@@ -1524,6 +1558,57 @@ mod tests {
         let mgr = GitManager::new(root.clone());
         let p = mgr.repo_path("alice", "widgets");
         assert_eq!(p, root.join("alice").join("widgets.git"));
+    }
+
+    /// The owner segment is a directory name, so a value that could escape
+    /// the repositories root must be rejected by the mutating operations.
+    #[test]
+    fn safe_repo_path_rejects_traversal() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+
+        // Ordinary names are fine.
+        assert!(mgr.safe_repo_path("alice", "widgets").is_ok());
+        assert!(mgr.safe_repo_path("my-org", "my.repo").is_ok());
+
+        // Anything that could escape the root is rejected.
+        for (owner, name) in [
+            ("..", "widgets"),
+            ("../..", "widgets"),
+            ("alice", ".."),
+            ("alice/../..", "widgets"),
+            ("alice", "../../etc"),
+            ("alice", "..\\.."),
+            ("", "widgets"),
+            ("alice", ""),
+            (".", "widgets"),
+            ("alice", "."),
+        ] {
+            let err = mgr
+                .safe_repo_path(owner, name)
+                .expect_err("should reject {owner}/{name}");
+            assert!(
+                err.to_string().contains("invalid") || err.to_string().contains("empty"),
+                "unexpected error for {owner}/{name}: {err}"
+            );
+        }
+    }
+
+    /// A traversal attempt must not create anything outside the root.
+    #[tokio::test]
+    async fn create_repo_rejects_traversal_owner() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let err = mgr
+            .create_repo("../escaped", "pwn", "main")
+            .await
+            .expect_err("traversal owner must be rejected");
+        assert!(err.to_string().contains("invalid"), "got: {err}");
+        // Nothing was created outside the repositories root.
+        assert!(
+            !root.parent().unwrap().join("escaped.git").exists(),
+            "a directory was created outside the repositories root"
+        );
     }
 
     #[tokio::test]

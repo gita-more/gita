@@ -2247,3 +2247,34 @@ async fn register_then_login_chain_succeeds_for_second_user() {
         assert_eq!(body["username"], "chain-user");
     }
 }
+
+/// A username becomes a directory name under the repositories root
+/// (`<data_dir>/repos/<username>/`), so it must not be able to escape it.
+///
+/// The registration endpoint checked only the length, so `username = "../.."`
+/// was accepted and a subsequent repository creation ran `init_bare` on a
+/// path outside the repositories root.
+#[tokio::test]
+async fn register_rejects_usernames_that_could_escape_the_repos_root() {
+    let (app, _guard) = common::test_app().await;
+
+    for username in ["../..", "..", ".", "a/b", "a\\b", "a b"] {
+        let (status, body) = common::request(
+            &app,
+            axum::http::Method::POST,
+            "/api/auth/register",
+            Some(serde_json::json!({
+                "username": username,
+                "email": format!("{username}@example.com"),
+                "password": "hunter22",
+            })),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "username {username:?} should be rejected, got {status} {body}"
+        );
+    }
+}
