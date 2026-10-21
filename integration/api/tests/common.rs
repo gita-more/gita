@@ -11,6 +11,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use gita_server::Config;
+
 /// Database URL for integration tests. Override via `GITA_TEST_DATABASE_URL`.
 pub fn test_db_url() -> String {
     std::env::var("GITA_TEST_DATABASE_URL").unwrap_or_else(|_| {
@@ -46,7 +48,6 @@ impl Drop for TestAppGuard {
 
 /// Build a fresh `App` with an isolated per-test Postgres schema.
 pub async fn test_app() -> (gita_server::App, TestAppGuard) {
-    use gita_server::Config;
     let tmp = tempfile::TempDir::new().unwrap();
     let schema = format!(
         "gita_it_{}_{}",
@@ -71,6 +72,45 @@ pub async fn test_app() -> (gita_server::App, TestAppGuard) {
     config.server.data_dir = tmp.path().join("data");
     config.server.database_url = base_url.clone();
     config.server.database_schema = Some(schema.clone());
+
+    let app = gita_server::App::build(config).await.unwrap();
+
+    let guard = TestAppGuard {
+        base_url,
+        schema,
+        _tmp: tmp,
+    };
+    (app, guard)
+}
+
+/// Like [`test_app`], but with `allow_insecure_password_reset` enabled so
+/// the password-reset response carries the token.
+pub async fn test_app_with_insecure_password_reset() -> (gita_server::App, TestAppGuard) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let schema = format!(
+        "gita_it_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+
+    let base_url = test_db_url();
+    {
+        let pool = sqlx::PgPool::connect(&base_url).await.unwrap();
+        sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
+
+    let mut config = Config::default();
+    config.server.data_dir = tmp.path().join("data");
+    config.server.database_url = base_url.clone();
+    config.server.database_schema = Some(schema.clone());
+    config.server.allow_insecure_password_reset = true;
 
     let app = gita_server::App::build(config).await.unwrap();
 

@@ -1225,6 +1225,235 @@ async fn personal_access_token_revocation() {
     assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 }
 
+/// By default the reset token is *not* returned in the response: the
+/// response is identical for existing and non-existent accounts, so
+/// handing back the token would let an anonymous caller enumerate
+/// accounts and take them over.
+#[tokio::test]
+async fn password_reset_token_is_withheld_by_default() {
+    let (app, _guard) = common::test_app().await;
+    register_user(&app, "withheld-user").await;
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "withheld-user"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert!(
+        body.get("reset_token").is_none(),
+        "the token must not be in the response by default: {body}"
+    );
+    assert!(
+        body.get("message").is_some(),
+        "the uniform message must still be present: {body}"
+    );
+
+    // The same for an account that does not exist — the two responses
+    // must be indistinguishable.
+    let (status, missing) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "no-such-account"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert_eq!(
+        missing, body,
+        "an existing and a non-existent account must produce the same response"
+    );
+}
+
+/// With `allow_insecure_password_reset` on, the response carries the token
+/// so an operator can complete the flow without a mail transport. The
+/// token must actually work.
+#[tokio::test]
+async fn password_reset_token_is_returned_when_enabled() {
+    let (app, _guard) = common::test_app_with_insecure_password_reset().await;
+    register_user(&app, "insecure-user").await;
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "insecure-user"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let token = body["reset_token"]
+        .as_str()
+        .expect("reset_token must be present when the flag is on")
+        .to_string();
+    assert!(!token.is_empty(), "reset_token must not be empty");
+
+    // The token completes the reset.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": token, "new_password": "brandnew1"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "confirm: {body}");
+
+    // And the new password works.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/login",
+        Some(serde_json::json!({"username": "insecure-user", "password": "brandnew1"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+}
+
+/// A non-existent account must not produce a `reset_token` even when the
+/// flag is on — otherwise the field's presence enumerates accounts.
+#[tokio::test]
+async fn password_reset_token_is_absent_for_unknown_accounts() {
+    let (app, _guard) = common::test_app_with_insecure_password_reset().await;
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "ghost-account"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    assert!(
+        body.get("reset_token").is_none(),
+        "no token may be issued for an unknown account: {body}"
+    );
+}
+
+/// Requesting a second token must not invalidate the first one — and the
+/// stale-token cleanup must not remove tokens that are still valid.
+#[tokio::test]
+async fn issuing_a_second_token_keeps_the_first_valid() {
+    let (app, _guard) = common::test_app_with_insecure_password_reset().await;
+    register_user(&app, "two-token-user").await;
+
+    let first = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "two-token-user"})),
+        None,
+    )
+    .await
+    .1["reset_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let second = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "two-token-user"})),
+        None,
+    )
+    .await
+    .1["reset_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(first, second, "each request must issue a distinct token");
+
+    // The first token is still redeemable.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": first, "new_password": "firstpass1"})),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "a still-valid token must survive a second request: {body}"
+    );
+
+    // The second one is too — until it is used.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": second, "new_password": "secondpass1"})),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "the second token must still be valid: {body}"
+    );
+}
+
+/// Used tokens are cleaned up: requesting a new token after one was
+/// redeemed must not leave the spent row behind.
+#[tokio::test]
+async fn spent_reset_tokens_are_purged() {
+    let (app, guard) = common::test_app_with_insecure_password_reset().await;
+    let schema = guard.schema.clone();
+    register_user(&app, "purge-user").await;
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "purge-user"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let token = body["reset_token"].as_str().unwrap().to_string();
+
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": token, "new_password": "purgepass1"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // Requesting another token triggers the cleanup of the spent row.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "purge-user"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    let pool = sqlx::PgPool::connect(&common::test_db_url()).await.unwrap();
+    let count: (i64,) = sqlx::query_as(&format!(
+        "SELECT count(*) FROM \"{schema}\".password_reset_tokens WHERE used = TRUE"
+    ))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        count.0, 0,
+        "the spent token must have been purged, found {} row(s)",
+        count.0
+    );
+}
+
 #[tokio::test]
 async fn password_reset_flow() {
     let (app, guard) = common::test_app().await;
