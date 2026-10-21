@@ -829,3 +829,118 @@ jobs:
     .await;
     assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
 }
+/// Push over real HTTP git and assert the receive-pack handler enqueues a CI
+/// run from the pushed `.gita-ci.yml`.
+///
+/// The other tests in this file deliberately bypass the HTTP handler by
+/// writing straight into the bare repo and inserting the pipeline via `Db`.
+/// That leaves the handler's own CI trigger — which resolves the pushed
+/// commit by its raw SHA — with no coverage at all.
+///
+/// That lookup is exactly where a bug lived: `read_file` treated any
+/// non-`HEAD`/non-`refs/` reference as a branch name, so a raw commit SHA
+/// became `refs/heads/<sha>` and silently resolved to nothing. The
+/// `.gita-ci.yml` lookup therefore always returned `None` and **push-triggered
+/// CI never ran**. This test is the regression guard for that.
+#[tokio::test(flavor = "multi_thread")]
+async fn http_push_with_ci_config_enqueues_run() {
+    use axum::Router;
+    use tower::ServiceExt;
+
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "pushci").await;
+    common::create_repo(&app, &user.token, "cirepo").await;
+
+    // Serve the app's router over a real TCP listener so `git push` can talk
+    // to it over HTTP rather than through `oneshot`.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let router = app.router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    // The bare repo is the push target.
+    let bare = app.data_dir.join("repos").join("pushci").join("cirepo.git");
+    assert!(bare.exists(), "bare repo should exist at {}", bare.display());
+    let url = format!("http://127.0.0.1:{port}/git/pushci/cirepo.git");
+
+    // Commit a `.gita-ci.yml` and push it over HTTP with credentials in the
+    // URL — the git-CLI style the Basic-auth path expects.
+    let dir = tempfile::TempDir::new().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&work)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    std::fs::write(
+        work.join(".gita-ci.yml"),
+        "stages:\n  - name: build\n    script:\n      - echo built\n",
+    )
+    .unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", &url]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "add ci config"]);
+
+    let push_url = format!("http://pushci:{}@127.0.0.1:{port}/git/pushci/cirepo.git", user.token);
+    let push = Command::new("git")
+        .current_dir(&work)
+        .args(["push", &push_url, "main:main"])
+        .output()
+        .expect("git push must run");
+    assert!(
+        push.status.success(),
+        "git push failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&push.stdout),
+        String::from_utf8_lossy(&push.stderr)
+    );
+
+    // The handler should have created the pipeline from the pushed commit.
+    // Give the async event hook a moment to persist.
+    let repo_id = app
+        .db
+        .get_repository_by_name("pushci", "cirepo")
+        .await
+        .unwrap()
+        .expect("repo")
+        .id;
+
+    let mut pipeline = None;
+    for _ in 0..50 {
+        pipeline = app
+            .db
+            .get_pipeline_by_path(repo_id, ".gita-ci.yml")
+            .await
+            .unwrap();
+        if pipeline.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let pipeline = pipeline.expect(
+        "a push containing .gita-ci.yml should create a pipeline; if this fails, \
+         check that the receive-pack handler resolves the pushed commit SHA",
+    );
+    assert!(pipeline.ref_name.contains("main"), "unexpected ref: {}", pipeline.ref_name);
+    assert!(!pipeline.ref_sha.is_empty(), "head sha should be recorded");
+}
