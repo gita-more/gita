@@ -20,7 +20,7 @@ members = [
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/gita/gita"
+repository = "https://github.com/gita-more/gita"
 
 [workspace.dependencies]
 # async runtime
