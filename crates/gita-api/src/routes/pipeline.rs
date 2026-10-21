@@ -148,7 +148,10 @@ async fn list_pipelines(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let content = state
         .git
-        .read_file(&owner, &repo, ".gita-ci.yml", &head)
+        // Argument order is (owner, name, reference, path) — the ref and
+        // path were swapped here, so the lookup never resolved and the
+        // pipeline list was always empty.
+        .read_file(&owner, &repo, &head, ".gita-ci.yml")
         .ok()
         .flatten();
     let pipelines = match content {

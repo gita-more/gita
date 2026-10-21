@@ -944,3 +944,52 @@ async fn http_push_with_ci_config_enqueues_run() {
     assert!(pipeline.ref_name.contains("main"), "unexpected ref: {}", pipeline.ref_name);
     assert!(!pipeline.ref_sha.is_empty(), "head sha should be recorded");
 }
+
+/// `GET /api/repos/{owner}/{repo}/pipelines` must list the pipeline defined
+/// by the repo's `.gita-ci.yml`.
+///
+/// Regression guard: the handler called
+/// `read_file(owner, repo, ".gita-ci.yml", &head)` — reference and path
+/// swapped — so the lookup never resolved and this endpoint always returned
+/// an empty list. The repo's CI configuration was real and the push trigger
+/// really did enqueue a run; only the listing was broken, and nothing
+/// exercised it.
+#[tokio::test]
+async fn pipelines_endpoint_lists_the_repo_ci_config() {
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "listpip").await;
+    common::create_repo(&app, &user.token, "cirepo").await;
+    common::push_files(
+        &app,
+        "listpip",
+        "cirepo",
+        &[(
+            ".gita-ci.yml",
+            b"stages: [build]\njobs:\n  build:\n    stage: build\n    script:\n      - echo hi\n"
+                .as_slice(),
+        )],
+        "main",
+        "add ci config",
+    );
+
+    let (status, body) = common::request(
+        &app,
+        axum::http::Method::GET,
+        "/api/repos/listpip/cirepo/pipelines",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "pipelines: {body}");
+    let pipelines = body["pipelines"].as_array().expect("pipelines array");
+    assert_eq!(
+        pipelines.len(),
+        1,
+        "the repo's .gita-ci.yml should be listed, got {body}"
+    );
+    assert_eq!(pipelines[0]["path"], ".gita-ci.yml");
+    assert!(
+        !pipelines[0]["ref_sha"].as_str().unwrap_or_default().is_empty(),
+        "the listed pipeline should record the ref it was read at"
+    );
+}
