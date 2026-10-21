@@ -1454,6 +1454,63 @@ async fn spent_reset_tokens_are_purged() {
     );
 }
 
+/// A reset token is single-use: once it has been redeemed it must not work
+/// a second time.
+#[tokio::test]
+async fn a_reset_token_cannot_be_redeemed_twice() {
+    let (app, _guard) = common::test_app_with_insecure_password_reset().await;
+    register_user(&app, "single-use-user").await;
+
+    let (_, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/request",
+        Some(serde_json::json!({"identifier": "single-use-user"})),
+        None,
+    )
+    .await;
+    let token = body["reset_token"].as_str().unwrap().to_string();
+
+    // First redemption works.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": token, "new_password": "firstpass1"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // The second must be refused — otherwise the token is a bearer
+    // credential that can be replayed to take the account over again.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/password-reset/confirm",
+        Some(serde_json::json!({"token": token, "new_password": "secondpass1"})),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::NOT_FOUND,
+        "a spent token must not be redeemable again: {body}"
+    );
+
+    // The first password still stands: the replayed attempt did not
+    // overwrite it.
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/login",
+        Some(serde_json::json!({"username": "single-use-user", "password": "firstpass1"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+}
+
 #[tokio::test]
 async fn password_reset_flow() {
     let (app, guard) = common::test_app().await;

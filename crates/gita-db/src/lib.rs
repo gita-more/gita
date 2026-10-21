@@ -1266,6 +1266,12 @@ impl Db {
     }
 
     /// Look up a token; returns `None` when missing, expired, or used.
+    ///
+    /// **Do not use this to redeem a token.** It is a read: it does not
+    /// consume the token, so a caller that reads and then marks it used is
+    /// racing every other caller doing the same. Use
+    /// [`Db::claim_password_reset_token`], which consumes the token in the
+    /// same statement that reads it.
     pub async fn get_valid_password_reset_token(
         &self,
         token: &str,
@@ -1299,12 +1305,55 @@ impl Db {
     }
 
     /// Mark the token consumed so it can never be reused.
+    ///
+    /// **Do not use this to redeem a token.** Marking it used in a separate
+    /// statement from the read leaves a window in which a concurrent
+    /// request also passes the read and also redeems the token. Use
+    /// [`Db::claim_password_reset_token`], which does both at once.
     pub async fn mark_password_reset_token_used(&self, token: &str) -> Result<()> {
         sqlx::query("UPDATE password_reset_tokens SET used = TRUE WHERE token = $1")
             .bind(token)
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Atomically claim a reset token, returning the user it belongs to.
+    ///
+    /// The token is consumed by the same statement that reads it: the
+    /// `WHERE` clause requires the row to still be unused and unexpired, and
+    /// `RETURNING` hands back the user id. A second concurrent claim of the
+    /// same token matches no row and gets `None`.
+    ///
+    /// This is what makes the token genuinely single-use. Reading it
+    /// (`get_valid_password_reset_token`) and marking it used afterwards is
+    /// two separate statements, so two concurrent requests could both pass
+    /// the read and both redeem the token — the second one would silently
+    /// overwrite the password the first one just set.
+    ///
+    /// `now` is the current time in RFC3339, the format the `expires_at`
+    /// column stores. The expiry is compared as `timestamptz`, not as text:
+    /// `expires_at` is a TEXT column, and a text comparison of two
+    /// timestamps of the same second but different fractional widths orders
+    /// them wrongly.
+    pub async fn claim_password_reset_token(
+        &self,
+        token: &str,
+        now: &str,
+    ) -> Result<Option<i64>> {
+        let row = sqlx::query(
+            "UPDATE password_reset_tokens
+             SET used = TRUE
+             WHERE token = $1
+               AND used = FALSE
+               AND expires_at::timestamptz > $2::timestamptz
+             RETURNING user_id",
+        )
+        .bind(token)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.try_get("user_id")).transpose()?)
     }
 
     /// Delete a user's spent or expired reset tokens.
@@ -1316,7 +1365,10 @@ impl Db {
     /// silently invalidate the first one.
     ///
     /// `now` is the current time in RFC3339, the same format the `expires_at`
-    /// column stores.
+    /// column stores. The expiry is compared as `timestamptz`, not as text:
+    /// `expires_at` is a TEXT column, and a text comparison of two
+    /// timestamps of the same second but different fractional widths orders
+    /// them wrongly — which would purge a token that is still valid.
     ///
     /// Note: the migration comment for this table still says the rows are
     /// "garbage-collected at use time" after 24 hours, but the tokens are
@@ -1331,7 +1383,8 @@ impl Db {
     ) -> Result<()> {
         sqlx::query(
             "DELETE FROM password_reset_tokens
-             WHERE user_id = $1 AND (used = TRUE OR expires_at <= $2)",
+             WHERE user_id = $1
+               AND (used = TRUE OR expires_at::timestamptz <= $2::timestamptz)",
         )
         .bind(user_id)
         .bind(now)
@@ -3050,6 +3103,154 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(rows.0, 0);
+
+        drop_test_db(&db).await;
+    }
+
+    /// A reset token can be claimed exactly once: the second claim of the
+    /// same token must find nothing.
+    #[tokio::test]
+    async fn password_reset_token_can_only_be_claimed_once() {
+        let db = fresh_db().await;
+        let user = db.create_user("resetonce", "ro@example.com", "h").await.unwrap();
+        let now = Utc::now();
+        let expires = (now + chrono::Duration::hours(1)).to_rfc3339();
+        db.create_password_reset_token(user.id, "tok-once", &expires)
+            .await
+            .unwrap();
+
+        let first = db
+            .claim_password_reset_token("tok-once", &now.to_rfc3339())
+            .await
+            .unwrap();
+        assert_eq!(first, Some(user.id));
+
+        // The token is spent now.
+        let second = db
+            .claim_password_reset_token("tok-once", &now.to_rfc3339())
+            .await
+            .unwrap();
+        assert_eq!(second, None, "a reset token must be single-use");
+        assert!(
+            db.get_valid_password_reset_token("tok-once")
+                .await
+                .unwrap()
+                .is_none(),
+            "a claimed token must no longer read as valid"
+        );
+
+        drop_test_db(&db).await;
+    }
+
+    /// Concurrent claims of the same token must not both succeed.
+    ///
+    /// This is the case the old read-then-mark sequence got wrong: every
+    /// caller passed the "is it still valid?" read and then went on to set
+    /// a new password, the last one silently overwriting the others. The
+    /// window between the read and the mark is wide — the Argon2 hash of
+    /// the new password sits in it and takes ~575ms with Argon2's default
+    /// parameters — so every concurrent request gets in.
+    ///
+    /// The atomic claim closes that window: the read and the mark are one
+    /// statement, so exactly one caller can match the row.
+    #[tokio::test]
+    async fn concurrent_claims_of_one_token_yield_a_single_winner() {
+        const CALLERS: usize = 8;
+
+        let db = fresh_db().await;
+        let user = db.create_user("resetrace", "rr@example.com", "h").await.unwrap();
+        let now = Utc::now();
+        let expires = (now + chrono::Duration::hours(1)).to_rfc3339();
+        db.create_password_reset_token(user.id, "tok-race", &expires)
+            .await
+            .unwrap();
+
+        let now_str = now.to_rfc3339();
+        let mut handles = Vec::new();
+        for _ in 0..CALLERS {
+            let db = db.clone();
+            let now_str = now_str.clone();
+            handles.push(tokio::spawn(async move {
+                db.claim_password_reset_token("tok-race", &now_str).await
+            }));
+        }
+
+        let mut winners = 0;
+        for h in handles {
+            if h.await.unwrap().unwrap().is_some() {
+                winners += 1;
+            }
+        }
+        assert_eq!(
+            winners, 1,
+            "exactly one claim may win, but {winners} of {CALLERS} did"
+        );
+
+        drop_test_db(&db).await;
+    }
+
+    /// An expired token cannot be claimed, and the expiry is compared
+    /// chronologically — `expires_at` is a TEXT column, so a plain text
+    /// comparison would order two timestamps of the same second wrongly.
+    #[tokio::test]
+    async fn expired_password_reset_token_cannot_be_claimed() {
+        let db = fresh_db().await;
+        let user = db.create_user("resetexp", "re@example.com", "h").await.unwrap();
+        let now = Utc::now();
+        // Already in the past.
+        let expires = (now - chrono::Duration::hours(1)).to_rfc3339();
+        db.create_password_reset_token(user.id, "tok-expired", &expires)
+            .await
+            .unwrap();
+
+        let claim = db
+            .claim_password_reset_token("tok-expired", &now.to_rfc3339())
+            .await
+            .unwrap();
+        assert_eq!(claim, None, "an expired token must not be claimable");
+
+        drop_test_db(&db).await;
+    }
+
+    /// The purge keeps tokens that are still valid and removes the spent
+    /// and expired ones.
+    #[tokio::test]
+    async fn purge_removes_spent_and_expired_tokens_but_keeps_live_ones() {
+        let db = fresh_db().await;
+        let user = db.create_user("resetpurge", "rp@example.com", "h").await.unwrap();
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        // Live: expires in an hour.
+        db.create_password_reset_token(user.id, "tok-live", &(now + chrono::Duration::hours(1)).to_rfc3339())
+            .await
+            .unwrap();
+        // Spent.
+        db.create_password_reset_token(user.id, "tok-spent", &(now + chrono::Duration::hours(1)).to_rfc3339())
+            .await
+            .unwrap();
+        db.mark_password_reset_token_used("tok-spent").await.unwrap();
+        // Expired.
+        db.create_password_reset_token(user.id, "tok-old", &(now - chrono::Duration::hours(1)).to_rfc3339())
+            .await
+            .unwrap();
+
+        db.purge_stale_password_reset_tokens(user.id, &now_str)
+            .await
+            .unwrap();
+
+        let remaining: Vec<(String,)> = sqlx::query_as(
+            "SELECT token FROM password_reset_tokens WHERE user_id = $1",
+        )
+        .bind(user.id)
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            remaining,
+            vec![("tok-live".to_string(),)],
+            "only the still-valid token may survive the purge"
+        );
 
         drop_test_db(&db).await;
     }

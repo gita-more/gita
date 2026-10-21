@@ -453,17 +453,20 @@ async fn password_reset_confirm(
             "password must be at least 6 characters".into(),
         ));
     }
-    let token = state
+    // Claim the token atomically: the same statement that reads it marks it
+    // used, so a token can only ever be redeemed once. Reading it and
+    // marking it afterwards would let two concurrent requests both pass the
+    // read and both set a new password — the second silently overwriting
+    // the first.
+    let user_id = state
         .db
-        .get_valid_password_reset_token(&req.token)
+        .claim_password_reset_token(&req.token, &chrono::Utc::now().to_rfc3339())
         .await?
         .ok_or_else(|| ApiError::NotFound("invalid or expired token".into()))?;
+    // The token is spent now. If hashing or the update fails, the user has
+    // to request a new link — better than leaving a live token behind.
     let hash = Auth::hash_password(&req.new_password)?;
-    state
-        .db
-        .update_user_password_hash(token.user_id, &hash)
-        .await?;
-    state.db.mark_password_reset_token_used(&req.token).await?;
+    state.db.update_user_password_hash(user_id, &hash).await?;
     Ok(Json(crate::error::MessageResponse {
         message: "password reset".to_string(),
     }))
