@@ -993,3 +993,102 @@ async fn pipelines_endpoint_lists_the_repo_ci_config() {
         "the listed pipeline should record the ref it was read at"
     );
 }
+
+/// A push whose `.gita-ci.yml` uses the top-level job form (the format the
+/// writing guide documents) must enqueue a run.
+///
+/// The parser only understood a `jobs:` mapping, so the guide's own Quick
+/// start — and every example in it — produced a file that was rejected at
+/// parse time, and the pipeline silently never ran.
+#[tokio::test(flavor = "multi_thread")]
+async fn http_push_with_top_level_ci_config_enqueues_run() {
+    use axum::Router;
+    use tower::ServiceExt;
+
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "topci").await;
+    common::create_repo(&app, &user.token, "cirepo").await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let router = app.router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("http://127.0.0.1:{port}/git/topci/cirepo.git");
+    let dir = tempfile::TempDir::new().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&work)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    // The documented top-level job form, with a single-string `script:`
+    // (also documented, and also previously rejected).
+    std::fs::write(
+        work.join(".gita-ci.yml"),
+        "stages: [build]\n\nbuild:\n  stage: build\n  script: echo built\n",
+    )
+    .unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", &url]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "add ci config"]);
+
+    let push_url = format!("http://topci:{}@127.0.0.1:{port}/git/topci/cirepo.git", user.token);
+    let push = Command::new("git")
+        .current_dir(&work)
+        .args(["push", &push_url, "main:main"])
+        .output()
+        .expect("git push must run");
+    assert!(
+        push.status.success(),
+        "git push failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&push.stdout),
+        String::from_utf8_lossy(&push.stderr)
+    );
+
+    let repo_id = app
+        .db
+        .get_repository_by_name("topci", "cirepo")
+        .await
+        .unwrap()
+        .expect("repo")
+        .id;
+
+    let mut pipeline = None;
+    for _ in 0..50 {
+        pipeline = app
+            .db
+            .get_pipeline_by_path(repo_id, ".gita-ci.yml")
+            .await
+            .unwrap();
+        if pipeline.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let pipeline = pipeline.expect(
+        "a .gita-ci.yml in the documented top-level form should create a pipeline",
+    );
+    assert!(pipeline.content.contains("echo built"), "unexpected content: {}", pipeline.content);
+}

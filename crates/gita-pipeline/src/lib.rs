@@ -15,10 +15,24 @@
 //!   needs: [build]
 //! ```
 //!
-//! Unknown top-level or per-job keys are rejected with
+//! Jobs may also be nested under a `jobs:` mapping, which is equivalent:
+//!
+//! ```yaml
+//! stages: [build]
+//! jobs:
+//!   build:
+//!     stage: build
+//!     script: [cargo build --release]
+//! ```
+//!
+//! Both spellings are accepted so a file can be written either way. The
+//! reserved top-level keys are `stages`, `jobs`, `only` and `except`; every
+//! other top-level mapping is treated as a job.
+//!
+//! Unknown per-job keys are rejected with
 //! [`PipelineParseError::UnknownField`]. Image, services, artifacts,
-//! cache, only/except, and `when: manual` are explicitly out of Phase 1
-//! and will be added in later phases.
+//! cache, and `when: manual` are explicitly out of Phase 1 and will be
+//! added in later phases.
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -156,12 +170,19 @@ pub enum PipelineParseError {
     Cycle(Vec<String>),
     #[error("stage '{0}' is declared but no job uses it")]
     UnusedStage(String),
+    #[error("job '{job}' is not a valid job definition: {message}")]
+    InvalidJobEntry { job: String, message: String },
 }
 
 // ----- Raw YAML shapes --------------------------------------------------
 
+/// The whole `.gita-ci.yml` document, flattened so that top-level job
+/// entries and a `jobs:` mapping can be merged before validation.
+///
+/// `stages` / `jobs` / `only` / `except` are reserved; every other
+/// top-level mapping is a job. Keeping the raw document around lets us
+/// accept both spellings without duplicating the validation rules.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawSpec {
     #[serde(default)]
     stages: Vec<String>,
@@ -171,6 +192,12 @@ struct RawSpec {
     only: Option<RawTriggerRule>,
     #[serde(default)]
     except: Option<RawTriggerRule>,
+    /// Every other top-level key, captured so it can be treated as a job.
+    /// The order is preserved: jobs run in the order they appear in the
+    /// file, so an alphabetically-sorted map would silently change
+    /// execution order.
+    #[serde(flatten)]
+    rest: indexmap::IndexMap<String, serde_yaml::Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -181,11 +208,28 @@ struct RawTriggerRule {
     paths: Vec<String>,
 }
 
+/// A job's `script:` — either a list of command lines or a single string.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawScript {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl RawScript {
+    fn into_lines(self) -> Vec<String> {
+        match self {
+            RawScript::One(s) => vec![s],
+            RawScript::Many(v) => v,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawJob {
     stage: Option<String>,
-    script: Option<Vec<String>>,
+    script: Option<RawScript>,
     #[serde(default)]
     needs: Vec<String>,
 }
@@ -199,9 +243,39 @@ pub fn parse_yaml(src: &str) -> Result<PipelineSpec, PipelineParseError> {
         return Err(PipelineParseError::EmptyStages);
     }
 
-    let mut jobs = Vec::with_capacity(raw.jobs.len());
+    // Merge the two job spellings. Top-level entries (the form the writing
+    // guide documents) and the `jobs:` mapping are equivalent; a name in
+    // both is a duplicate rather than a silent overwrite. Document order is
+    // preserved, because jobs within a stage run in the order they appear.
+    let mut raw_jobs: indexmap::IndexMap<String, RawJob> = indexmap::IndexMap::new();
+    for (name, value) in raw.rest {
+        // Each remaining top-level value must be a job mapping. A scalar or
+        // sequence here is a typo, and deserializing it as a RawJob reports
+        // a clear type error.
+        let job: RawJob = serde_yaml::from_value(value).map_err(|e| {
+            // An unknown *key* inside the job is the same class of mistake
+            // as an unknown key in the nested form, so report it the same
+            // way rather than as a malformed entry.
+            if e.to_string().contains("unknown field") {
+                PipelineParseError::Yaml(e)
+            } else {
+                PipelineParseError::InvalidJobEntry {
+                    job: name.clone(),
+                    message: e.to_string(),
+                }
+            }
+        })?;
+        raw_jobs.insert(name, job);
+    }
+    for (name, job) in raw.jobs {
+        if raw_jobs.insert(name.clone(), job).is_some() {
+            return Err(PipelineParseError::DuplicateJob(name));
+        }
+    }
+
+    let mut jobs = Vec::with_capacity(raw_jobs.len());
     let mut seen = std::collections::HashSet::new();
-    for (name, raw_job) in raw.jobs {
+    for (name, raw_job) in raw_jobs {
         if !seen.insert(name.clone()) {
             return Err(PipelineParseError::DuplicateJob(name));
         }
@@ -221,6 +295,7 @@ pub fn parse_yaml(src: &str) -> Result<PipelineSpec, PipelineParseError> {
         }
         let script = raw_job
             .script
+            .map(RawScript::into_lines)
             .ok_or_else(|| PipelineParseError::MissingScript { job: name.clone() })?;
         if script.is_empty() {
             return Err(PipelineParseError::MissingScript { job: name.clone() });
@@ -358,6 +433,103 @@ jobs:
     stage: build
     script: [cargo build]
     image: "rust:1.78"
+"#;
+        let err = parse_yaml(yaml).unwrap_err();
+        assert!(matches!(err, PipelineParseError::Yaml(_)), "got: {err:?}");
+    }
+
+    /// The writing guide documents jobs as top-level keys. That form was
+    /// rejected outright — the parser only understood a `jobs:` mapping — so
+    /// every example in the guide, including its Quick start, produced a
+    /// pipeline that never ran.
+    #[test]
+    fn parse_accepts_top_level_jobs() {
+        let yaml = r#"
+stages: [build, test, deploy]
+
+build:
+  stage: build
+  script:
+    - cargo build --release
+
+unit:
+  stage: test
+  script: cargo test --lib
+  needs: [build]
+
+deploy:
+  stage: deploy
+  script: ./scripts/deploy.sh
+  needs: [unit]
+"#;
+        let spec = parse_yaml(yaml).expect("top-level job form should parse");
+        assert_eq!(spec.stages, vec!["build", "test", "deploy"]);
+        let names: Vec<&str> = spec.jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, vec!["build", "unit", "deploy"]);
+
+        // The job fields carry through exactly as in the nested form.
+        let unit = spec.jobs.iter().find(|j| j.name == "unit").unwrap();
+        assert_eq!(unit.stage, "test");
+        assert_eq!(unit.script, vec!["cargo test --lib".to_string()]);
+        assert_eq!(unit.needs, vec!["build".to_string()]);
+    }
+
+    /// Both spellings may appear in one file; a name used twice is an error
+    /// rather than a silent overwrite.
+    #[test]
+    fn parse_merges_top_level_and_nested_jobs() {
+        let yaml = r#"
+stages: [build, test]
+build:
+  stage: build
+  script: [cargo build]
+jobs:
+  unit:
+    stage: test
+    script: [cargo test]
+"#;
+        let spec = parse_yaml(yaml).expect("mixed form should parse");
+        let names: Vec<&str> = spec.jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, vec!["build", "unit"]);
+    }
+
+    #[test]
+    fn parse_rejects_duplicate_job_across_both_spellings() {
+        let yaml = r#"
+stages: [build]
+build:
+  stage: build
+  script: [cargo build]
+jobs:
+  build:
+    stage: build
+    script: [cargo build]
+"#;
+        let err = parse_yaml(yaml).unwrap_err();
+        assert!(matches!(err, PipelineParseError::DuplicateJob(_)), "got: {err:?}");
+    }
+
+    /// A non-mapping at the top level is a typo, and should say so plainly
+    /// rather than surfacing as an opaque YAML error.
+    #[test]
+    fn parse_rejects_scalar_top_level_entry() {
+        let yaml = "stages: [build]\nbuild: cargo build\n";
+        let err = parse_yaml(yaml).unwrap_err();
+        assert!(
+            matches!(err, PipelineParseError::InvalidJobEntry { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    /// Unknown keys inside a job are still rejected, in either spelling.
+    #[test]
+    fn parse_rejects_unknown_field_in_top_level_job() {
+        let yaml = r#"
+stages: [build]
+build:
+  stage: build
+  script: [cargo build]
+  image: "rust:1.78"
 "#;
         let err = parse_yaml(yaml).unwrap_err();
         assert!(matches!(err, PipelineParseError::Yaml(_)), "got: {err:?}");
