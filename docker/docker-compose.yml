@@ -50,6 +50,10 @@ services:
       # default; set GITA_PAGES_ENABLED=false to turn the feature off.
       - GITA_SERVER_PAGES_ENABLED=${GITA_PAGES_ENABLED:-true}
       - GITA_SERVER_PAGES_URL_PREFIX=${GITA_PAGES_URL_PREFIX:-}
+      # Password reset. No mail transport is wired up, so the reset token
+      # can only reach the user through the API response. Leave this off in
+      # production — see config/config.example.toml.
+      - GITA_SERVER_ALLOW_INSECURE_PASSWORD_RESET=${GITA_ALLOW_INSECURE_PASSWORD_RESET:-false}
     volumes:
       # Persist repositories (database state lives in the postgres volume)
       - gita-data:/data

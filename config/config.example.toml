@@ -23,6 +23,16 @@ pages_enabled = true
 # http://<host>/p/<owner>/<repo>/. Empty means no prefix.
 # pages_url_prefix = "/p"
 
+# Password reset. There is no mail transport wired up, so a reset token
+# has no way to reach the user by mail. When this is true, the
+# password-reset response carries the token in a `reset_token` field, so
+# an operator can complete the flow by hand.
+#
+# Leave it off in production: the response is identical for existing and
+# non-existent accounts, so returning the token would let an anonymous
+# caller both enumerate accounts and take them over.
+# allow_insecure_password_reset = true
+
 [server.ssh]
 # Embedded SSH server for Git over SSH (clone/push via git@host:owner/repo.git).
 # Disabled by default; set to true to enable.

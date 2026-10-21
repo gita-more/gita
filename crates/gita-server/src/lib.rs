@@ -248,6 +248,15 @@ impl Config {
             {
                 config.server.pages_url_prefix = v.to_string();
             }
+            // Password reset. Like the Pages flags, this must be switchable
+            // in both directions, so it is read by key presence rather than
+            // from the defaulted parsed struct.
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("allow_insecure_password_reset"))
+                .and_then(|v| v.as_bool())
+            {
+                config.server.allow_insecure_password_reset = v;
+            }
         } else {
             warn!(
                 "config file {} not found, using defaults",
@@ -396,7 +405,8 @@ impl App {
             (*git).clone(),
             bus.clone(),
         )
-        .with_avatar_dir(config.server.data_dir.join("avatars"));
+        .with_avatar_dir(config.server.data_dir.join("avatars"))
+        .with_insecure_password_reset(config.server.allow_insecure_password_reset);
 
         let git_http_state = GitHttpState {
             git: git.clone(),
@@ -745,6 +755,41 @@ mod tests {
         assert_eq!(config.server.pages_url_prefix, "/p");
     }
 
+    /// The insecure password-reset switch is off by default and can be
+    /// turned on from the config file.
+    #[test]
+    fn config_allow_insecure_password_reset_defaults_off_and_is_loadable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
+
+        // Default: off.
+        std::fs::write(&path, "[server]\n").unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(
+            !config.server.allow_insecure_password_reset,
+            "returning the reset token must be opt-in"
+        );
+
+        // Explicitly enabled.
+        std::fs::write(
+            &path,
+            "[server]\nallow_insecure_password_reset = true\n",
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(config.server.allow_insecure_password_reset);
+
+        // Explicitly disabled again — the flag must be switchable in both
+        // directions, which is why it is read by key presence.
+        std::fs::write(
+            &path,
+            "[server]\nallow_insecure_password_reset = false\n",
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(!config.server.allow_insecure_password_reset);
+    }
+
     /// Load the shipped example config and assert the Pages keys are where the
     /// code reads them.
     ///
@@ -775,6 +820,16 @@ mod tests {
             "example config documents pages_enabled = true; loading it must keep Pages on"
         );
         assert_eq!(config.server.pages_url_prefix, "");
+
+        // The password-reset switch has the same scoping requirement. The
+        // example documents it commented out, so it must still *parse* as a
+        // key of [server] when present — a misplaced one would land under
+        // [server.ssh] and be silently ignored.
+        let server = raw.get("server").expect("example config should have [server]");
+        assert!(
+            server.get("allow_insecure_password_reset").is_none(),
+            "the example must not enable the insecure password reset by default"
+        );
     }
 
     /// The Docker entrypoint generates config.toml from env vars; its Pages
@@ -804,6 +859,18 @@ mod tests {
              [server] table ({server_at}..{ssh_at}) — TOML scopes keys to the most \
              recent table header, so it would be read as server.ssh.pages_enabled \
              and silently ignored"
+        );
+
+        // The password-reset switch has the same trap.
+        let reset_at = text
+            .find("allow_insecure_password_reset =")
+            .expect("entrypoint should emit allow_insecure_password_reset");
+        assert!(
+            reset_at > server_at && reset_at < ssh_at,
+            "allow_insecure_password_reset is emitted at offset {reset_at}, which falls \
+             outside the [server] table ({server_at}..{ssh_at}) — TOML scopes keys to \
+             the most recent table header, so it would be read as \
+             server.ssh.allow_insecure_password_reset and silently ignored"
         );
     }
 

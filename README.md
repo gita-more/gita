@@ -95,6 +95,7 @@ Configuration is TOML:
 | `server.ssh.host_key` | `data/ssh_host_ed25519_key` | Path to the OpenSSH host private key (auto-generated if missing) |
 | `server.pages_enabled` | `true` | Serve GitHub-Pages-style static sites at `/<owner>/<repo>/` |
 | `server.pages_url_prefix` | *(empty)* | Optional URL prefix for Pages, e.g. `/p` serves `/p/<owner>/<repo>/` |
+| `server.allow_insecure_password_reset` | `false` | Return the password-reset token in the API response (see below) |
 
 **Security:** the default `jwt_secret` is a well-known development value.
 Change it before exposing Gita to a network.
@@ -206,6 +207,30 @@ configured ref is served verbatim.
   third-party resources may not render as expected.
 
 Turn the feature off entirely with `server.pages_enabled = false`.
+
+## Password reset
+
+`POST /api/auth/password-reset/request` starts a reset and
+`POST /api/auth/password-reset/confirm` completes it with the token.
+
+No mail transport is wired up, so a reset token has no way to reach the user
+by mail. The request endpoint therefore **never** returns the token by
+default: it always answers with the same uniform message, whether or not the
+account exists, so it cannot be used to enumerate accounts.
+
+That leaves the token reachable only through the server log, which prints the
+exact `POST /api/auth/password-reset/confirm` invocation to use. For a
+deployment with no mail transport, set
+
+```toml
+[server]
+allow_insecure_password_reset = true
+```
+
+and the request response carries the token in a `reset_token` field, so an
+operator can complete the flow by hand. **Leave it off in production**: the
+response is still uniform for existing and non-existent accounts, so returning
+the token lets an anonymous caller both enumerate accounts and take them over.
 
 ## Roadmap
 

@@ -34,6 +34,12 @@ jwt_secret = "${jwt_secret}"
 pages_enabled = ${GITA_SERVER_PAGES_ENABLED:-true}
 pages_url_prefix = "${GITA_SERVER_PAGES_URL_PREFIX:-}"
 
+# Password reset. No mail transport is wired up, so the reset token can
+# only reach the user through the API response when this is enabled.
+# Off by default: returning the token lets an anonymous caller take over
+# any account whose name they can guess.
+allow_insecure_password_reset = ${GITA_SERVER_ALLOW_INSECURE_PASSWORD_RESET:-false}
+
 [server.ssh]
 enabled = ${ssh_enabled}
 host = "${GITA_SERVER_SSH_HOST:-0.0.0.0}"
