@@ -28,7 +28,15 @@ fn base_host(config: &RunnerConfig) -> &str {
 
 /// Build the clone URL with the runner token as Basic auth password.
 /// git clone https://x-access-token:<TOKEN>@<host>/<owner>/<repo>.git
+///
+/// A `file://` server base is passed through unchanged, without the token,
+/// so a runner can be pointed at a local bare repository. That is what the
+/// integration tests use to exercise the real clone path.
 pub fn clone_url(config: &RunnerConfig, owner: &str, repo: &str) -> String {
+    if config.server_base_url.starts_with("file://") {
+        let base = config.server_base_url.trim_end_matches('/');
+        return format!("{base}/{owner}/{repo}.git");
+    }
     format!(
         "https://x-access-token:{}@{}",
         config.runner_token,

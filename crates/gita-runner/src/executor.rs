@@ -54,25 +54,91 @@ pub async fn execute_pipeline(
     // If the repo is already present (e.g. a prior run left it, or an
     // integration test pre-cloned it), skip the network clone.
     if !repo_dir.join(".git").exists() {
-        let clone_status = Command::new("git")
+        // The run stores the full ref (`refs/heads/main`), but `git clone
+        // --branch` wants a short branch name — it does not strip the
+        // prefix, and `refs/heads/main` fails with "Remote branch not
+        // found". Clone by short name, then check out the exact commit the
+        // run was created for, so a run tests what it says it tests even
+        // if the branch has moved on since.
+        let short_branch = run
+            .ref_name
+            .strip_prefix("refs/heads/")
+            .unwrap_or(&run.ref_name);
+        // Pipe the child's output rather than inheriting it: a clone that
+        // fails should have its error surfaced in the log, not swallowed
+        // into the runner's own stdout.
+        let clone_output = Command::new("git")
             .arg("clone")
             .arg("--depth")
             .arg("1")
             .arg("--branch")
-            .arg(&run.ref_name)
+            .arg(&short_branch)
             .arg(&url)
             .arg(&repo_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .status()
+            .output()
             .await
             .context("git clone")?;
 
-        if !clone_status.success() {
+        if !clone_output.status.success() {
+            tracing::warn!(
+                "git clone of {url} (branch {short_branch}) failed: {}",
+                String::from_utf8_lossy(&clone_output.stderr).trim()
+            );
             // Branch may not exist anymore or ref is deleted; mark run failed.
             db.update_pipeline_run_status(run.id, "failed").await?;
             return Ok(());
+        }
+
+        // Check out the exact commit the run was created for. The clone
+        // fetched the branch tip, which may have moved on since the run was
+        // queued — the run would then execute a different commit than the
+        // one it reports. A shallow clone may not contain the SHA at all,
+        // so fetch it explicitly first.
+        if !run.head_sha.is_empty() {
+            let fetch_status = Command::new("git")
+                .arg("-C")
+                .arg(&repo_dir)
+                .arg("fetch")
+                .arg("--depth")
+                .arg("1")
+                .arg("origin")
+                .arg(&run.head_sha)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .status()
+                .await
+                .context("git fetch")?;
+            if fetch_status.success() {
+                let checkout_status = Command::new("git")
+                    .arg("-C")
+                    .arg(&repo_dir)
+                    .arg("checkout")
+                    .arg("--detach")
+                    .arg(&run.head_sha)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .status()
+                    .await
+                    .context("git checkout")?;
+                if !checkout_status.success() {
+                    tracing::warn!(
+                        "checkout of {} failed; continuing with the branch tip",
+                        run.head_sha
+                    );
+                }
+            } else {
+                // The commit is no longer reachable (force-pushed away). Run
+                // against the branch tip rather than failing outright.
+                tracing::warn!(
+                    "fetch of {} failed; continuing with the branch tip",
+                    run.head_sha
+                );
+            }
         }
     }
 

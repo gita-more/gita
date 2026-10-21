@@ -1092,3 +1092,112 @@ async fn http_push_with_top_level_ci_config_enqueues_run() {
     );
     assert!(pipeline.content.contains("echo built"), "unexpected content: {}", pipeline.content);
 }
+
+/// The runner must be able to clone the repository itself, from a full ref.
+///
+/// Every other test in this file pre-clones the repo into the workspace, so
+/// the runner's own clone path — the one that runs in production — was never
+/// exercised. It passed `run.ref_name` (a full ref, `refs/heads/main`) to
+/// `git clone --branch`, which wants a short branch name and fails with
+/// "Remote branch refs/heads/main not found". Every real push-triggered run
+/// therefore failed at the clone step.
+#[tokio::test]
+async fn runner_clones_the_repository_using_a_full_ref() {
+    let (app, _guard) = common::test_app().await;
+    let db = app.db.clone();
+    let user = common::register_user(&app, "cloneci").await;
+    common::create_repo(&app, &user.token, "cirepo").await;
+    common::push_files(
+        &app,
+        "cloneci",
+        "cirepo",
+        &[(
+            ".gita-ci.yml",
+            b"stages: [build]\njobs:\n  build:\n    stage: build\n    script:\n      - echo cloned-ok\n"
+                .as_slice(),
+        )],
+        "main",
+        "add ci config",
+    );
+
+    // Register the pipeline and enqueue a run, as the push handler does.
+    let repo = db
+        .get_repository_by_name("cloneci", "cirepo")
+        .await
+        .unwrap()
+        .expect("repo");
+    let head_sha = app
+        .git
+        .head_sha("cloneci", "cirepo", "main")
+        .expect("head sha");
+    let yaml = "stages: [build]\njobs:\n  build:\n    stage: build\n    script:\n      - echo cloned-ok\n";
+    let pipeline_id = db
+        .upsert_pipeline(repo.id, ".gita-ci.yml", "refs/heads/main", &head_sha, yaml)
+        .await
+        .unwrap();
+    let run_id = db
+        .insert_pipeline_run(pipeline_id, repo.id, "refs/heads/main", &head_sha, None, None)
+        .await
+        .unwrap();
+
+    // The runner clones the bare repo directly — no pre-clone — so the
+    // executor's own clone path runs.
+    let bare = app.data_dir.join("repos").join("cloneci").join("cirepo.git");
+    let runner_config = RunnerConfig {
+        server_db_url: common::test_db_url(),
+        server_base_url: format!("file://{}", bare.parent().unwrap().display()),
+        runner_token: "test-token".to_string(),
+        runner_name: "test-runner".to_string(),
+        work_dir: std::env::temp_dir().join(format!(
+            "gita-clone-it-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )),
+        poll_interval_secs: 1,
+        claim_lease_secs: 300,
+        concurrent_jobs: 1,
+    };
+    // The bare repo lives at <base>/cloneci/cirepo.git, so the clone URL
+    // must be built from the parent of the bare repo.
+    let runner_config = RunnerConfig {
+        server_base_url: format!("file://{}", app.data_dir.join("repos").display()),
+        ..runner_config
+    };
+
+    // Claim the run the way the runner's poll loop does.
+    let claimed = db
+        .claim_pipeline_run(&runner_config.runner_name, 300)
+        .await
+        .unwrap()
+        .expect("a run should be claimable");
+    assert_eq!(claimed.id, run_id);
+    assert_eq!(
+        claimed.ref_name, "refs/heads/main",
+        "the run should carry the full ref, which is what broke the clone"
+    );
+
+    let registry = JobRegistry::new();
+    execute_pipeline(&db, &runner_config, &registry, &claimed)
+        .await
+        .expect("execute_pipeline");
+
+    // The run must succeed — the clone has to work.
+    let finished = db.get_pipeline_run(run_id).await.unwrap().unwrap();
+    assert_eq!(
+        finished.status, "success",
+        "the runner's own clone should have succeeded"
+    );
+
+    // And the job's output must show it really ran the cloned repo.
+    let jobs = db.list_jobs(run_id).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    let logs = db.list_logs_since(jobs[0].id, -1, 1000).await.unwrap();
+    let text: String = logs.iter().map(|l| l.line.clone()).collect();
+    assert!(
+        text.contains("cloned-ok"),
+        "the job should have run in the cloned repo, logs: {text}"
+    );
+}
