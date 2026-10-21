@@ -195,10 +195,15 @@ async fn handle_git_request(
                         continue; // no CI config at this commit
                     };
                     // Parse + apply only/except filter before enqueueing.
-                    // We only have the branch + the new SHA here; the
-                    // pipeline spec may carry changed paths in a future
-                    // revision. For Phase 2 we evaluate the branch rule
-                    // and pass an empty changed_paths list.
+                    // The changed paths are the difference between the
+                    // pushed commit and the one it replaced, so that
+                    // `only:`/`except:` path filters have something to
+                    // match against. Without them an `except: paths: [...]`
+                    // rule could never fire.
+                    let changed_paths = changed_paths_for_push(&state, owner, repo_name, upd)
+                        .await;
+                    let changed_refs: Vec<&str> =
+                        changed_paths.iter().map(|p| p.as_str()).collect();
                     let pipeline_id = state
                         .db
                         .upsert_pipeline(
@@ -213,15 +218,19 @@ async fn handle_git_request(
                     let Some(pid) = pipeline_id else { continue };
 
                     // Apply the only/except trigger filters from the
-                    // .gita-ci.yml we just parsed. Phase 2 evaluates
-                    // branch + path; we pass an empty changed_paths
-                    // list here because the receive-pack handler
-                    // doesn't know which paths the commit touched yet.
+                    // .gita-ci.yml we just parsed. The branch is matched
+                    // by its short name (`main`), which is what a user
+                    // writes in `branches: [main, release/*]` — matching
+                    // the full ref would never match a short glob.
+                    let short_branch = upd
+                        .ref_name
+                        .strip_prefix("refs/heads/")
+                        .unwrap_or(&upd.ref_name);
                     match gita_pipeline::parse_yaml(&file.content) {
                         Ok(spec) => {
                             use gita_pipeline::TriggerDecision;
-                            if matches!(
-                                spec.triggers.should_run(&upd.ref_name, &[]),
+                                    if matches!(
+                                spec.triggers.should_run(short_branch, &changed_refs),
                                 TriggerDecision::Skip
                             ) {
                                 info!(
@@ -312,6 +321,45 @@ fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<String>) {
             .to_string()
     });
     (owner, repo)
+}
+
+/// The paths a pushed commit changed, relative to the repository root.
+///
+/// This is what `only:`/`except:` path filters match against. For a new
+/// branch the whole tree counts as changed, since there is no earlier
+/// commit to compare against.
+async fn changed_paths_for_push(
+    state: &GitHttpState,
+    owner: &str,
+    repo_name: &str,
+    upd: &RefUpdate,
+) -> Vec<String> {
+    // A branch creation has no previous commit; treat every file as
+    // changed so path filters still have a chance to match.
+    let old_sha = upd.old_sha.trim();
+    if old_sha.is_empty() || old_sha.chars().all(|c| c == '0') {
+        return state
+            .git
+            .list_tree(owner, repo_name, &upd.new_sha, "")
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|e| e.kind == "blob")
+                    .map(|e| e.path)
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    match state
+        .git
+        .diff_files_between(owner, repo_name, old_sha, &upd.new_sha)
+    {
+        Ok(files) => files.into_iter().map(|(_, path)| path).collect(),
+        Err(e) => {
+            warn!("could not compute changed paths for {owner}/{repo_name}: {e}");
+            Vec::new()
+        }
+    }
 }
 
 /// One ref-update line parsed from a git-receive-pack request body.

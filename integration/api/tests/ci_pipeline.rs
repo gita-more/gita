@@ -1201,3 +1201,253 @@ async fn runner_clones_the_repository_using_a_full_ref() {
         "the job should have run in the cloned repo, logs: {text}"
     );
 }
+
+/// A path filter must be able to skip a run.
+///
+/// The push handler passed an empty changed-paths list to the trigger
+/// evaluation, so `except: paths: [...]` could never match and a docs-only
+/// commit still ran the full pipeline — even though the configuration asked
+/// for exactly the opposite.
+#[tokio::test(flavor = "multi_thread")]
+async fn except_paths_filter_skips_a_docs_only_push() {
+    use axum::Router;
+    use tower::ServiceExt;
+
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "pathfilter").await;
+    common::create_repo(&app, &user.token, "cirepo").await;
+
+    // A pipeline that only wants to run for source changes.
+    common::push_files(
+        &app,
+        "pathfilter",
+        "cirepo",
+        &[(
+            ".gita-ci.yml",
+            b"stages: [build]\n\
+              only:\n\
+              \x20 branches: [main]\n\
+              except:\n\
+              \x20 paths: [\"docs/**\"]\n\
+              jobs:\n\
+              \x20 build:\n\
+              \x20   stage: build\n\
+              \x20   script:\n\
+              \x20     - echo built\n"
+                .as_slice(),
+        )],
+        "main",
+        "add ci config",
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let router = app.router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("http://127.0.0.1:{port}/git/pathfilter/cirepo.git");
+    let dir = tempfile::TempDir::new().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&work)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    // A commit that only touches docs/.
+    std::fs::create_dir_all(work.join("docs")).unwrap();
+    std::fs::write(work.join("docs/readme.md"), "docs only\n").unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", &url]);
+    // The .gita-ci.yml commit was already pushed by push_files; start from
+    // it so this push is a docs-only change on top.
+    git(&["pull", "-q", "--rebase", "origin", "main"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "docs only"]);
+
+    let push_url = format!(
+        "http://pathfilter:{}@127.0.0.1:{port}/git/pathfilter/cirepo.git",
+        user.token
+    );
+    let push = Command::new("git")
+        .current_dir(&work)
+        .args(["push", &push_url, "main:main"])
+        .output()
+        .expect("git push must run");
+    assert!(
+        push.status.success(),
+        "git push failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&push.stdout),
+        String::from_utf8_lossy(&push.stderr)
+    );
+
+    // No run may be enqueued: the only changed path is excluded. (The
+    // pipeline *definition* row is still recorded — it reflects the repo's
+    // CI config, which did change — but the run is what the filter gates.)
+    let repo_id = app
+        .db
+        .get_repository_by_name("pathfilter", "cirepo")
+        .await
+        .unwrap()
+        .expect("repo")
+        .id;
+    let mut runs = Vec::new();
+    for _ in 0..30 {
+        if let Some(pipeline) = app
+            .db
+            .get_pipeline_by_path(repo_id, ".gita-ci.yml")
+            .await
+            .unwrap()
+        {
+            runs = app.db.list_pipeline_runs(pipeline.id, 50).await.unwrap();
+            if !runs.is_empty() {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    eprintln!("DEBUG runs found: {runs:?}");
+    assert!(
+        runs.is_empty(),
+        "a docs-only push should have been filtered out by except.paths, \
+         but a run was enqueued: {runs:?}"
+    );
+}
+
+/// A branch filter written the way the guide documents must match.
+///
+/// The trigger evaluation compared the full ref (`refs/heads/main`) against
+/// the branch globs, but a user writes `branches: [main, release/*]` — a
+/// short name. Nothing ever matched, so `only: branches: [main]` silently
+/// skipped every pipeline.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_branches_filter_matches_a_short_branch_name() {
+    use axum::Router;
+    use tower::ServiceExt;
+
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "branchfilter").await;
+    common::create_repo(&app, &user.token, "cirepo").await;
+    common::push_files(
+        &app,
+        "branchfilter",
+        "cirepo",
+        &[(
+            ".gita-ci.yml",
+            b"stages: [build]\n\
+              only:\n\
+              \x20 branches: [main]\n\
+              jobs:\n\
+              \x20 build:\n\
+              \x20   stage: build\n\
+              \x20   script:\n\
+              \x20     - echo built\n"
+                .as_slice(),
+        )],
+        "main",
+        "add ci config",
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let router = app.router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("http://127.0.0.1:{port}/git/branchfilter/cirepo.git");
+    let dir = tempfile::TempDir::new().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&work)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    std::fs::write(work.join("app.txt"), "source\n").unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", &url]);
+    git(&["pull", "-q", "--rebase", "origin", "main"]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "source change"]);
+
+    let push_url = format!(
+        "http://branchfilter:{}@127.0.0.1:{port}/git/branchfilter/cirepo.git",
+        user.token
+    );
+    let push = Command::new("git")
+        .current_dir(&work)
+        .args(["push", &push_url, "main:main"])
+        .output()
+        .expect("git push must run");
+    assert!(
+        push.status.success(),
+        "git push failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&push.stdout),
+        String::from_utf8_lossy(&push.stderr)
+    );
+
+    // A run must be enqueued: the branch matches `only.branches: [main]`.
+    let repo_id = app
+        .db
+        .get_repository_by_name("branchfilter", "cirepo")
+        .await
+        .unwrap()
+        .expect("repo")
+        .id;
+    let mut runs = Vec::new();
+    for _ in 0..30 {
+        if let Some(pipeline) = app
+            .db
+            .get_pipeline_by_path(repo_id, ".gita-ci.yml")
+            .await
+            .unwrap()
+        {
+            runs = app.db.list_pipeline_runs(pipeline.id, 50).await.unwrap();
+            if !runs.is_empty() {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !runs.is_empty(),
+        "a push to main must enqueue a run when only.branches is [main]"
+    );
+}
