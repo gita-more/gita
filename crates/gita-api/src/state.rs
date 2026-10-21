@@ -16,6 +16,11 @@ pub struct AppState {
     pub bus: EventBus,
     /// Per-IP login rate limiter. `None` means rate limiting is disabled.
     pub login_limiter: Option<crate::middleware::SharedLimiter>,
+    /// Per-IP registration rate limiter, kept separate from the login one:
+    /// registration performs an Argon2 hash on every call, and sharing a
+    /// bucket with login would let one endpoint's traffic starve the other.
+    /// `None` means rate limiting is disabled.
+    pub register_limiter: Option<crate::middleware::SharedLimiter>,
     /// Directory where user avatar images are stored.
     pub avatar_dir: PathBuf,
 }
@@ -28,6 +33,7 @@ impl AppState {
             git: Arc::new(git),
             bus,
             login_limiter: None,
+            register_limiter: None,
             avatar_dir: PathBuf::from("data/avatars"),
         }
     }
@@ -35,6 +41,12 @@ impl AppState {
     /// Set the login rate limiter (called by `gita-server::run`).
     pub fn with_login_limiter(mut self, limiter: crate::middleware::SharedLimiter) -> Self {
         self.login_limiter = Some(limiter);
+        self
+    }
+
+    /// Set the registration rate limiter (called by `gita-server::run`).
+    pub fn with_register_limiter(mut self, limiter: crate::middleware::SharedLimiter) -> Self {
+        self.register_limiter = Some(limiter);
         self
     }
 

@@ -108,8 +108,24 @@ pub fn auth_routes_except_login() -> Router<AppState> {
 
 async fn register(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    connect_info: crate::extract::OptionalConnectInfo,
     Json(req): Json<RegisterRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
+    // Per-IP rate limiting. Registration is the more expensive of the two:
+    // it performs an Argon2 hash on every call, so leaving it unthrottled
+    // lets a script fill the users table at full request rate — and
+    // brute-forcing a *known* account is limited while creating unlimited
+    // new ones is not. It gets its own bucket so that login traffic and
+    // registration traffic cannot starve one another.
+    if let Some(limiter) = state.register_limiter.as_ref() {
+        let key = crate::middleware::client_ip(&headers, connect_info.0);
+        if limiter.check_key(&key).is_err() {
+            return Err(ApiError::RateLimited(
+                "too many registration attempts; try again later".into(),
+            ));
+        }
+    }
     let username = req.username.trim().to_string();
     let email = req.email.trim().to_string();
     if username.is_empty() || username.len() < 2 {
@@ -174,18 +190,15 @@ async fn register(
 pub async fn login(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
+    connect_info: crate::extract::OptionalConnectInfo,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
-    // Per-IP rate limiting (P1). Bucket is per-IP; the X-Forwarded-For
-    // header is honored when present so the limiter is correct behind a
-    // trusted reverse proxy (nginx/docker-compose sets this).
+    // Per-IP rate limiting (P1). The bucket is per-IP and keyed on the
+    // real peer address when the request arrived over a socket; the
+    // X-Forwarded-For header is only consulted as a fallback (see
+    // `middleware::client_ip`).
     if let Some(limiter) = state.login_limiter.as_ref() {
-        let key = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let key = crate::middleware::client_ip(&headers, connect_info.0);
         if limiter.check_key(&key).is_err() {
             return Err(ApiError::RateLimited("too many login attempts; try again later".into()));
         }

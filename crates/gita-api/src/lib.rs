@@ -20,8 +20,8 @@ pub mod state;
 
 pub use auth::Auth;
 pub use error::{ApiError, ApiResult, MessageResponse, message};
-pub use extract::{AuthUserExtractor, OptionalAuthUser};
-pub use middleware::{SharedLimiter, build_limiter};
+pub use extract::{AuthUserExtractor, OptionalAuthUser, OptionalConnectInfo};
+pub use middleware::{SharedLimiter, build_limiter, client_ip};
 pub use routes::pages_site::{PagesOptions, pages_site_routes};
 pub use state::AppState;
 

@@ -1,7 +1,8 @@
 //! Rate limiting middleware (in-memory, per-IP keyed).
 //!
-//! Protects the `/api/auth/login` endpoint from brute force. Uses
-//! [`governor::RateLimiter`] with a token-bucket quota:
+//! Protects the `/api/auth/login` and `/api/auth/register` endpoints from
+//! brute force and abuse. Uses [`governor::RateLimiter`] with a token-bucket
+//! quota:
 //! - refill: `per_second` tokens per second
 //! - burst:  `burst`
 //!
@@ -11,7 +12,7 @@
 
 use axum::body::Body;
 use axum::extract::Request;
-use axum::http::{HeaderName, StatusCode};
+use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use governor::clock::{Clock, DefaultClock};
@@ -33,6 +34,36 @@ pub fn build_limiter(per_second: u32, burst: u32) -> SharedLimiter {
 
 /// Custom header exposed on 429 responses with the seconds-until-retry hint.
 pub const RETRY_AFTER: HeaderName = axum::http::HeaderName::from_static("retry-after");
+
+/// Resolve the address a rate-limit bucket should be keyed on.
+///
+/// The real peer address (`ConnectInfo`) is authoritative: it comes from the
+/// TCP connection and cannot be forged by the client. When it is available
+/// — which is the case for every request that arrives over a socket — the
+/// `X-Forwarded-For` header is ignored entirely.
+///
+/// `X-Forwarded-For` is only consulted when there is no peer address, i.e.
+/// when the router is driven directly (tests, or an in-process embedding).
+/// In that case the **right-most** entry is used: a client that prepends
+/// forged hops to the header cannot influence the key, because the right-most
+/// entry is the one written by the closest proxy. Taking the left-most entry
+/// (as an earlier version did) would let a caller mint an unlimited number
+/// of buckets by varying a header value it controls.
+pub fn client_ip(
+    headers: &HeaderMap,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+) -> String {
+    if let Some(ci) = connect_info {
+        return ci.0.ip().to_string();
+    }
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.rsplit(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
 /// Axum middleware that rate-limits by client IP using `limiter`.
 ///
@@ -82,4 +113,59 @@ pub async fn rate_limit_by_ip(
     }
 }
 
-use std::time::Duration;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn headers_with_xff(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "x-forwarded-for",
+            axum::http::HeaderValue::from_str(value).unwrap(),
+        );
+        h
+    }
+
+    /// The peer address wins over the header: it cannot be forged by the
+    /// client, whereas `X-Forwarded-For` can.
+    #[test]
+    fn peer_address_takes_precedence_over_forwarded_for() {
+        let peer: SocketAddr = "198.51.100.7:5000".parse().unwrap();
+        let headers = headers_with_xff("1.2.3.4, 203.0.113.9");
+        let ip = client_ip(&headers, Some(axum::extract::ConnectInfo(peer)));
+        assert_eq!(ip, "198.51.100.7");
+    }
+
+    /// Without a peer address, the right-most forwarded hop is used, so
+    /// prepending forged hops cannot mint a fresh bucket.
+    #[test]
+    fn forwarded_for_uses_the_right_most_hop() {
+        let headers = headers_with_xff("1.2.3.4, 203.0.113.9");
+        assert_eq!(client_ip(&headers, None), "203.0.113.9");
+    }
+
+    /// Two requests that differ only in a forged left-most hop must resolve
+    /// to the same key.
+    #[test]
+    fn forged_left_most_hop_does_not_change_the_key() {
+        let a = headers_with_xff("1.2.3.4, 203.0.113.9");
+        let b = headers_with_xff("5.6.7.8, 203.0.113.9");
+        assert_eq!(client_ip(&a, None), client_ip(&b, None));
+    }
+
+    /// A single-hop header still works, and surrounding whitespace is
+    /// trimmed.
+    #[test]
+    fn single_hop_and_whitespace_are_handled() {
+        let h = headers_with_xff("  203.0.113.9  ");
+        assert_eq!(client_ip(&h, None), "203.0.113.9");
+    }
+
+    /// With no header at all the key is a fixed sentinel rather than empty.
+    #[test]
+    fn missing_header_yields_a_stable_sentinel() {
+        let empty = HeaderMap::new();
+        assert_eq!(client_ip(&empty, None), "unknown");
+    }
+}
