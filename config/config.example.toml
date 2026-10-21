@@ -14,6 +14,15 @@ database_url = "postgres://gita:gita@localhost:5432/gita"
 # Secret used to sign JWTs. Change this in production!
 jwt_secret = "dev-secret-change-me"
 
+# GitHub-Pages-style static site serving. When enabled (the default), a
+# repository with Pages configured publishes its site at
+#   http://<host>/<owner>/<repo>/
+# from a branch and folder of your choosing ("/" or "/docs").
+pages_enabled = true
+# Optional URL prefix for all Pages sites, e.g. "/p" serves
+# http://<host>/p/<owner>/<repo>/. Empty means no prefix.
+# pages_url_prefix = "/p"
+
 [server.ssh]
 # Embedded SSH server for Git over SSH (clone/push via git@host:owner/repo.git).
 # Disabled by default; set to true to enable.
@@ -25,12 +34,3 @@ port = 2222
 # Path to the OpenSSH-format host private key. Defaults to
 # <data_dir>/ssh_host_ed25519_key and is auto-generated on first run.
 # host_key = "data/ssh_host_ed25519_key"
-
-# GitHub-Pages-style static site serving. When enabled (the default), a
-# repository with Pages configured publishes its site at
-#   http://<host>/<owner>/<repo>/
-# from a branch and folder of your choosing ("/" or "/docs").
-pages_enabled = true
-# Optional URL prefix for all Pages sites, e.g. "/p" serves
-# http://<host>/p/<owner>/<repo>/. Empty means no prefix.
-# pages_url_prefix = "/p"

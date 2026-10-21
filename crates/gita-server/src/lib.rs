@@ -660,4 +660,36 @@ mod tests {
         let config = Config::load(&path).unwrap();
         assert_eq!(config.server.pages_url_prefix, "/p");
     }
+
+    /// Load the shipped example config and assert the Pages keys are where the
+    /// code reads them.
+    ///
+    /// Regression test: TOML keys are scoped to the most recent table header,
+    /// so placing `pages_enabled` after `[server.ssh]` silently parses it as
+    /// `server.ssh.pages_enabled` — leaving `Config::load` to see nothing and
+    /// the documented setting quietly inert. This test parses the actual
+    /// example file the operator copies, so the two cannot drift apart.
+    #[test]
+    fn example_config_parses_pages_keys_under_server() {
+        let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config/config.example.toml");
+        let text = std::fs::read_to_string(&example)
+            .unwrap_or_else(|e| panic!("read {}: {e}", example.display()));
+
+        let raw: toml::Value = toml::from_str(&text).expect("example config should be valid TOML");
+        let server = raw.get("server").expect("example config should have [server]");
+        assert!(
+            server.get("pages_enabled").is_some(),
+            "pages_enabled must live under [server], not [server.ssh] — TOML keys \
+             belong to the preceding table header, so a misplaced key is silently ignored"
+        );
+
+        // And it must survive the real loader with the documented value.
+        let config = Config::load(&example).unwrap();
+        assert!(
+            config.server.pages_enabled,
+            "example config documents pages_enabled = true; loading it must keep Pages on"
+        );
+        assert_eq!(config.server.pages_url_prefix, "");
+    }
 }
