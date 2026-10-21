@@ -369,3 +369,250 @@ async fn reserved_path_segments_are_not_treated_as_owners() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Private repository visibility
+// ---------------------------------------------------------------------------
+
+/// A private repository's contents must not be readable over REST.
+///
+/// The git-over-HTTP and SSH paths already enforced "public repositories are
+/// anonymously readable, private ones are owner-only". The REST API did not:
+/// its repo-scoped read handlers took no auth extractor and never looked at
+/// `is_private`, so an anonymous caller could read the files, commits,
+/// pull requests and issues of a private repository.
+#[tokio::test]
+async fn private_repo_is_not_readable_anonymously() {
+    let (app, guard) = test_app().await;
+    let _guard = guard;
+    let owner = register_user(&app, "privowner").await;
+
+    // Create a private repo with a file in it.
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/api/repos",
+        Some(serde_json::json!({
+            "name": "secrets",
+            "description": "private",
+            "default_branch": "main",
+            "is_private": true,
+        })),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create private repo: {body}");
+    push_files(
+        &app,
+        "privowner",
+        "secrets",
+        &[("secret.txt", b"TOP SECRET\n")],
+        "main",
+        "add secret",
+    );
+
+    // Every repo-scoped read must refuse an anonymous caller.
+    for uri in [
+        "/api/repos/privowner/secrets",
+        "/api/repos/privowner/secrets/tree?path=",
+        "/api/repos/privowner/secrets/file?path=secret.txt",
+        "/api/repos/privowner/secrets/commits?ref=main",
+        "/api/repos/privowner/secrets/branches",
+        "/api/repos/privowner/secrets/tags",
+        "/api/repos/privowner/secrets/prs",
+        "/api/repos/privowner/secrets/issues",
+    ] {
+        let (status, body) = request(&app, Method::GET, uri, None, None).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{uri} must not be readable anonymously, got {status} {body}"
+        );
+        let rendered = body.to_string();
+        assert!(
+            !rendered.contains("TOP SECRET"),
+            "{uri} leaked file content: {rendered}"
+        );
+    }
+}
+
+/// The owner can still read their own private repository.
+#[tokio::test]
+async fn owner_can_read_their_private_repo() {
+    let (app, guard) = test_app().await;
+    let _guard = guard;
+    let owner = register_user(&app, "privself").await;
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/api/repos",
+        Some(serde_json::json!({
+            "name": "mine",
+            "description": "private",
+            "default_branch": "main",
+            "is_private": true,
+        })),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create private repo: {body}");
+    push_files(
+        &app,
+        "privself",
+        "mine",
+        &[("secret.txt", b"TOP SECRET\n")],
+        "main",
+        "add secret",
+    );
+
+    let (status, body) = request(
+        &app,
+        Method::GET,
+        "/api/repos/privself/mine/file?path=secret.txt",
+        None,
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["content"].as_str().unwrap_or("").contains("TOP SECRET"));
+}
+
+/// A public repository stays anonymously readable — the fix must not lock
+/// public repos behind authentication.
+#[tokio::test]
+async fn public_repo_stays_anonymously_readable() {
+    let (app, guard) = test_app().await;
+    let _guard = guard;
+    let owner = register_user(&app, "pubowner").await;
+    create_repo(&app, &owner.token, "open").await;
+    push_files(
+        &app,
+        "pubowner",
+        "open",
+        &[("readme.txt", b"public content\n")],
+        "main",
+        "add readme",
+    );
+
+    let (status, body) = request(
+        &app,
+        Method::GET,
+        "/api/repos/pubowner/open/file?path=readme.txt",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "public repo should be readable: {body}");
+    assert!(body["content"].as_str().unwrap_or("").contains("public content"));
+}
+
+/// The repository list must not reveal private repositories to an anonymous
+/// caller, and the global issue list must not leak their issues.
+#[tokio::test]
+async fn listings_hide_private_repos_from_anonymous_callers() {
+    let (app, guard) = test_app().await;
+    let _guard = guard;
+    let owner = register_user(&app, "listpriv").await;
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/api/repos",
+        Some(serde_json::json!({
+            "name": "hidden",
+            "description": "private",
+            "default_branch": "main",
+            "is_private": true,
+        })),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create private repo: {body}");
+
+    // The repo list.
+    let (status, body) = request(&app, Method::GET, "/api/repos", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let listed = body.to_string();
+    assert!(
+        !listed.contains("listpriv/hidden"),
+        "the repo list leaked a private repository: {listed}"
+    );
+
+    // The global issue list.
+    let (status, body) = request(&app, Method::GET, "/api/issues", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let issues = body.to_string();
+    assert!(
+        !issues.contains("listpriv/hidden"),
+        "the global issue list leaked a private repository: {issues}"
+    );
+
+    // The owner does see it.
+    let (_, body) = request(&app, Method::GET, "/api/repos", None, Some(&owner.token)).await;
+    assert!(
+        body.to_string().contains("listpriv/hidden"),
+        "the owner should still see their private repo"
+    );
+}
+
+/// A comment event must not break the whole event stream.
+///
+/// `parse_event_type` did not know the comment event types, and an unknown
+/// type made the whole query fail — so the first comment anyone posted
+/// turned `GET /api/events` into a 500 for every event, not just that one.
+#[tokio::test]
+async fn comment_events_do_not_break_the_event_stream() {
+    let (app, guard) = test_app().await;
+    let _guard = guard;
+    let owner = register_user(&app, "evowner").await;
+    create_repo(&app, &owner.token, "evrepo").await;
+
+    // A comment on an issue publishes a `comment_created` event.
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/api/repos/evowner/evrepo/issues",
+        Some(serde_json::json!({
+            "title": "an issue",
+            "body": "body",
+        })),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create issue: {body}");
+    let number = body["number"].as_i64().expect("issue number");
+
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        &format!("/api/repos/evowner/evrepo/issues/{number}/comments"),
+        Some(serde_json::json!({ "body": "a comment" })),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create comment: {body}");
+
+    // The event stream must still work, and include the comment event.
+    // The persist hook runs on a spawned task, so give it a moment.
+    let mut body = serde_json::Value::Null;
+    for _ in 0..50 {
+        let (status, res) =
+            request(&app, Method::GET, "/api/events?limit=50", None, Some(&owner.token)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the event stream must not fail: {res}"
+        );
+        let events = res["events"].as_array().expect("events array");
+        if events.iter().any(|e| e["event_type"] == "comment_created") {
+            body = res;
+            break;
+        }
+        body = res;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let events = body["events"].as_array().expect("events array");
+    assert!(
+        events.iter().any(|e| e["event_type"] == "comment_created"),
+        "expected a comment_created event, got {body}"
+    );
+}

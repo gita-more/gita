@@ -1,7 +1,7 @@
 //! Issue routes: create, list, get, close.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::AuthUserExtractor;
+use crate::extract::{AuthUserExtractor, OptionalAuthUser};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
@@ -57,6 +57,7 @@ pub fn issue_routes() -> Router<AppState> {
 /// Global issue list across all repositories.
 async fn list_global_issues(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Query(q): Query<ListIssuesQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let status = match q.status.as_deref() {
@@ -70,6 +71,11 @@ async fn list_global_issues(
     Ok(Json(serde_json::json!({
         "issues": items
             .into_iter()
+            // Skip issues belonging to private repositories the caller
+            // cannot see; the list spans every repository.
+            .filter(|(_, repo)| {
+                crate::routes::visibility::can_read(repo, user.0.as_ref())
+            })
             .map(|(issue, repo)| serde_json::json!({
                 "id": issue.id,
                 "number": issue.number,
@@ -118,14 +124,17 @@ async fn create_issue(
 
 async fn list_issues(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<ListIssuesQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let status = match q.status.as_deref() {
         None | Some("open") => Some(IssueStatus::Open),
         Some("closed") => Some(IssueStatus::Closed),
@@ -141,13 +150,16 @@ async fn list_issues(
 
 async fn get_issue(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<IssueResponse>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let issue = state
         .db
         .get_issue(repo.id, number)

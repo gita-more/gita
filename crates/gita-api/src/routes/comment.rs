@@ -1,7 +1,7 @@
 //! Comment routes: create/list/delete comments on pull requests and issues.
 
 use crate::error::{ApiError, ApiResult, MessageResponse};
-use crate::extract::AuthUserExtractor;
+use crate::extract::{AuthUserExtractor, OptionalAuthUser};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::get;
@@ -98,13 +98,16 @@ async fn create_pr_comment(
 
 async fn list_pr_comments(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -163,13 +166,16 @@ async fn create_issue_comment(
 
 async fn list_issue_comments(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let issue = state
         .db
         .get_issue(repository.id, number)

@@ -2,7 +2,7 @@
 //!
 //! PostgreSQL-only. Schema is created idempotently at startup.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use gita_core::*;
 use serde_json::Value;
@@ -137,7 +137,11 @@ impl Db {
             let payload: String = row.try_get("payload")?;
             let payload: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
             let event_type: String = row.try_get("event_type")?;
-            let event_type = parse_event_type(&event_type)?;
+            // Skip events whose type this build does not recognise rather
+            // than failing the whole listing.
+            let Some(event_type) = parse_event_type(&event_type) else {
+                continue;
+            };
             let created_at: String = row.try_get("created_at")?;
             events.push(Event {
                 id: row.try_get("id")?,
@@ -159,8 +163,14 @@ impl Db {
     }
 }
 
-fn parse_event_type(s: &str) -> Result<EventType> {
-    Ok(match s {
+/// Parse an event type string.
+///
+/// Returns `None` for a type this build does not know about. An unknown
+/// value must not fail the whole listing: a newly added event type would
+/// otherwise make `GET /api/events` return 500 for every event, not just
+/// the unrecognised one.
+fn parse_event_type(s: &str) -> Option<EventType> {
+    Some(match s {
         "repo_created" => EventType::RepoCreated,
         "repo_deleted" => EventType::RepoDeleted,
         "push" => EventType::Push,
@@ -169,6 +179,8 @@ fn parse_event_type(s: &str) -> Result<EventType> {
         "pull_request_closed" => EventType::PullRequestClosed,
         "issue_created" => EventType::IssueCreated,
         "issue_closed" => EventType::IssueClosed,
+        "comment_created" => EventType::CommentCreated,
+        "comment_deleted" => EventType::CommentDeleted,
         "user_registered" => EventType::UserRegistered,
         "agent_run_started" => EventType::AgentRunStarted,
         "agent_run_completed" => EventType::AgentRunCompleted,
@@ -178,7 +190,7 @@ fn parse_event_type(s: &str) -> Result<EventType> {
         "pipeline_failed" => EventType::PipelineFailed,
         "job_started" => EventType::JobStarted,
         "job_completed" => EventType::JobCompleted,
-        other => return Err(anyhow!("unknown event type: {other}")),
+        _ => return None,
     })
 }
 

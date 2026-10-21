@@ -3,7 +3,7 @@
 //! §In-repo CI for the deferred Phase 2/3 surface.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::AuthUserExtractor;
+use crate::extract::{AuthUserExtractor, OptionalAuthUser};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
@@ -134,14 +134,17 @@ impl From<LogRow> for LogLineResponse {
 /// response is `{pipelines: []}` with HTTP 200.
 async fn list_pipelines(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<PipelinesResponse>> {
     // Find the repo + default branch.
-    let repo_row = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo_row = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let head = state
         .git
         .head_sha(&owner, &repo, &repo_row.default_branch)
@@ -183,13 +186,16 @@ async fn list_pipelines(
 
 async fn list_runs(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo, path)): Path<(String, String, String)>,
 ) -> ApiResult<Json<RunsResponse>> {
-    let repo_row = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo_row = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let pipeline = state
         .db
         .get_pipeline_by_path(repo_row.id, &path)
@@ -203,13 +209,26 @@ async fn list_runs(
 
 async fn get_run(
     State(state): State<AppState>,
-    Path((_owner, _repo, run_id)): Path<(String, String, i64)>,
+    user: OptionalAuthUser,
+    Path((owner, repo, run_id)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<RunDetailResponse>> {
+    let repository = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let run = state
         .db
         .get_pipeline_run(run_id)
         .await?
         .ok_or_else(|| ApiError::NotFound("run not found".into()))?;
+    // The run id is looked up directly, so confirm it actually belongs to
+    // the repository in the path.
+    if run.repo_id != repository.id {
+        return Err(ApiError::NotFound("run not found".into()));
+    }
     let jobs = state.db.list_jobs(run_id).await?;
     Ok(Json(RunDetailResponse {
         run: PipelineRunResponse::from(run),
@@ -325,15 +344,51 @@ pub struct LogsQuery {
 
 async fn get_logs(
     State(state): State<AppState>,
-    Path((_owner, _repo, _run_id, job_id)): Path<(String, String, i64, i64)>,
+    user: OptionalAuthUser,
+    Path((owner, repo, run_id, job_id)): Path<(String, String, i64, i64)>,
     Query(q): Query<LogsQuery>,
 ) -> ApiResult<Json<LogsResponse>> {
+    authorize_job_access(&state, &owner, &repo, run_id, job_id, user.0.as_ref()).await?;
     let since = q.since.unwrap_or(-1);
     let max = q.max.unwrap_or(1000).clamp(1, 5000);
     let rows = state.db.list_logs_since(job_id, since, max).await?;
     Ok(Json(LogsResponse {
         lines: rows.into_iter().map(LogLineResponse::from).collect(),
     }))
+}
+
+/// Check that the caller may read this repository, and that `job_id` really
+/// belongs to `run_id` in it.
+///
+/// The log endpoints take a job id, so without this a job id from any
+/// repository — private or not — would be readable through them.
+async fn authorize_job_access(
+    state: &AppState,
+    owner: &str,
+    repo: &str,
+    run_id: i64,
+    job_id: i64,
+    user: Option<&crate::extract::AuthUserExtractor>,
+) -> ApiResult<()> {
+    let repository =
+        crate::routes::visibility::load_readable_repo(state, owner, repo, user).await?;
+    let run = state
+        .db
+        .get_pipeline_run(run_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("run not found".into()))?;
+    if run.repo_id != repository.id {
+        return Err(ApiError::NotFound("run not found".into()));
+    }
+    let job = state
+        .db
+        .get_job(job_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("job not found".into()))?;
+    if job.run_id != run_id {
+        return Err(ApiError::NotFound("job not found".into()));
+    }
+    Ok(())
 }
 
 /// SSE stream of log lines for one job.
@@ -348,7 +403,8 @@ async fn get_logs(
 /// revision could switch to LISTEN/NOTIFY for lower latency.
 async fn stream_logs(
     State(state): State<AppState>,
-    Path((_owner, _repo, _run_id, job_id)): Path<(String, String, i64, i64)>,
+    user: OptionalAuthUser,
+    Path((owner, repo, run_id, job_id)): Path<(String, String, i64, i64)>,
 ) -> Result<
     axum::response::sse::Sse<
         impl futures_util::Stream<Item = Result<axum::response::sse::Event, Infallible>>,
@@ -358,6 +414,10 @@ async fn stream_logs(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use std::convert::Infallible;
     use std::time::Duration;
+
+    // Authorize before streaming: the job id alone would otherwise expose
+    // another repository's logs.
+    authorize_job_access(&state, &owner, &repo, run_id, job_id, user.0.as_ref()).await?;
 
     let db = state.db.clone();
 

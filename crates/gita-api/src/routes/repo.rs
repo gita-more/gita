@@ -1,7 +1,7 @@
 //! Repository routes: create, list, get, delete, browse tree/files/commits.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::AuthUserExtractor;
+use crate::extract::{AuthUserExtractor, OptionalAuthUser};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
@@ -182,22 +182,34 @@ async fn create_repo(
 
 async fn list_repos(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Query(q): Query<ListReposQuery>,
 ) -> ApiResult<Json<Vec<RepoResponse>>> {
     let limit = q.limit.unwrap_or(100).min(500);
     let repos = state.db.list_repositories(q.owner.as_deref(), limit).await?;
-    Ok(Json(repos.into_iter().map(RepoResponse::from).collect()))
+    // Filter out private repositories the caller cannot see. The list is
+    // not owner-scoped, so without this an anonymous caller learns that a
+    // private repository exists.
+    let visible: Vec<RepoResponse> = repos
+        .into_iter()
+        .filter(|r| crate::routes::visibility::can_read(r, user.0.as_ref()))
+        .map(RepoResponse::from)
+        .collect();
+    Ok(Json(visible))
 }
 
 async fn get_repo(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<RepoResponse>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     Ok(Json(RepoResponse::from(repo)))
 }
 
@@ -353,14 +365,17 @@ async fn update_repo(
 
 async fn get_tree(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<TreeQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let reference = q.r#ref.unwrap_or_else(|| repo.default_branch.clone());
     let path = q.path.unwrap_or_default();
     let entries = state
@@ -376,14 +391,17 @@ async fn get_tree(
 
 async fn get_file(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<TreeQuery>,
 ) -> ApiResult<Json<gita_core::FileContent>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let reference = q.r#ref.unwrap_or_else(|| repo.default_branch.clone());
     let path = q.path.ok_or_else(|| ApiError::BadRequest("missing 'path' query".into()))?;
     let file = state
@@ -396,14 +414,17 @@ async fn get_file(
 
 async fn list_commits(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<CommitsQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let reference = q.r#ref.unwrap_or_else(|| repo.default_branch.clone());
     let limit = q.limit.unwrap_or(30).min(200);
     let commits = state
@@ -418,13 +439,16 @@ async fn list_commits(
 
 async fn get_commit(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo, sha)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let commit = state
         .git
         .get_commit(&owner, &repo, &sha)
@@ -452,13 +476,16 @@ async fn get_commit(
 
 async fn list_branches(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<Vec<String>>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let branches = state
         .git
         .list_branches(&owner, &repo.name)
@@ -656,13 +683,16 @@ async fn delete_branch(
 
 async fn list_tags(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<Vec<String>>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let tags = state
         .git
         .list_tags(&owner, &repo.name)

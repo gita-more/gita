@@ -13,6 +13,7 @@ pub mod pr;
 pub mod repo;
 pub mod search;
 pub mod ssh_key;
+pub mod visibility;
 
 // Re-export route functions.
 pub use auth::auth_routes;

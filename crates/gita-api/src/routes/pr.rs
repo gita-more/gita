@@ -1,7 +1,7 @@
 //! Pull request routes: create, list, get, merge, close.
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::AuthUserExtractor;
+use crate::extract::{AuthUserExtractor, OptionalAuthUser};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
@@ -151,14 +151,17 @@ async fn create_pr(
 
 async fn list_prs(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<ListPrQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let status = match q.status.as_deref() {
         None | Some("open") => Some(PrStatus::Open),
         Some("merged") => Some(PrStatus::Merged),
@@ -179,13 +182,16 @@ async fn list_prs(
 
 async fn get_pr(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -284,13 +290,16 @@ async fn merge_pr(
 
 async fn pr_diff(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -305,13 +314,16 @@ async fn pr_diff(
 
 async fn pr_files(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository = crate::routes::visibility::load_readable_repo(
+        &state,
+        &owner,
+        &repo,
+        user.0.as_ref(),
+    )
+    .await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
