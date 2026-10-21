@@ -63,3 +63,7 @@ rand = "0.8"
 dotenvy = "0.15"
 base64 = "0.22"
 governor = "0.7"
+
+# webhook payload signing
+hmac = "0.12"
+sha2 = "0.10"

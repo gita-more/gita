@@ -313,8 +313,10 @@ impl App {
                                 }
                                 let url = hook.url.clone();
                                 let hook_id = hook.id;
+                                let secret = hook.secret.clone();
+                                let event_name = event.event_type.to_string();
                                 let payload = serde_json::json!({
-                                    "event": event.event_type.to_string(),
+                                    "event": event_name,
                                     "actor_id": event.actor_id,
                                     "repo_id": event.repo_id,
                                     "payload": event.payload,
@@ -323,10 +325,22 @@ impl App {
                                 let body = serde_json::to_string(&payload).unwrap_or_default();
                                 tokio::spawn(async move {
                                     let client = reqwest::Client::new();
-                                    let req = client
+                                    let mut req = client
                                         .post(&url)
                                         .header("content-type", "application/json")
-                                        .body(body);
+                                        .header("x-gita-event", &event_name);
+                                    // Sign the body with the hook's secret so
+                                    // the receiver can verify it came from
+                                    // us. A hook without a secret is still
+                                    // delivered, but unsigned.
+                                    if !secret.is_empty() {
+                                        let signature = sign_webhook_payload(&secret, &body);
+                                        req = req.header(
+                                            "x-gita-signature-256",
+                                            format!("sha256={signature}"),
+                                        );
+                                    }
+                                    let req = req.body(body);
                                     match req.send().await {
                                         Ok(_) => {
                                             tracing::info!("webhook {hook_id} delivered to {url}")
@@ -525,6 +539,25 @@ pub async fn worker_register(config: &Config, name: &str, username: &str) -> Res
     Ok(token)
 }
 
+/// Sign a webhook payload with the hook's secret.
+///
+/// GitHub's model: the receiver recomputes HMAC-SHA256 over the raw request
+/// body with the shared secret and compares it to the signature the sender
+/// put in the header. A mismatch means the payload was tampered with or did
+/// not come from this server.
+///
+/// Returns a lowercase hex digest.
+pub fn sign_webhook_payload(secret: &str, body: &str) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts keys of any length");
+    mac.update(body.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
 /// Generate a random hex token for runner registration.
 fn random_hex_token() -> String {
     use rand::RngCore;
@@ -721,5 +754,34 @@ mod tests {
              recent table header, so it would be read as server.ssh.pages_enabled \
              and silently ignored"
         );
+    }
+
+    /// The webhook signature must be a real HMAC-SHA256 over the exact body,
+    /// because that is what a receiver recomputes to verify the payload.
+    #[test]
+    fn webhook_signature_is_hmac_sha256_of_the_body() {
+        let body = r#"{"event":"push","repo_id":7}"#;
+        let sig = sign_webhook_payload("s3cret", body);
+        // Known-answer: HMAC-SHA256("s3cret", body) computed independently.
+        assert_eq!(sig.len(), 64, "sha256 hex digest is 64 chars");
+        assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Stable across calls (deterministic, not random).
+        assert_eq!(sig, sign_webhook_payload("s3cret", body));
+
+        // Different secret -> different signature.
+        assert_ne!(sig, sign_webhook_payload("other", body));
+        // Different body -> different signature.
+        assert_ne!(sig, sign_webhook_payload("s3cret", "{}"));
+    }
+
+    /// Cross-check against a hand-computed HMAC-SHA256 to catch an accidental
+    /// change of algorithm or digest encoding.
+    #[test]
+    fn webhook_signature_matches_known_hmac_vector() {
+        // RFC 4231 test case 1: key = 20 bytes of 0x0b, data = "Hi There".
+        let key = "\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b";
+        let expected = "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7";
+        assert_eq!(sign_webhook_payload(key, "Hi There"), expected);
     }
 }
