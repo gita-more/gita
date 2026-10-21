@@ -32,6 +32,21 @@ pub fn build_limiter(per_second: u32, burst: u32) -> SharedLimiter {
     Arc::new(RateLimiter::keyed(quota))
 }
 
+/// Build a per-IP rate limiter whose bucket refills very slowly.
+///
+/// The token bucket replenishes one cell per `period`, so a test that
+/// exercises the *refusal* path does not race the clock: with a one-second
+/// refill, a second request issued a moment later could be admitted and the
+/// test would fail intermittently under load. Tests use this to get a
+/// limiter that behaves as "the bucket is empty and stays empty".
+pub fn build_slow_refill_limiter(burst: u32) -> SharedLimiter {
+    let burst = NonZeroU32::new(burst.max(1)).unwrap();
+    let quota = Quota::with_period(std::time::Duration::from_secs(3600))
+        .expect("a one-hour period is non-zero")
+        .allow_burst(burst);
+    Arc::new(RateLimiter::keyed(quota))
+}
+
 /// Custom header exposed on 429 responses with the seconds-until-retry hint.
 pub const RETRY_AFTER: HeaderName = axum::http::HeaderName::from_static("retry-after");
 
