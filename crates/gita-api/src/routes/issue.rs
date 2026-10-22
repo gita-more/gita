@@ -48,9 +48,15 @@ impl From<gita_core::Issue> for IssueResponse {
 
 pub fn issue_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/repos/{owner}/{repo}/issues", post(create_issue).get(list_issues))
+        .route(
+            "/api/repos/{owner}/{repo}/issues",
+            post(create_issue).get(list_issues),
+        )
         .route("/api/repos/{owner}/{repo}/issues/{number}", get(get_issue))
-        .route("/api/repos/{owner}/{repo}/issues/{number}/close", post(close_issue))
+        .route(
+            "/api/repos/{owner}/{repo}/issues/{number}/close",
+            post(close_issue),
+        )
         .route("/api/issues", get(list_global_issues))
 }
 
@@ -98,18 +104,20 @@ async fn create_issue(
     Path((owner, repo)): Path<(String, String)>,
     Json(req): Json<CreateIssueRequest>,
 ) -> ApiResult<Json<IssueResponse>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_writable_repo(&state, &owner, &repo, &user).await?;
     let title = req.title.trim().to_string();
     if title.is_empty() {
         return Err(ApiError::BadRequest("title is required".into()));
     }
     let issue = state
         .db
-        .create_issue(repo.id, &title, req.body.as_deref().unwrap_or(""), user.id, &user.username)
+        .create_issue(
+            repo.id,
+            &title,
+            req.body.as_deref().unwrap_or(""),
+            user.id,
+            &user.username,
+        )
         .await?;
 
     state.bus.publish(
@@ -128,13 +136,9 @@ async fn list_issues(
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<ListIssuesQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repo = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let status = match q.status.as_deref() {
         None | Some("open") => Some(IssueStatus::Open),
         Some("closed") => Some(IssueStatus::Closed),
@@ -153,13 +157,9 @@ async fn get_issue(
     user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<IssueResponse>> {
-    let repo = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let issue = state
         .db
         .get_issue(repo.id, number)
@@ -173,11 +173,7 @@ async fn close_issue(
     user: AuthUserExtractor,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_writable_repo(&state, &owner, &repo, &user).await?;
     let issue = state
         .db
         .get_issue(repo.id, number)
@@ -186,7 +182,10 @@ async fn close_issue(
     if issue.status == IssueStatus::Closed {
         return Err(ApiError::Conflict("issue already closed".into()));
     }
-    state.db.update_issue_status(issue.id, IssueStatus::Closed).await?;
+    state
+        .db
+        .update_issue_status(issue.id, IssueStatus::Closed)
+        .await?;
     state.bus.publish(
         EventType::IssueClosed,
         Some(repo.id),

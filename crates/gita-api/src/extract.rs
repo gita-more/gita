@@ -45,7 +45,10 @@ pub struct OptionalAuthUser(pub Option<AuthUserExtractor>);
 impl FromRequestParts<AppState> for OptionalAuthUser {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let header = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)

@@ -46,7 +46,7 @@ impl From<gita_core::User> for PublicUser {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct UpdateMeRequest {
     pub locale: Option<String>,
     pub email: Option<String>,
@@ -129,7 +129,9 @@ async fn register(
     let username = req.username.trim().to_string();
     let email = req.email.trim().to_string();
     if username.is_empty() || username.len() < 2 {
-        return Err(ApiError::BadRequest("username must be at least 2 characters".into()));
+        return Err(ApiError::BadRequest(
+            "username must be at least 2 characters".into(),
+        ));
     }
     // The username becomes a directory name under the repositories root
     // (`<data_dir>/repos/<username>/`), so it must not be able to escape it.
@@ -150,7 +152,9 @@ async fn register(
         return Err(ApiError::BadRequest("invalid email".into()));
     }
     if req.password.len() < 6 {
-        return Err(ApiError::BadRequest("password must be at least 6 characters".into()));
+        return Err(ApiError::BadRequest(
+            "password must be at least 6 characters".into(),
+        ));
     }
 
     // Check uniqueness.
@@ -200,7 +204,9 @@ pub async fn login(
     if let Some(limiter) = state.login_limiter.as_ref() {
         let key = crate::middleware::client_ip(&headers, connect_info.0);
         if limiter.check_key(&key).is_err() {
-            return Err(ApiError::RateLimited("too many login attempts; try again later".into()));
+            return Err(ApiError::RateLimited(
+                "too many login attempts; try again later".into(),
+            ));
         }
     }
     let user = state
@@ -221,18 +227,20 @@ pub async fn login(
 async fn create_token(
     State(state): State<AppState>,
     user: AuthUserExtractor,
-    Json(req): Json<CreateTokenRequest>,
+    // `Option<Json<T>>` accepts a request without a body — the token name
+    // is optional, so a body-less POST is a valid "create a default token".
+    req: Option<Json<CreateTokenRequest>>,
 ) -> ApiResult<Json<TokenResponse>> {
-    let name = req.name.unwrap_or_else(|| "default".to_string());
+    let name = req
+        .map(|Json(r)| r.name)
+        .flatten()
+        .unwrap_or_else(|| "default".to_string());
     // Generate a random 32-byte token, hex-encoded.
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     let token = hex::encode(bytes);
 
-    let created = state
-        .db
-        .create_access_token(user.id, &token, &name)
-        .await?;
+    let created = state.db.create_access_token(user.id, &token, &name).await?;
     Ok(Json(TokenResponse {
         id: created.id,
         token,
@@ -283,8 +291,11 @@ async fn me(State(state): State<AppState>, user: AuthUserExtractor) -> ApiResult
 async fn update_me(
     State(state): State<AppState>,
     user: AuthUserExtractor,
-    Json(req): Json<UpdateMeRequest>,
+    // Every field is optional, so a body-less PATCH is a no-op rather
+    // than a 415.
+    req: Option<Json<UpdateMeRequest>>,
 ) -> ApiResult<Json<PublicUser>> {
+    let req = req.map(|Json(r)| r).unwrap_or_default();
     let mut db_user = state
         .db
         .get_user_by_id(user.id)
@@ -298,10 +309,9 @@ async fn update_me(
             return Err(ApiError::BadRequest("invalid email".into()));
         }
         // Verify current password for sensitive changes.
-        let current = req
-            .current_password
-            .as_deref()
-            .ok_or_else(|| ApiError::BadRequest("current_password required to change email".into()))?;
+        let current = req.current_password.as_deref().ok_or_else(|| {
+            ApiError::BadRequest("current_password required to change email".into())
+        })?;
         if !Auth::verify_password(current, &db_user.password_hash) {
             return Err(ApiError::Unauthorized("invalid credentials".into()));
         }
@@ -321,20 +331,18 @@ async fn update_me(
     // Password change.
     if let Some(new_password) = req.new_password {
         if new_password.len() < 6 {
-            return Err(ApiError::BadRequest("password must be at least 6 characters".into()));
+            return Err(ApiError::BadRequest(
+                "password must be at least 6 characters".into(),
+            ));
         }
-        let current = req
-            .current_password
-            .as_deref()
-            .ok_or_else(|| ApiError::BadRequest("current_password required to change password".into()))?;
+        let current = req.current_password.as_deref().ok_or_else(|| {
+            ApiError::BadRequest("current_password required to change password".into())
+        })?;
         if !Auth::verify_password(current, &db_user.password_hash) {
             return Err(ApiError::Unauthorized("invalid credentials".into()));
         }
         let hash = Auth::hash_password(&new_password)?;
-        state
-            .db
-            .update_user_password_hash(user.id, &hash)
-            .await?;
+        state.db.update_user_password_hash(user.id, &hash).await?;
         // Refresh user record so the response reflects the new hash.
         db_user = state
             .db
@@ -426,11 +434,7 @@ async fn password_reset_request(
 ///
 /// The token is a 32-byte random value, hex-encoded — 64 hex characters of
 /// entropy, so it cannot be guessed.
-async fn create_reset_token(
-    state: &AppState,
-    user_id: i64,
-    username: &str,
-) -> ApiResult<String> {
+async fn create_reset_token(state: &AppState, user_id: i64, username: &str) -> ApiResult<String> {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     let token = hex::encode(bytes);

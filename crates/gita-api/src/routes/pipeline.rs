@@ -138,13 +138,9 @@ async fn list_pipelines(
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<PipelinesResponse>> {
     // Find the repo + default branch.
-    let repo_row = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo_row =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let head = state
         .git
         .head_sha(&owner, &repo, &repo_row.default_branch)
@@ -189,13 +185,9 @@ async fn list_runs(
     user: OptionalAuthUser,
     Path((owner, repo, path)): Path<(String, String, String)>,
 ) -> ApiResult<Json<RunsResponse>> {
-    let repo_row = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo_row =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let pipeline = state
         .db
         .get_pipeline_by_path(repo_row.id, &path)
@@ -212,13 +204,9 @@ async fn get_run(
     user: OptionalAuthUser,
     Path((owner, repo, run_id)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<RunDetailResponse>> {
-    let repository = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let run = state
         .db
         .get_pipeline_run(run_id)
@@ -313,14 +301,28 @@ pub struct RunTriggerResponse {
 
 async fn cancel_run(
     State(state): State<AppState>,
-    _user: AuthUserExtractor,
-    Path((_owner, _repo, run_id)): Path<(String, String, i64)>,
+    user: AuthUserExtractor,
+    Path((owner, repo, run_id)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
+    // The run must belong to the repository named in the path, and the
+    // caller must be able to write to that repository. Without both checks
+    // any authenticated user could cancel any run in the system — including
+    // runs belonging to private repositories they cannot even read.
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
     let run = state
         .db
         .get_pipeline_run(run_id)
         .await?
         .ok_or_else(|| ApiError::NotFound("run not found".into()))?;
+    if run.repo_id != repository.id {
+        return Err(ApiError::NotFound("run not found".into()));
+    }
+    if repository.owner_id != user.id {
+        return Err(ApiError::Forbidden(
+            "only the repository owner can cancel a run".into(),
+        ));
+    }
     if !matches!(run.status.as_str(), "queued" | "running") {
         return Err(ApiError::Conflict(format!(
             "run is in terminal state '{}' and cannot be canceled",
@@ -500,18 +502,12 @@ pub struct LogsResponse {
 
 pub fn pipeline_routes() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/repos/{owner}/{repo}/pipelines",
-            get(list_pipelines),
-        )
+        .route("/api/repos/{owner}/{repo}/pipelines", get(list_pipelines))
         .route(
             "/api/repos/{owner}/{repo}/pipelines/{path}/runs",
             get(list_runs).post(trigger_run),
         )
-        .route(
-            "/api/repos/{owner}/{repo}/runs/{run_id}",
-            get(get_run),
-        )
+        .route("/api/repos/{owner}/{repo}/runs/{run_id}", get(get_run))
         .route(
             "/api/repos/{owner}/{repo}/runs/{run_id}/cancel",
             post(cancel_run),

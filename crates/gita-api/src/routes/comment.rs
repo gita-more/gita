@@ -49,10 +49,7 @@ pub fn comment_routes() -> Router<AppState> {
             "/api/repos/{owner}/{repo}/issues/{number}/comments",
             get(list_issue_comments).post(create_issue_comment),
         )
-        .route(
-            "/api/comments/{id}",
-            axum::routing::delete(delete_comment),
-        )
+        .route("/api/comments/{id}", axum::routing::delete(delete_comment))
 }
 
 async fn create_pr_comment(
@@ -66,11 +63,8 @@ async fn create_pr_comment(
         return Err(ApiError::BadRequest("comment body is required".into()));
     }
 
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository =
+        crate::routes::visibility::load_writable_repo(&state, &owner, &repo, &user).await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -101,13 +95,9 @@ async fn list_pr_comments(
     user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -134,11 +124,8 @@ async fn create_issue_comment(
         return Err(ApiError::BadRequest("comment body is required".into()));
     }
 
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository =
+        crate::routes::visibility::load_writable_repo(&state, &owner, &repo, &user).await?;
     let issue = state
         .db
         .get_issue(repository.id, number)
@@ -169,13 +156,9 @@ async fn list_issue_comments(
     user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let issue = state
         .db
         .get_issue(repository.id, number)
@@ -209,7 +192,9 @@ async fn delete_comment(
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
     if comment.author_id != user.id && repo.owner_id != user.id {
-        return Err(ApiError::Forbidden("only the comment author or repository owner can delete".into()));
+        return Err(ApiError::Forbidden(
+            "only the comment author or repository owner can delete".into(),
+        ));
     }
 
     state.db.delete_comment(id).await?;

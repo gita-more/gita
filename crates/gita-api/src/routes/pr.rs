@@ -66,7 +66,12 @@ impl From<PullRequest> for PrResponse {
 
 impl PrResponse {
     /// Attach the conflict file list (computed lazily only for open PRs).
-    async fn with_conflicts(self, state: &AppState, owner: &str, repo_name: &str) -> ApiResult<Self> {
+    async fn with_conflicts(
+        self,
+        state: &AppState,
+        owner: &str,
+        repo_name: &str,
+    ) -> ApiResult<Self> {
         if self.status != "open" {
             return Ok(self);
         }
@@ -74,7 +79,10 @@ impl PrResponse {
             .git
             .check_merge_conflict(owner, repo_name, &self.target_branch, &self.head_sha)
         {
-            Ok(files) => Ok(Self { conflicts: files, ..self }),
+            Ok(files) => Ok(Self {
+                conflicts: files,
+                ..self
+            }),
             Err(_) => Ok(self),
         }
     }
@@ -82,12 +90,24 @@ impl PrResponse {
 
 pub fn pr_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/repos/{owner}/{repo}/prs", post(create_pr).get(list_prs))
+        .route(
+            "/api/repos/{owner}/{repo}/prs",
+            post(create_pr).get(list_prs),
+        )
         .route("/api/repos/{owner}/{repo}/prs/{number}", get(get_pr))
-        .route("/api/repos/{owner}/{repo}/prs/{number}/merge", post(merge_pr))
-        .route("/api/repos/{owner}/{repo}/prs/{number}/close", post(close_pr))
+        .route(
+            "/api/repos/{owner}/{repo}/prs/{number}/merge",
+            post(merge_pr),
+        )
+        .route(
+            "/api/repos/{owner}/{repo}/prs/{number}/close",
+            post(close_pr),
+        )
         .route("/api/repos/{owner}/{repo}/prs/{number}/diff", get(pr_diff))
-        .route("/api/repos/{owner}/{repo}/prs/{number}/files", get(pr_files))
+        .route(
+            "/api/repos/{owner}/{repo}/prs/{number}/files",
+            get(pr_files),
+        )
 }
 
 async fn create_pr(
@@ -96,18 +116,16 @@ async fn create_pr(
     Path((owner, repo)): Path<(String, String)>,
     Json(req): Json<CreatePrRequest>,
 ) -> ApiResult<Json<PrResponse>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_writable_repo(&state, &owner, &repo, &user).await?;
 
     let title = req.title.trim().to_string();
     if title.is_empty() {
         return Err(ApiError::BadRequest("title is required".into()));
     }
     let source_branch = req.source_branch.trim().to_string();
-    let target_branch = req.target_branch.unwrap_or_else(|| repo.default_branch.clone());
+    let target_branch = req
+        .target_branch
+        .unwrap_or_else(|| repo.default_branch.clone());
 
     // Resolve SHAs.
     let head_sha = state
@@ -155,13 +173,9 @@ async fn list_prs(
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<ListPrQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let status = match q.status.as_deref() {
         None | Some("open") => Some(PrStatus::Open),
         Some("merged") => Some(PrStatus::Merged),
@@ -170,10 +184,17 @@ async fn list_prs(
         Some(_) => return Err(ApiError::BadRequest("invalid status".into())),
     };
     let limit = q.limit.unwrap_or(30).min(200);
-    let prs = state.db.list_pull_requests(repository.id, status, limit).await?;
+    let prs = state
+        .db
+        .list_pull_requests(repository.id, status, limit)
+        .await?;
     let mut out = Vec::with_capacity(prs.len());
     for pr in prs {
-        out.push(PrResponse::from(pr).with_conflicts(&state, &owner, &repo).await?);
+        out.push(
+            PrResponse::from(pr)
+                .with_conflicts(&state, &owner, &repo)
+                .await?,
+        );
     }
     Ok(Json(serde_json::json!({
         "prs": out,
@@ -185,13 +206,9 @@ async fn get_pr(
     user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -210,11 +227,8 @@ async fn merge_pr(
     user: AuthUserExtractor,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository =
+        crate::routes::visibility::load_writable_repo(&state, &owner, &repo, &user).await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -293,13 +307,9 @@ async fn pr_diff(
     user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -317,13 +327,9 @@ async fn pr_files(
     user: OptionalAuthUser,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -341,11 +347,7 @@ async fn close_pr(
     user: AuthUserExtractor,
     Path((owner, repo, number)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repo = crate::routes::visibility::load_writable_repo(&state, &owner, &repo, &user).await?;
     let pr = state
         .db
         .get_pull_request(repo.id, number)

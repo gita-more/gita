@@ -56,12 +56,48 @@ pub fn ensure_readable(
 
 /// Whether the caller may read this repository. Used by listing endpoints to
 /// filter rather than to reject.
-pub fn can_read(
-    repo: &Repository,
-    user: Option<&crate::extract::AuthUserExtractor>,
-) -> bool {
+pub fn can_read(repo: &Repository, user: Option<&crate::extract::AuthUserExtractor>) -> bool {
     if !repo.is_private {
         return true;
     }
     matches!(user, Some(u) if u.id == repo.owner_id)
+}
+
+/// Load a repository and enforce that the caller may **write** to it.
+///
+/// Writing means creating or mutating content that belongs to the
+/// repository: pull requests, issues, comments, stars, forks, CI runs.
+///
+/// The rule is the same one the git protocol enforces (`gita-http` and
+/// `gita-ssh` both allow a write only for `owner_id`): a private
+/// repository is writable only by its owner, and a public repository is
+/// writable only by its owner as well — being able to *see* a public
+/// repository does not make it yours to modify.
+///
+/// A non-owner gets 404 rather than 403 for the same reason as the read
+/// path: "this exists but you cannot see it" is itself a disclosure.
+pub async fn load_writable_repo(
+    state: &AppState,
+    owner: &str,
+    name: &str,
+    user: &crate::extract::AuthUserExtractor,
+) -> ApiResult<Repository> {
+    let repo = state
+        .db
+        .get_repository_by_name(owner, name)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    ensure_writable(&repo, user)?;
+    Ok(repo)
+}
+
+/// Reject a write to a repository the caller does not own.
+pub fn ensure_writable(
+    repo: &Repository,
+    user: &crate::extract::AuthUserExtractor,
+) -> ApiResult<()> {
+    if user.id == repo.owner_id {
+        return Ok(());
+    }
+    Err(ApiError::NotFound("repository not found".into()))
 }

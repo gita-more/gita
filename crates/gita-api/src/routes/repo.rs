@@ -67,14 +67,19 @@ pub struct CommitsQuery {
 pub fn repo_routes() -> Router<AppState> {
     Router::new()
         .route("/api/repos", post(create_repo).get(list_repos))
-        .route("/api/repos/{owner}/{repo}", get(get_repo).delete(delete_repo).patch(update_repo))
+        .route(
+            "/api/repos/{owner}/{repo}",
+            get(get_repo).delete(delete_repo).patch(update_repo),
+        )
         .route("/api/repos/{owner}/{repo}/tree", get(get_tree))
         .route("/api/repos/{owner}/{repo}/file", get(get_file))
         .route("/api/repos/{owner}/{repo}/commits", get(list_commits))
         .route("/api/repos/{owner}/{repo}/commits/{sha}", get(get_commit))
         .route(
             "/api/repos/{owner}/{repo}/star",
-            axum::routing::put(put_star).delete(delete_star).get(get_star),
+            axum::routing::put(put_star)
+                .delete(delete_star)
+                .get(get_star),
         )
         .route(
             "/api/repos/{owner}/{repo}/fork",
@@ -88,12 +93,18 @@ pub fn repo_routes() -> Router<AppState> {
             "/api/repos/{owner}/{repo}/hooks/{id}",
             axum::routing::delete(delete_hook),
         )
-        .route("/api/repos/{owner}/{repo}/branches", get(list_branches).post(create_branch))
+        .route(
+            "/api/repos/{owner}/{repo}/branches",
+            get(list_branches).post(create_branch),
+        )
         .route(
             "/api/repos/{owner}/{repo}/branches/{branch}",
             axum::routing::delete(delete_branch),
         )
-        .route("/api/repos/{owner}/{repo}/tags", get(list_tags).post(create_tag))
+        .route(
+            "/api/repos/{owner}/{repo}/tags",
+            get(list_tags).post(create_tag),
+        )
         .route(
             "/api/repos/{owner}/{repo}/tags/{tag}",
             axum::routing::delete(delete_tag),
@@ -130,7 +141,11 @@ async fn create_repo(
     Json(req): Json<CreateRepoRequest>,
 ) -> ApiResult<Json<RepoResponse>> {
     let name = req.name.trim().to_string();
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
         return Err(ApiError::BadRequest(
             "repository name may only contain letters, numbers, '-', '_', '.'".into(),
         ));
@@ -186,7 +201,10 @@ async fn list_repos(
     Query(q): Query<ListReposQuery>,
 ) -> ApiResult<Json<Vec<RepoResponse>>> {
     let limit = q.limit.unwrap_or(100).min(500);
-    let repos = state.db.list_repositories(q.owner.as_deref(), limit).await?;
+    let repos = state
+        .db
+        .list_repositories(q.owner.as_deref(), limit)
+        .await?;
     // Filter out private repositories the caller cannot see. The list is
     // not owner-scoped, so without this an anonymous caller learns that a
     // private repository exists.
@@ -203,13 +221,9 @@ async fn get_repo(
     user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<RepoResponse>> {
-    let repo = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     Ok(Json(RepoResponse::from(repo)))
 }
 
@@ -219,7 +233,9 @@ async fn delete_repo(
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
     if owner != user.username {
-        return Err(ApiError::Forbidden("only the owner can delete this repo".into()));
+        return Err(ApiError::Forbidden(
+            "only the owner can delete this repo".into(),
+        ));
     }
     let repo = state
         .db
@@ -251,7 +267,9 @@ async fn update_repo(
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
     if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden("only the repository owner can update this repo".into()));
+        return Err(ApiError::Forbidden(
+            "only the repository owner can update this repo".into(),
+        ));
     }
 
     // Visibility change.
@@ -290,7 +308,9 @@ async fn update_repo(
             .await?
             .is_some()
         {
-            return Err(ApiError::Conflict("target repository already exists".into()));
+            return Err(ApiError::Conflict(
+                "target repository already exists".into(),
+            ));
         }
         state
             .git
@@ -326,7 +346,9 @@ async fn update_repo(
             .await?
             .is_some()
         {
-            return Err(ApiError::Conflict("target repository already exists".into()));
+            return Err(ApiError::Conflict(
+                "target repository already exists".into(),
+            ));
         }
 
         // Move the bare repo on disk.
@@ -369,15 +391,35 @@ async fn get_tree(
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<TreeQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repo = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let reference = q.r#ref.unwrap_or_else(|| repo.default_branch.clone());
     let path = q.path.unwrap_or_default();
+    // A reference that does not exist must be reported as such. Listing
+    // the tree of a non-existent branch would otherwise return an empty
+    // listing, which is indistinguishable from a genuinely empty
+    // directory.
+    //
+    // The exception is a repository with no commits at all: its default
+    // branch does not exist *yet*, and the empty tree is the correct
+    // answer. The web UI relies on that to show the "quick setup" card
+    // for a freshly created repository.
+    if !state.git.ref_exists(&owner, &repo.name, &reference) {
+        let repo_is_empty = state
+            .git
+            .list_commits(&owner, &repo.name, &reference, 1)
+            .unwrap_or_default()
+            .is_empty()
+            && state
+                .git
+                .list_branches(&owner, &repo.name)
+                .unwrap_or_default()
+                .is_empty();
+        if !repo_is_empty {
+            return Err(ApiError::NotFound(format!("ref not found: {reference}")));
+        }
+    }
     let entries = state
         .git
         .list_tree(&owner, &repo.name, &reference, &path)
@@ -395,15 +437,13 @@ async fn get_file(
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<TreeQuery>,
 ) -> ApiResult<Json<gita_core::FileContent>> {
-    let repo = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let reference = q.r#ref.unwrap_or_else(|| repo.default_branch.clone());
-    let path = q.path.ok_or_else(|| ApiError::BadRequest("missing 'path' query".into()))?;
+    let path = q
+        .path
+        .ok_or_else(|| ApiError::BadRequest("missing 'path' query".into()))?;
     let file = state
         .git
         .read_file(&owner, &repo.name, &reference, &path)
@@ -418,13 +458,9 @@ async fn list_commits(
     Path((owner, repo)): Path<(String, String)>,
     Query(q): Query<CommitsQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repo = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let reference = q.r#ref.unwrap_or_else(|| repo.default_branch.clone());
     let limit = q.limit.unwrap_or(30).min(200);
     let commits = state
@@ -442,17 +478,13 @@ async fn get_commit(
     user: OptionalAuthUser,
     Path((owner, repo, sha)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let commit = state
         .git
         .get_commit(&owner, &repo, &sha)
-        .map_err(ApiError::from)?;
+        .map_err(|e| crate::routes::not_found_or_internal(&format!("commit {sha}"), e))?;
     let diff = state
         .git
         .show_commit(&owner, &repo, &commit.sha)
@@ -479,13 +511,9 @@ async fn list_branches(
     user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<Vec<String>>> {
-    let repo = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let branches = state
         .git
         .list_branches(&owner, &repo.name)
@@ -498,15 +526,9 @@ async fn put_star(
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    let inserted = state
-        .db
-        .add_star(user.id, repository.id)
-        .await?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
+    let inserted = state.db.add_star(user.id, repository.id).await?;
     let total = state.db.count_stars(repository.id).await?;
     Ok(Json(serde_json::json!({
         "starred": true,
@@ -520,11 +542,8 @@ async fn delete_star(
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
     let removed = state.db.remove_star(user.id, repository.id).await?;
     let total = state.db.count_stars(repository.id).await?;
     Ok(Json(serde_json::json!({
@@ -539,11 +558,8 @@ async fn get_star(
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
     let starred = state.db.has_star(user.id, repository.id).await?;
     let total = state.db.count_stars(repository.id).await?;
     Ok(Json(serde_json::json!({
@@ -562,14 +578,22 @@ async fn post_fork(
     State(state): State<AppState>,
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
-    Json(req): Json<ForkRequest>,
+    // `Option<Json<T>>` accepts a request without a body: axum turns a
+    // missing body into `None` instead of rejecting it with 415. The
+    // fork's only field is optional, so a body-less POST is a valid
+    // "fork with the default name".
+    req: Option<Json<ForkRequest>>,
 ) -> ApiResult<Json<RepoResponse>> {
-    let source = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("source repository not found".into()))?;
-    let fork_name = req.name.unwrap_or_else(|| source.name.clone());
+    // The source repository must be readable by the caller. Without this
+    // check any registered user could fork somebody else's *private*
+    // repository — `fork_repo` performs a real `git clone --bare`, so the
+    // entire history would be copied into the attacker's namespace.
+    let source =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
+    let fork_name = req
+        .map(|Json(r)| r.name)
+        .flatten()
+        .unwrap_or_else(|| source.name.clone());
     let fork_name = fork_name.trim().to_string();
     if fork_name.is_empty()
         || !fork_name
@@ -588,7 +612,9 @@ async fn post_fork(
         .await?
         .is_some()
     {
-        return Err(ApiError::Conflict("destination repository already exists".into()));
+        return Err(ApiError::Conflict(
+            "destination repository already exists".into(),
+        ));
     }
 
     state
@@ -603,7 +629,10 @@ async fn post_fork(
             &dst_owner,
             &fork_name,
             &source.description,
-            false,
+            // The fork inherits the source repository's visibility. Creating
+            // the fork as public would republish a private repository's
+            // whole history to the world.
+            source.is_private,
             &source.default_branch,
         )
         .await?;
@@ -635,21 +664,21 @@ async fn create_branch(
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
     if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden("only the repository owner can manage branches".into()));
+        return Err(ApiError::Forbidden(
+            "only the repository owner can manage branches".into(),
+        ));
     }
     let branch = req.name.trim().to_string();
     if branch.is_empty() {
         return Err(ApiError::BadRequest("branch name is required".into()));
     }
     let start_sha = match req.r#ref.as_deref() {
-        Some(r) if !r.is_empty() => {
-            Some(
-                state
-                    .git
-                    .head_sha(&owner, &repo, r)
-                    .map_err(|_| ApiError::BadRequest(format!("ref not found: {r}")))?,
-            )
-        }
+        Some(r) if !r.is_empty() => Some(
+            state
+                .git
+                .head_sha(&owner, &repo, r)
+                .map_err(|_| ApiError::BadRequest(format!("ref not found: {r}")))?,
+        ),
         _ => None,
     };
     state
@@ -670,7 +699,9 @@ async fn delete_branch(
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
     if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden("only the repository owner can manage branches".into()));
+        return Err(ApiError::Forbidden(
+            "only the repository owner can manage branches".into(),
+        ));
     }
     state
         .git
@@ -686,13 +717,9 @@ async fn list_tags(
     user: OptionalAuthUser,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<Vec<String>>> {
-    let repo = crate::routes::visibility::load_readable_repo(
-        &state,
-        &owner,
-        &repo,
-        user.0.as_ref(),
-    )
-    .await?;
+    let repo =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
+            .await?;
     let tags = state
         .git
         .list_tags(&owner, &repo.name)
@@ -712,21 +739,21 @@ async fn create_tag(
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
     if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden("only the repository owner can manage tags".into()));
+        return Err(ApiError::Forbidden(
+            "only the repository owner can manage tags".into(),
+        ));
     }
     let tag = req.name.trim().to_string();
     if tag.is_empty() {
         return Err(ApiError::BadRequest("tag name is required".into()));
     }
     let start_sha = match req.r#ref.as_deref() {
-        Some(r) if !r.is_empty() => {
-            Some(
-                state
-                    .git
-                    .head_sha(&owner, &repo, r)
-                    .map_err(|_| ApiError::BadRequest(format!("ref not found: {r}")))?,
-            )
-        }
+        Some(r) if !r.is_empty() => Some(
+            state
+                .git
+                .head_sha(&owner, &repo, r)
+                .map_err(|_| ApiError::BadRequest(format!("ref not found: {r}")))?,
+        ),
         _ => None,
     };
     state
@@ -747,7 +774,9 @@ async fn delete_tag(
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
     if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden("only the repository owner can manage tags".into()));
+        return Err(ApiError::Forbidden(
+            "only the repository owner can manage tags".into(),
+        ));
     }
     state
         .git

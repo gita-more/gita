@@ -1,6 +1,7 @@
 //! Search routes: repository search (DB) and code search (git grep).
 
 use crate::error::{ApiError, ApiResult};
+use crate::extract::OptionalAuthUser;
 use crate::state::AppState;
 use axum::extract::{Query, State};
 use axum::routing::get;
@@ -54,6 +55,26 @@ pub fn search_routes() -> Router<AppState> {
         .route("/api/search", get(search_all))
 }
 
+/// The repositories whose contents the caller is allowed to read.
+///
+/// Code search walks the bare repositories on disk, so without this filter
+/// an anonymous caller would be able to search — and read the matching
+/// lines of — a *private* repository's files.
+async fn readable_repos(
+    state: &AppState,
+    user: Option<&crate::extract::AuthUserExtractor>,
+) -> std::collections::HashSet<(String, String)> {
+    state
+        .db
+        .list_repositories(None, 5000)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| crate::routes::visibility::can_read(r, user))
+        .map(|r| (r.owner_name, r.name))
+        .collect()
+}
+
 async fn search_repos(
     State(state): State<AppState>,
     Query(q): Query<SearchQuery>,
@@ -71,6 +92,7 @@ async fn search_repos(
 
 async fn search_code(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let query = q.q.trim().to_string();
@@ -78,9 +100,10 @@ async fn search_code(
         return Err(ApiError::BadRequest("query 'q' is required".into()));
     }
     let limit = q.limit.unwrap_or(50).min(200);
+    let allowed = readable_repos(&state, user.0.as_ref()).await;
     let hits = state
         .git
-        .search_code(&query, limit)
+        .search_code(&query, limit, Some(&allowed))
         .map_err(ApiError::from)?;
     let code: Vec<CodeSearchHit> = hits
         .into_iter()
@@ -99,6 +122,7 @@ async fn search_code(
 
 async fn search_all(
     State(state): State<AppState>,
+    user: OptionalAuthUser,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let query = q.q.trim().to_string();
@@ -114,9 +138,10 @@ async fn search_all(
         out["repos"] = serde_json::json!(repo_hits);
     }
     if matches!(r#type, "all" | "code") {
+        let allowed = readable_repos(&state, user.0.as_ref()).await;
         let hits = state
             .git
-            .search_code(&query, limit)
+            .search_code(&query, limit, Some(&allowed))
             .map_err(ApiError::from)?;
         let code: Vec<CodeSearchHit> = hits
             .into_iter()
