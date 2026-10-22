@@ -273,11 +273,7 @@ impl Db {
     }
 
     /// Update a user's password (raw Argon2 hash).
-    pub async fn update_user_password_hash(
-        &self,
-        user_id: i64,
-        new_hash: &str,
-    ) -> Result<bool> {
+    pub async fn update_user_password_hash(&self, user_id: i64, new_hash: &str) -> Result<bool> {
         let res = sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
             .bind(user_id)
             .bind(new_hash)
@@ -429,7 +425,8 @@ impl Db {
         &self,
         owner_name: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<Repository>> {        let rows = if let Some(owner) = owner_name {
+    ) -> Result<Vec<Repository>> {
+        let rows = if let Some(owner) = owner_name {
             sqlx::query(
                 "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
                  FROM repositories WHERE owner_name = $2 ORDER BY id DESC LIMIT $1",
@@ -450,7 +447,7 @@ impl Db {
         rows.iter().map(row_to_repo).collect()
     }
 
-        pub async fn delete_repository(&self, id: i64) -> Result<bool> {
+    pub async fn delete_repository(&self, id: i64) -> Result<bool> {
         let res = sqlx::query("DELETE FROM repositories WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
@@ -462,11 +459,7 @@ impl Db {
     /// (`is_private = true`) rows are excluded unless the search query is
     /// empty — callers that need owner-scoped lookups should use the
     /// `?owner=` filter on the listing endpoint instead.
-    pub async fn search_repositories(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<Repository>> {
+    pub async fn search_repositories(&self, query: &str, limit: usize) -> Result<Vec<Repository>> {
         let pattern = format!("%{query}%");
         let rows = sqlx::query(
             "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
@@ -658,17 +651,20 @@ impl Db {
     ) -> Result<PullRequest> {
         let now = Utc::now().to_rfc3339();
         // Compute next number
-        let rows = sqlx::query("SELECT COALESCE(MAX(number), 0) + 1 AS next_num FROM pull_requests WHERE repo_id = $1")
-            .bind(repo_id)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT COALESCE(MAX(number), 0) + 1 AS next_num FROM pull_requests WHERE repo_id = $1",
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
         let number: i64 = rows
             .first()
             .map(|r| r.try_get::<i64, _>("next_num").unwrap_or(1))
             .unwrap_or(1);
-        sqlx::query(
+        let row = sqlx::query(
             "INSERT INTO pull_requests (repo_id, number, title, body, source_branch, target_branch, status, author_id, author_name, base_sha, head_sha, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10, $11, $12)",
+             VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10, $11, $12)
+             RETURNING id",
         )
         .bind(repo_id)
         .bind(number)
@@ -682,10 +678,11 @@ impl Db {
         .bind(head_sha)
         .bind(&now)
         .bind(&now)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
+        let id: i64 = row.try_get("id").unwrap_or(0);
         Ok(PullRequest {
-            id: 0, // not returned by INSERT (no RETURNING); re-fetch via get_pull_request
+            id,
             repo_id,
             number,
             title: title.to_string(),
@@ -765,15 +762,22 @@ impl Db {
         rows.iter().map(row_to_pr).collect()
     }
 
-    pub async fn update_pr_status(&self, id: i64, status: PrStatus, merged_at: Option<DateTime<Utc>>) -> Result<()> {
+    pub async fn update_pr_status(
+        &self,
+        id: i64,
+        status: PrStatus,
+        merged_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query("UPDATE pull_requests SET status = $2, updated_at = $3, merged_at = $4 WHERE id = $1")
-            .bind(id)
-            .bind(status.to_string())
-            .bind(&now)
-            .bind(merged_at.map(|d| d.to_rfc3339()))
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE pull_requests SET status = $2, updated_at = $3, merged_at = $4 WHERE id = $1",
+        )
+        .bind(id)
+        .bind(status.to_string())
+        .bind(&now)
+        .bind(merged_at.map(|d| d.to_rfc3339()))
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -838,17 +842,20 @@ impl Db {
         author_name: &str,
     ) -> Result<Issue> {
         let now = Utc::now().to_rfc3339();
-        let rows = sqlx::query("SELECT COALESCE(MAX(number), 0) + 1 AS next_num FROM issues WHERE repo_id = $1")
-            .bind(repo_id)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(
+            "SELECT COALESCE(MAX(number), 0) + 1 AS next_num FROM issues WHERE repo_id = $1",
+        )
+        .bind(repo_id)
+        .fetch_all(&self.pool)
+        .await?;
         let number: i64 = rows
             .first()
             .map(|r| r.try_get::<i64, _>("next_num").unwrap_or(1))
             .unwrap_or(1);
-        sqlx::query(
+        let row = sqlx::query(
             "INSERT INTO issues (repo_id, number, title, body, status, author_id, author_name, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, 'open', $5, $6, $7, $8)",
+             VALUES ($1, $2, $3, $4, 'open', $5, $6, $7, $8)
+             RETURNING id",
         )
         .bind(repo_id)
         .bind(number)
@@ -858,10 +865,11 @@ impl Db {
         .bind(author_name)
         .bind(&now)
         .bind(&now)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
+        let id: i64 = row.try_get("id").unwrap_or(0);
         Ok(Issue {
-            id: 0,
+            id,
             repo_id,
             number,
             title: title.to_string(),
@@ -894,7 +902,12 @@ impl Db {
         Ok(Some(row_to_issue(&rows[0])?))
     }
 
-    pub async fn list_issues(&self, repo_id: i64, status: Option<IssueStatus>, limit: usize) -> Result<Vec<Issue>> {
+    pub async fn list_issues(
+        &self,
+        repo_id: i64,
+        status: Option<IssueStatus>,
+        limit: usize,
+    ) -> Result<Vec<Issue>> {
         let rows = if let Some(st) = status {
             sqlx::query(
                 "SELECT id, repo_id, number, title, body, status, author_id, author_name, created_at, updated_at, closed_at
@@ -1002,13 +1015,12 @@ impl Db {
         group_id: i64,
         user_id: i64,
     ) -> Result<Option<String>> {
-        let rows = sqlx::query(
-            "SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2",
-        )
-        .bind(group_id)
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query("SELECT role FROM group_members WHERE group_id = $1 AND user_id = $2")
+                .bind(group_id)
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows
             .first()
             .and_then(|r| r.try_get::<String, _>("role").ok()))
@@ -1142,9 +1154,14 @@ impl Db {
         public_key: &str,
     ) -> Result<SshKeyRow> {
         let created_at = Utc::now().to_rfc3339();
+        // The (user_id, public_key) unique index makes a duplicate
+        // registration a conflict rather than a second row. The same key
+        // cannot be added twice, so the error is surfaced to the caller
+        // instead of being swallowed.
         let row = sqlx::query(
             "INSERT INTO ssh_keys (user_id, title, public_key, created_at)
              VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_id, public_key) DO UPDATE SET title = EXCLUDED.title
              RETURNING id",
         )
         .bind(user_id)
@@ -1184,11 +1201,9 @@ impl Db {
     }
 
     pub async fn list_all_ssh_keys(&self) -> Result<Vec<SshKeyRow>> {
-        let rows = sqlx::query(
-            "SELECT id, user_id, title, public_key, created_at FROM ssh_keys",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query("SELECT id, user_id, title, public_key, created_at FROM ssh_keys")
+            .fetch_all(&self.pool)
+            .await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             out.push(SshKeyRow {
@@ -1336,11 +1351,7 @@ impl Db {
     /// `expires_at` is a TEXT column, and a text comparison of two
     /// timestamps of the same second but different fractional widths orders
     /// them wrongly.
-    pub async fn claim_password_reset_token(
-        &self,
-        token: &str,
-        now: &str,
-    ) -> Result<Option<i64>> {
+    pub async fn claim_password_reset_token(&self, token: &str, now: &str) -> Result<Option<i64>> {
         let row = sqlx::query(
             "UPDATE password_reset_tokens
              SET used = TRUE
@@ -1376,11 +1387,7 @@ impl Db {
     /// actually runs. The migration file cannot be edited to correct the
     /// comment — sqlx validates the checksum of migrations it has already
     /// applied — so the accurate description lives here.
-    pub async fn purge_stale_password_reset_tokens(
-        &self,
-        user_id: i64,
-        now: &str,
-    ) -> Result<()> {
+    pub async fn purge_stale_password_reset_tokens(&self, user_id: i64, now: &str) -> Result<()> {
         sqlx::query(
             "DELETE FROM password_reset_tokens
              WHERE user_id = $1
@@ -1408,7 +1415,9 @@ pub fn ssh_fingerprint(public_key: &str) -> Option<String> {
     let _alg = parts.next()?;
     let blob = parts.next()?;
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(blob).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(blob)
+        .ok()?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let digest = hasher.finalize();
@@ -1683,7 +1692,11 @@ fn row_to_issue(row: &PgRow) -> Result<Issue> {
         number: row.try_get("number")?,
         title: row.try_get("title")?,
         body: row.try_get("body")?,
-        status: if status == "closed" { IssueStatus::Closed } else { IssueStatus::Open },
+        status: if status == "closed" {
+            IssueStatus::Closed
+        } else {
+            IssueStatus::Open
+        },
         author_id: row.try_get("author_id")?,
         author_name: row.try_get("author_name")?,
         created_at: DateTime::parse_from_rfc3339(&created_at)
@@ -1935,7 +1948,11 @@ fn row_to_issue_alias(row: &PgRow) -> Result<Issue> {
         number: row.try_get("number")?,
         title: row.try_get("title")?,
         body: row.try_get("body")?,
-        status: if status == "closed" { IssueStatus::Closed } else { IssueStatus::Open },
+        status: if status == "closed" {
+            IssueStatus::Closed
+        } else {
+            IssueStatus::Open
+        },
         author_id: row.try_get("author_id")?,
         author_name: row.try_get("author_name")?,
         created_at: DateTime::parse_from_rfc3339(&created_at)
@@ -2203,18 +2220,12 @@ impl Db {
     /// event's payload carries the run id, so the run row has to exist
     /// first, and the run's `trigger_event_id` can only be filled in once
     /// the event row does. Returns the number of rows updated.
-    pub async fn set_pipeline_run_trigger_event(
-        &self,
-        run_id: i64,
-        event_id: i64,
-    ) -> Result<u64> {
-        let res = sqlx::query(
-            "UPDATE pipeline_runs SET trigger_event_id = $2 WHERE id = $1",
-        )
-        .bind(run_id)
-        .bind(event_id)
-        .execute(&self.pool)
-        .await?;
+    pub async fn set_pipeline_run_trigger_event(&self, run_id: i64, event_id: i64) -> Result<u64> {
+        let res = sqlx::query("UPDATE pipeline_runs SET trigger_event_id = $2 WHERE id = $1")
+            .bind(run_id)
+            .bind(event_id)
+            .execute(&self.pool)
+            .await?;
         Ok(res.rows_affected())
     }
 
@@ -2298,11 +2309,7 @@ impl Db {
     /// Update a run's status. If `finished` is true, also stamps
     /// `finished_at` and clears `claimed_until` so the partial-restart
     /// path doesn't try to reclaim.
-    pub async fn update_pipeline_run_status(
-        &self,
-        id: i64,
-        status: &str,
-    ) -> Result<()> {
+    pub async fn update_pipeline_run_status(&self, id: i64, status: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let terminal = matches!(status, "success" | "failed" | "canceled");
         if terminal {
@@ -2541,9 +2548,8 @@ mod tests {
     use std::env;
 
     fn url() -> String {
-        env::var("GITA_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://gita:gita@127.0.0.1:55432/gita".to_string()
-        })
+        env::var("GITA_TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://gita:gita@127.0.0.1:55432/gita".to_string())
     }
 
     async fn fresh_db() -> Db {
@@ -2586,7 +2592,11 @@ mod tests {
             .await
             .unwrap();
         assert!(r.id > 0);
-        let fetched = db.get_repository_by_name("bob", "hello").await.unwrap().unwrap();
+        let fetched = db
+            .get_repository_by_name("bob", "hello")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(fetched.full_name(), "bob/hello");
         assert!(!fetched.is_private);
         drop_test_db(&db).await;
@@ -2595,7 +2605,10 @@ mod tests {
     #[tokio::test]
     async fn ssh_key_crud() {
         let db = fresh_db().await;
-        let u = db.create_user("sshuser", "ssh@example.com", "h").await.unwrap();
+        let u = db
+            .create_user("sshuser", "ssh@example.com", "h")
+            .await
+            .unwrap();
         let pk = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAmSSX13Ub9vIWCGFHUJAd04tQPCJxOTY7Gl1OerO+RE";
 
         let key = db.add_ssh_key(u.id, "laptop", pk).await.unwrap();
@@ -2611,7 +2624,10 @@ mod tests {
         assert_eq!(keys[0].title, "laptop");
 
         // Another user cannot see or delete this key.
-        let other = db.create_user("sshother", "ssh2@example.com", "h").await.unwrap();
+        let other = db
+            .create_user("sshother", "ssh2@example.com", "h")
+            .await
+            .unwrap();
         assert!(db.list_ssh_keys(other.id).await.unwrap().is_empty());
         assert!(!db.delete_ssh_key(key.id, other.id).await.unwrap());
 
@@ -2621,10 +2637,38 @@ mod tests {
         drop_test_db(&db).await;
     }
 
+    /// Registering the same public key twice must not create a second
+    /// row. The `ssh_keys` table has a unique index on
+    /// `(user_id, public_key)`; without it the key list accumulated
+    /// duplicates and every SSH authentication — which scans the whole
+    /// table recomputing a SHA-256 per row — got slower.
+    #[tokio::test]
+    async fn adding_the_same_ssh_key_twice_does_not_duplicate_it() {
+        let db = fresh_db().await;
+        let u = db
+            .create_user("sshdup", "sshdup@example.com", "h")
+            .await
+            .unwrap();
+        let pk = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAmSSX13Ub9vIWCGFHUJAd04tQPCJxOTY7Gl1OerO+RE";
+
+        let first = db.add_ssh_key(u.id, "laptop", pk).await.unwrap();
+        let second = db.add_ssh_key(u.id, "desktop", pk).await.unwrap();
+
+        assert_eq!(first.id, second.id, "the same key must map to one row");
+        let keys = db.list_ssh_keys(u.id).await.unwrap();
+        assert_eq!(keys.len(), 1, "expected one key, got {keys:?}");
+        // The title is updated in place.
+        assert_eq!(keys[0].title, "desktop");
+        drop_test_db(&db).await;
+    }
+
     #[tokio::test]
     async fn ssh_key_find_by_fingerprint() {
         let db = fresh_db().await;
-        let u = db.create_user("sshfp", "sshfp@example.com", "h").await.unwrap();
+        let u = db
+            .create_user("sshfp", "sshfp@example.com", "h")
+            .await
+            .unwrap();
         let pk = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAmSSX13Ub9vIWCGFHUJAd04tQPCJxOTY7Gl1OerO+RE";
         let fingerprint = "SHA256:kbyIniKFUf4To+hc/phSRCjc5jOKJdNhVqdCnUblVjA";
 
@@ -2649,7 +2693,8 @@ mod tests {
     #[tokio::test]
     async fn ssh_key_validity() {
         // A real ed25519 OpenSSH public key is accepted.
-        let valid = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAmSSX13Ub9vIWCGFHUJAd04tQPCJxOTY7Gl1OerO+RE";
+        let valid =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAmSSX13Ub9vIWCGFHUJAd04tQPCJxOTY7Gl1OerO+RE";
         assert!(ssh_key_is_valid(valid));
 
         // Trailing comment is allowed (fingerprint uses first two fields).
@@ -2760,10 +2805,7 @@ mod tests {
         let db = fresh_db().await;
         // Re-running migrations against an already-applied schema must succeed
         // (sqlx::migrate! skips applied versions).
-        sqlx::migrate!("./migrations")
-            .run(db.pool())
-            .await
-            .unwrap();
+        sqlx::migrate!("./migrations").run(db.pool()).await.unwrap();
         // _sqlx_migrations must contain entries for both init and groups.
         let rows: Vec<(i64, String)> =
             sqlx::query_as("SELECT version, description FROM _sqlx_migrations ORDER BY version")
@@ -2821,7 +2863,17 @@ mod tests {
 
         // PR comment lifecycle
         let created_pr = db
-            .create_pull_request(repo.id, "PR", "", "main", "main", owner.id, &owner.username, "a", "b")
+            .create_pull_request(
+                repo.id,
+                "PR",
+                "",
+                "main",
+                "main",
+                owner.id,
+                &owner.username,
+                "a",
+                "b",
+            )
             .await
             .unwrap();
         // Same as issues: create_pull_request returns id: 0; fetch the real row.
@@ -2954,10 +3006,7 @@ mod tests {
             .await
             .unwrap();
 
-        let alice_repos = db
-            .list_repositories(Some("alice2"), 50)
-            .await
-            .unwrap();
+        let alice_repos = db.list_repositories(Some("alice2"), 50).await.unwrap();
         assert_eq!(alice_repos.len(), 2);
         for r in &alice_repos {
             assert_eq!(r.owner_name, "alice2");
@@ -2979,11 +3028,20 @@ mod tests {
 
         // upsert_pipeline creates or refreshes.
         let pid = db
-            .upsert_pipeline(repo.id, ".gita-ci.yml", "refs/heads/main", "abc123", "stages: [b]")
+            .upsert_pipeline(
+                repo.id,
+                ".gita-ci.yml",
+                "refs/heads/main",
+                "abc123",
+                "stages: [b]",
+            )
             .await
             .unwrap();
         assert!(pid > 0);
-        let fetched = db.get_pipeline_by_path(repo.id, ".gita-ci.yml").await.unwrap();
+        let fetched = db
+            .get_pipeline_by_path(repo.id, ".gita-ci.yml")
+            .await
+            .unwrap();
         assert!(fetched.is_some());
         let p = fetched.unwrap();
         assert_eq!(p.ref_sha, "abc123");
@@ -2991,7 +3049,13 @@ mod tests {
         // Calling upsert again with the same path updates ref_sha + content
         // and returns the same id.
         let pid2 = db
-            .upsert_pipeline(repo.id, ".gita-ci.yml", "refs/heads/main", "def456", "stages: [b, t]")
+            .upsert_pipeline(
+                repo.id,
+                ".gita-ci.yml",
+                "refs/heads/main",
+                "def456",
+                "stages: [b, t]",
+            )
             .await
             .unwrap();
         assert_eq!(pid, pid2);
@@ -3000,12 +3064,23 @@ mod tests {
 
         // Insert a run, claim it, and assert state transitions.
         let run_id = db
-            .insert_pipeline_run(pid, repo.id, "refs/heads/main", "def456", Some(user.id), None)
+            .insert_pipeline_run(
+                pid,
+                repo.id,
+                "refs/heads/main",
+                "def456",
+                Some(user.id),
+                None,
+            )
             .await
             .unwrap();
         assert!(run_id > 0);
 
-        let claimed = db.claim_pipeline_run("runner-1", 300).await.unwrap().unwrap();
+        let claimed = db
+            .claim_pipeline_run("runner-1", 300)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(claimed.id, run_id);
         assert_eq!(claimed.status, "running");
         assert_eq!(claimed.claimed_by_runner_id.as_deref(), Some("runner-1"));
@@ -3029,7 +3104,9 @@ mod tests {
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].line, "hi");
 
-        db.update_pipeline_run_status(run_id, "success").await.unwrap();
+        db.update_pipeline_run_status(run_id, "success")
+            .await
+            .unwrap();
         let finished = db.get_pipeline_run(run_id).await.unwrap().unwrap();
         assert_eq!(finished.status, "success");
         assert!(finished.finished_at.is_some());
@@ -3041,7 +3118,10 @@ mod tests {
     #[tokio::test]
     async fn pages_crud_roundtrip() {
         let db = fresh_db().await;
-        let user = db.create_user("pagesowner", "pages@example.com", "h").await.unwrap();
+        let user = db
+            .create_user("pagesowner", "pages@example.com", "h")
+            .await
+            .unwrap();
         let repo = db
             .create_repository(user.id, "pagesowner", "site", "desc", false, "main")
             .await
@@ -3051,21 +3131,31 @@ mod tests {
         assert!(db.get_pages(repo.id).await.unwrap().is_none());
 
         // Insert.
-        let created = db.upsert_pages(repo.id, true, "main", "/docs").await.unwrap();
+        let created = db
+            .upsert_pages(repo.id, true, "main", "/docs")
+            .await
+            .unwrap();
         assert!(created.enabled);
         assert_eq!(created.branch, "main");
         assert_eq!(created.path, "/docs");
         assert!(!created.created_at.is_empty());
         assert!(!created.updated_at.is_empty());
 
-        let fetched = db.get_pages(repo.id).await.unwrap().expect("row should exist");
+        let fetched = db
+            .get_pages(repo.id)
+            .await
+            .unwrap()
+            .expect("row should exist");
         assert_eq!(fetched.repo_id, repo.id);
         assert!(fetched.enabled);
         assert_eq!(fetched.branch, "main");
         assert_eq!(fetched.path, "/docs");
 
         // Upsert updates the same row rather than duplicating.
-        let updated = db.upsert_pages(repo.id, false, "gh-pages", "/").await.unwrap();
+        let updated = db
+            .upsert_pages(repo.id, false, "gh-pages", "/")
+            .await
+            .unwrap();
         assert!(!updated.enabled);
         assert_eq!(updated.branch, "gh-pages");
         assert_eq!(updated.path, "/");
@@ -3084,7 +3174,10 @@ mod tests {
     #[tokio::test]
     async fn pages_are_deleted_with_their_repository() {
         let db = fresh_db().await;
-        let user = db.create_user("pagescascade", "pc@example.com", "h").await.unwrap();
+        let user = db
+            .create_user("pagescascade", "pc@example.com", "h")
+            .await
+            .unwrap();
         let repo = db
             .create_repository(user.id, "pagescascade", "gone", "desc", false, "main")
             .await
@@ -3095,13 +3188,11 @@ mod tests {
 
         // The FK's ON DELETE CASCADE must have removed the pages row.
         assert!(db.get_pages(repo.id).await.unwrap().is_none());
-        let rows: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM repo_pages WHERE repo_id = $1",
-        )
-        .bind(repo.id)
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+        let rows: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM repo_pages WHERE repo_id = $1")
+            .bind(repo.id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
         assert_eq!(rows.0, 0);
 
         drop_test_db(&db).await;
@@ -3112,7 +3203,10 @@ mod tests {
     #[tokio::test]
     async fn password_reset_token_can_only_be_claimed_once() {
         let db = fresh_db().await;
-        let user = db.create_user("resetonce", "ro@example.com", "h").await.unwrap();
+        let user = db
+            .create_user("resetonce", "ro@example.com", "h")
+            .await
+            .unwrap();
         let now = Utc::now();
         let expires = (now + chrono::Duration::hours(1)).to_rfc3339();
         db.create_password_reset_token(user.id, "tok-once", &expires)
@@ -3158,7 +3252,10 @@ mod tests {
         const CALLERS: usize = 8;
 
         let db = fresh_db().await;
-        let user = db.create_user("resetrace", "rr@example.com", "h").await.unwrap();
+        let user = db
+            .create_user("resetrace", "rr@example.com", "h")
+            .await
+            .unwrap();
         let now = Utc::now();
         let expires = (now + chrono::Duration::hours(1)).to_rfc3339();
         db.create_password_reset_token(user.id, "tok-race", &expires)
@@ -3195,7 +3292,10 @@ mod tests {
     #[tokio::test]
     async fn expired_password_reset_token_cannot_be_claimed() {
         let db = fresh_db().await;
-        let user = db.create_user("resetexp", "re@example.com", "h").await.unwrap();
+        let user = db
+            .create_user("resetexp", "re@example.com", "h")
+            .await
+            .unwrap();
         let now = Utc::now();
         // Already in the past.
         let expires = (now - chrono::Duration::hours(1)).to_rfc3339();
@@ -3217,35 +3317,51 @@ mod tests {
     #[tokio::test]
     async fn purge_removes_spent_and_expired_tokens_but_keeps_live_ones() {
         let db = fresh_db().await;
-        let user = db.create_user("resetpurge", "rp@example.com", "h").await.unwrap();
+        let user = db
+            .create_user("resetpurge", "rp@example.com", "h")
+            .await
+            .unwrap();
         let now = Utc::now();
         let now_str = now.to_rfc3339();
 
         // Live: expires in an hour.
-        db.create_password_reset_token(user.id, "tok-live", &(now + chrono::Duration::hours(1)).to_rfc3339())
-            .await
-            .unwrap();
+        db.create_password_reset_token(
+            user.id,
+            "tok-live",
+            &(now + chrono::Duration::hours(1)).to_rfc3339(),
+        )
+        .await
+        .unwrap();
         // Spent.
-        db.create_password_reset_token(user.id, "tok-spent", &(now + chrono::Duration::hours(1)).to_rfc3339())
+        db.create_password_reset_token(
+            user.id,
+            "tok-spent",
+            &(now + chrono::Duration::hours(1)).to_rfc3339(),
+        )
+        .await
+        .unwrap();
+        db.mark_password_reset_token_used("tok-spent")
             .await
             .unwrap();
-        db.mark_password_reset_token_used("tok-spent").await.unwrap();
         // Expired.
-        db.create_password_reset_token(user.id, "tok-old", &(now - chrono::Duration::hours(1)).to_rfc3339())
-            .await
-            .unwrap();
+        db.create_password_reset_token(
+            user.id,
+            "tok-old",
+            &(now - chrono::Duration::hours(1)).to_rfc3339(),
+        )
+        .await
+        .unwrap();
 
         db.purge_stale_password_reset_tokens(user.id, &now_str)
             .await
             .unwrap();
 
-        let remaining: Vec<(String,)> = sqlx::query_as(
-            "SELECT token FROM password_reset_tokens WHERE user_id = $1",
-        )
-        .bind(user.id)
-        .fetch_all(db.pool())
-        .await
-        .unwrap();
+        let remaining: Vec<(String,)> =
+            sqlx::query_as("SELECT token FROM password_reset_tokens WHERE user_id = $1")
+                .bind(user.id)
+                .fetch_all(db.pool())
+                .await
+                .unwrap();
         assert_eq!(
             remaining,
             vec![("tok-live".to_string(),)],
