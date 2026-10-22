@@ -21,10 +21,16 @@ function buildCloneUrl(
   const proto = window.location.protocol
   const host = window.location.host
   const base = `${proto}//${host}`
+  // The server mounts the git smart-HTTP endpoints under `/git/`. A clone
+  // URL without that prefix hits the SPA fallback and fails.
+  //
+  // A group's repositories live under the group's *name* on disk (the
+  // namespace segment is the group name itself, not the literal word
+  // "groups"), so the URL is `/git/<group>/<repo>.git`.
   if (repoKind === 'group' && groupName) {
-    return `${base}/groups/${groupName}/${name}.git`
+    return `${base}/git/${groupName}/${name}.git`
   }
-  return `${base}/${owner}/${name}.git`
+  return `${base}/git/${owner}/${name}.git`
 }
 
 function buildCreateCommand(name: string): string {

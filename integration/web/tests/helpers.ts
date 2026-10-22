@@ -135,18 +135,20 @@ export async function createRepo(
 }
 
 /**
- * Look up the currently authenticated user's username via /api/users/me.
+ * Look up the currently authenticated user's username via /api/auth/me.
  * Used as a fallback to compute full_name when a repo was created via
  * /api/repos and we got a 409 on retry.
  */
 async function currentUsername(page: Page): Promise<string> {
   const token = await currentToken(page)
-  const res = await page.request.get(`${BASE}/api/users/me`, {
+  const res = await page.request.get(`${BASE}/api/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok()) throw new Error(`currentUsername: ${res.status()}`)
-  const body = (await res.json()) as { user: { username: string } }
-  return body.user.username
+  const body = (await res.json()) as { user?: { username: string }; username?: string }
+  const username = body.user?.username ?? body.username
+  if (!username) throw new Error(`currentUsername: no username in ${JSON.stringify(body)}`)
+  return username
 }
 
 /**

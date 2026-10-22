@@ -1,8 +1,13 @@
 import { test, expect, type Page } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   loginViaApi,
   createGroup,
   createRepo,
+  currentToken,
   pageOrigin,
   DEFAULT_USER,
 } from './helpers'
@@ -35,9 +40,11 @@ test.describe('空仓库 Quick Setup', () => {
     const httpsTab = page.locator('.proto-toggle-btn', { hasText: 'HTTPS' }).first()
     await expect(httpsTab).toHaveClass(/active/)
 
-    // clone URL 输入框值 = <origin>/<owner>/<name>.git
+    // clone URL 输入框值 = <origin>/git/<owner>/<name>.git
+    // The `/git/` prefix is where the server mounts its smart-HTTP git
+    // endpoints; without it the URL serves the SPA and `git clone` fails.
     const origin = await pageOrigin(page)
-    const expectedUrl = `${origin}/${owner}/${name}.git`
+    const expectedUrl = `${origin}/git/${owner}/${name}.git`
     await expect(page.locator('.clone-url-input')).toHaveValue(expectedUrl)
 
     // 两个命令片段都包含完整 URL，且不再含 <REMOTE_URL> 占位符
@@ -47,6 +54,64 @@ test.describe('空仓库 Quick Setup', () => {
       const text = await blocks.nth(i).innerText()
       expect(text).toContain(expectedUrl)
       expect(text).not.toContain('<REMOTE_URL>')
+    }
+  })
+
+  /**
+   * The clone URL the UI shows must actually work.
+   *
+   * The previous specs only asserted the *shape* of the URL, so a URL that
+   * pointed at the SPA fallback instead of the git endpoint passed the
+   * whole suite while `git clone` failed for every user. This spec runs a
+   * real `git clone` against the URL the UI displays.
+   */
+  test('个人仓：UI 显示的 clone URL 真的能被 git clone 使用', async ({ page }) => {
+    const owner = DEFAULT_USER.username
+    const name = `clone-usable-${Date.now()}`
+    await createRepo(page, name, { description: 'clone URL usability check' })
+
+    await page.goto(`/${owner}/${name}`)
+    await expect(page.locator('.quick-setup')).toBeVisible()
+
+    const shown = await page.locator('.clone-url-input').inputValue()
+    expect(shown).toContain('/git/')
+
+    // Clone the (empty) repository with the token as the Basic-auth
+    // password, the way a user would after pasting their PAT into the
+    // remote URL. Both the anonymous and the authenticated form must work,
+    // so clone anonymously first and then with credentials.
+    //
+    // The protocol is kept as-is (the deployment may be plain HTTP) and
+    // only the credentials are inserted.
+    //
+    // `git clone <url> <dir>` requires the destination to *not* exist, so
+    // the target is a fresh name inside a temporary directory.
+    const token = await currentToken(page)
+    const authed = shown.replace(/^(https?):\/\//, `$1://x-access-token:${token}@`)
+    const parent = mkdtempSync(join(tmpdir(), 'gita-clone-'))
+    try {
+      execFileSync('git', ['clone', '--quiet', shown, join(parent, 'repo')], {
+        stdio: 'pipe',
+        timeout: 30_000,
+      })
+    } catch (err) {
+      throw new Error(
+        `git clone failed for the URL the UI showed (${shown}): ${String(err)}`,
+      )
+    }
+
+    // The same URL with credentials embedded must work too.
+    try {
+      execFileSync('git', ['clone', '--quiet', authed, join(parent, 'repo-authed')], {
+        stdio: 'pipe',
+        timeout: 30_000,
+      })
+    } catch (err) {
+      throw new Error(
+        `git clone with credentials failed for the URL the UI showed (${shown}): ${String(err)}`,
+      )
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
     }
   })
 
@@ -96,7 +161,7 @@ test.describe('空仓库 Quick Setup', () => {
     await expect(copyBtn).toHaveText(/复制|Copy/i, { timeout: 3000 })
   })
 
-  test('群组仓：clone URL 形态是 /groups/<g>/<r>.git 而不是 /<owner>/<r>.git', async ({ page }) => {
+  test('群组仓：clone URL 形态是 /git/<g>/<r>.git 而不是 /git/<owner>/<r>.git', async ({ page }) => {
     const groupName = `g-${Date.now()}`
     const repoName = `grepo-w`
     await createGroup(page, groupName, 'group for empty repo URL test')
@@ -106,8 +171,9 @@ test.describe('空仓库 Quick Setup', () => {
     await expect(page.locator('.quick-setup')).toBeVisible()
 
     const origin = await pageOrigin(page)
-    // 注意：不是 /<owner>/<repository>.git，而是 /groups/<group>/<repository>.git
-    const expected = `${origin}/groups/${groupName}/${repoName}.git`
+    // A group's repositories are addressed by the group's own name (the
+    // namespace segment is the group name, not the literal word "groups").
+    const expected = `${origin}/git/${groupName}/${repoName}.git`
     await expect(page.locator('.clone-url-input')).toHaveValue(expected)
   })
 })
