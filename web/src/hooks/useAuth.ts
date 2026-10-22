@@ -75,6 +75,14 @@ export function useAuth() {
   }, [])
 
   const logout = useCallback(() => {
+    // Revoke the token on the server first. Clearing it in the browser
+    // only hides it — the JWT itself stays valid for the rest of its
+    // lifetime, so anyone who copied it could keep using it. The request
+    // is fire-and-forget: `api.logout` reads the token synchronously, so
+    // the revocation still carries the right credential even though the
+    // local state is cleared right after. A failure must not keep the
+    // user stuck in the UI.
+    api.logout().catch(() => {})
     persist(null, null)
   }, [])
 

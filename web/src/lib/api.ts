@@ -262,6 +262,14 @@ export const api = {
       body: JSON.stringify({ username, password }),
     }),
   me: () => request<User>('/api/auth/me'),
+  /**
+   * Revoke the current session token on the server.
+   *
+   * Clearing the token in the browser is not enough: the JWT stays valid
+   * for its full lifetime, so anyone holding it could still use it. This
+   * asks the server to add it to the revocation list.
+   */
+  logout: () => request<{ message: string }>('/api/auth/logout', { method: 'POST' }),
   updateLocale: (locale: string) =>
     request<User>('/api/auth/me', {
       method: 'PATCH',
