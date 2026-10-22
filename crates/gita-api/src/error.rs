@@ -56,9 +56,25 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // The message of an internal failure is not shown to the client.
+        //
+        // `ApiError::Internal` and `ApiError::Database` carry the
+        // underlying error verbatim, and those errors name absolute
+        // filesystem paths (`open bare repo /srv/gita/data/repos/...`),
+        // table and column names, and constraint names. Handing them to
+        // an arbitrary caller discloses the server's directory layout and
+        // database schema. The detail goes to the log instead, where it
+        // belongs.
+        let message = match &self {
+            ApiError::Internal(_) | ApiError::Database(_) | ApiError::Io(_) => {
+                tracing::error!("internal error: {}", self);
+                "internal error".to_string()
+            }
+            _ => self.to_string(),
+        };
         let body = serde_json::json!({
             "error": {
-                "message": self.to_string(),
+                "message": message,
                 "status": self.status_code().as_u16(),
             }
         });

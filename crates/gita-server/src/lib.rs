@@ -147,6 +147,12 @@ fn default_pages_enabled() -> bool {
 /// and creates a row — so it gets a tighter quota than login (5/s, burst
 /// 10). The burst of three lets a user who mistyped their username retry
 /// immediately without waiting.
+// Registration is the endpoint that reveals whether an account exists
+// (even with a uniform conflict message, the *timing* of a rejected
+// registration differs from an accepted one). The quota is therefore
+// deliberately tight: a handful of attempts per second per IP is
+// enough for a person and far too slow to enumerate a list of
+// usernames.
 const REGISTER_RATE_PER_SECOND: u32 = 1;
 const REGISTER_RATE_BURST: u32 = 3;
 

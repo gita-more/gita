@@ -129,10 +129,10 @@ async fn handle_git_request(
     ) {
         Ok(result) => result,
         Err(e) => {
-            warn!("git http-backend error: {e}");
+            tracing::error!("git http-backend error: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("git backend error: {e}"),
+                "internal error".to_string(),
             )
                 .into_response();
         }
@@ -586,7 +586,10 @@ async fn authorize_git_request(
         .db
         .get_repository_by_name(owner, repo_name)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {e}")).into_response())?
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string()).into_response()
+        })?
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,

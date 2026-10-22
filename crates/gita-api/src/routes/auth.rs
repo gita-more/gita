@@ -68,8 +68,20 @@ pub struct CreateTokenRequest {
 #[derive(Debug, Serialize)]
 pub struct TokenResponse {
     pub id: i64,
+    /// The token's secret. Only populated when the token was *just*
+    /// created — this is the one and only time the user gets to see it.
+    /// Later listings carry an empty string.
     pub token: String,
+    /// A short prefix of the secret, so the user can tell their tokens
+    /// apart without the secret being recoverable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
     pub name: String,
+}
+
+/// The first few characters of a token, for display purposes.
+fn token_prefix(token: &str) -> String {
+    token.chars().take(8).collect()
 }
 
 pub fn auth_routes() -> Router<AppState> {
@@ -158,11 +170,18 @@ async fn register(
     }
 
     // Check uniqueness.
+    //
+    // The two conflicts share one message on purpose. Telling the
+    // caller *which* of the two collided tells an anonymous caller
+    // whether an account exists — and the two cases have different
+    // searchable spaces (usernames are public identifiers, e-mail
+    // addresses are not) — so a distinct message for each would leak
+    // the registered e-mail addresses.
     if let Some(_) = state.db.get_user_by_username(&username).await? {
-        return Err(ApiError::Conflict("username already taken".into()));
+        return Err(ApiError::Conflict("username or email already in use".into()));
     }
     if let Some(_) = state.db.get_user_by_email(&email).await? {
-        return Err(ApiError::Conflict("email already registered".into()));
+        return Err(ApiError::Conflict("username or email already in use".into()));
     }
 
     // Validate locale if provided (default "zh").
@@ -241,9 +260,12 @@ async fn create_token(
     let token = hex::encode(bytes);
 
     let created = state.db.create_access_token(user.id, &token, &name).await?;
+    let prefix = token_prefix(&token);
     Ok(Json(TokenResponse {
         id: created.id,
+        // The plaintext is shown exactly once, here.
         token,
+        prefix: Some(prefix),
         name: created.name,
     }))
 }
@@ -258,7 +280,10 @@ async fn list_tokens(
             .into_iter()
             .map(|t| TokenResponse {
                 id: t.id,
-                token: t.token,
+                // The secret is not recoverable from the database, so it
+                // cannot be shown again.
+                token: String::new(),
+                prefix: None,
                 name: t.name,
             })
             .collect(),
