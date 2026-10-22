@@ -9,7 +9,7 @@ use axum::body::Body;
 use axum::http::{header, HeaderMap, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::{Router, body::to_bytes};
+use axum::{body::to_bytes, Router};
 use base64::Engine as _;
 use gita_api::auth::Auth;
 use gita_core::EventType;
@@ -45,10 +45,7 @@ async fn handle_git_request(
     request: Request<Body>,
 ) -> Response<Body> {
     let method = request.method().to_string();
-    let query_string = request
-        .uri()
-        .query()
-        .map(|s| s.to_string());
+    let query_string = request.uri().query().map(|s| s.to_string());
 
     // Build the PATH_INFO: /git/owner/repo.git/info/refs
     // The path param includes everything after /git/
@@ -64,11 +61,7 @@ async fn handle_git_request(
     let body = match to_bytes(request.into_body(), 512 * 1024 * 1024).await {
         Ok(b) => b.to_vec(),
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("failed to read body: {e}"),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, format!("failed to read body: {e}")).into_response();
         }
     };
 
@@ -108,7 +101,9 @@ async fn handle_git_request(
                 &path_info,
                 &query_string,
                 &headers,
-            ).await {
+            )
+            .await
+            {
                 return resp;
             }
         }
@@ -158,7 +153,22 @@ async fn handle_git_request(
             // like "don't run on pushes from bot users".
             let pusher = resolve_authed_user(&state, &headers).await;
             let pusher_id = pusher.as_ref().map(|u| u.id);
-            for upd in &received_updates {
+            // `git http-backend` answers a *rejected* push with HTTP 200 as
+            // well — the refusal is reported inside the response body
+            // (`report-status`), not in the status code. The ref updates
+            // parsed from the request body are therefore only what the
+            // client *claimed* it was pushing, not what actually happened.
+            //
+            // Verify each one against the repository: a ref update counts
+            // as applied only if the ref now points at the new sha.
+            // Otherwise a rejected push would publish a `push` event with
+            // a sha that was never written, and would trigger CI for a
+            // commit that does not exist.
+            let applied_updates: Vec<&RefUpdate> = received_updates
+                .iter()
+                .filter(|upd| ref_update_applied(&state, owner, repo_name, upd))
+                .collect();
+            for upd in &applied_updates {
                 let payload = serde_json::json!({
                     "owner": owner,
                     "repo": repo_name,
@@ -172,7 +182,9 @@ async fn handle_git_request(
                     new_sha = %upd.new_sha,
                     "push to {owner}/{repo_name}"
                 );
-                state.bus.publish(EventType::Push, repo_id, pusher_id, payload);
+                state
+                    .bus
+                    .publish(EventType::Push, repo_id, pusher_id, payload);
             }
 
             // Phase 1 CI trigger: if the pushed commit contains
@@ -184,7 +196,7 @@ async fn handle_git_request(
             // `pipeline_runs.trigger_event_id`. The hook cannot report an
             // id back — it is synchronous, and the insert is not.
             if let Some(rid) = repo_id {
-                for upd in &received_updates {
+                for upd in &applied_updates {
                     if upd.new_sha.chars().all(|c| c == '0') {
                         continue; // branch deletion — skip
                     }
@@ -202,8 +214,7 @@ async fn handle_git_request(
                     // `only:`/`except:` path filters have something to
                     // match against. Without them an `except: paths: [...]`
                     // rule could never fire.
-                    let changed_paths = changed_paths_for_push(&state, owner, repo_name, upd)
-                        .await;
+                    let changed_paths = changed_paths_for_push(&state, owner, repo_name, upd).await;
                     let changed_refs: Vec<&str> =
                         changed_paths.iter().map(|p| p.as_str()).collect();
                     let pipeline_id = state
@@ -231,7 +242,7 @@ async fn handle_git_request(
                     match gita_pipeline::parse_yaml(&file.content) {
                         Ok(spec) => {
                             use gita_pipeline::TriggerDecision;
-                                    if matches!(
+                            if matches!(
                                 spec.triggers.should_run(short_branch, &changed_refs),
                                 TriggerDecision::Skip
                             ) {
@@ -253,14 +264,7 @@ async fn handle_git_request(
 
                     let run_id = state
                         .db
-                        .insert_pipeline_run(
-                            pid,
-                            rid,
-                            &upd.ref_name,
-                            &upd.new_sha,
-                            pusher_id,
-                            None,
-                        )
+                        .insert_pipeline_run(pid, rid, &upd.ref_name, &upd.new_sha, pusher_id, None)
                         .await
                         .ok();
                     let Some(run_id) = run_id else { continue };
@@ -314,7 +318,8 @@ async fn handle_git_request(
     }
 
     // Build the axum response from CGI output.
-    let mut builder = Response::builder().status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK));
+    let mut builder =
+        Response::builder().status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK));
     for (key, value) in cgi_headers {
         if key.eq_ignore_ascii_case("Content-Type") {
             if let Ok(v) = value.parse::<axum::http::HeaderValue>() {
@@ -338,20 +343,41 @@ async fn handle_git_request(
         }
     }
 
-    builder
-        .body(Body::from(body))
-        .unwrap_or_else(|_| Response::builder().status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::empty()).unwrap())
+    builder.body(Body::from(body)).unwrap_or_else(|_| {
+        Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::empty())
+            .unwrap()
+    })
+}
+
+/// Whether a ref update was actually applied by the push.
+///
+/// A ref update is applied when the ref now points at the new sha. This
+/// distinguishes a successful push from one the server rejected (a
+/// non-fast-forward, a failing hook, a lock conflict): `git http-backend`
+/// reports both with HTTP 200, so the status code cannot be used.
+fn ref_update_applied(state: &GitHttpState, owner: &str, repo_name: &str, upd: &RefUpdate) -> bool {
+    // A branch deletion is reported by the ref simply being gone.
+    if upd.new_sha.chars().all(|c| c == '0') {
+        return !state.git.ref_exists(owner, repo_name, &upd.ref_name);
+    }
+    match state.git.resolve_branch(owner, repo_name, &upd.ref_name) {
+        Ok(current) => current == upd.new_sha,
+        Err(_) => false,
+    }
 }
 
 /// Parse `owner/name.git/...` from a path like `/owner/name.git/info/refs`.
 fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<String>) {
     let mut parts = path_info.trim_start_matches('/').split('/');
-    let owner = parts.next().filter(|s| !s.is_empty()).map(|s| s.to_string());
-    let repo = parts.next().map(|s| {
-        s.strip_suffix(".git")
-            .unwrap_or(s)
-            .to_string()
-    });
+    let owner = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let repo = parts
+        .next()
+        .map(|s| s.strip_suffix(".git").unwrap_or(s).to_string());
     (owner, repo)
 }
 
@@ -431,8 +457,12 @@ fn parse_receive_pack_ref_updates(body: &[u8]) -> Vec<RefUpdate> {
 
     while pos + 4 <= body.len() {
         let len_hex = &body[pos..pos + 4];
-        let Ok(len_str) = std::str::from_utf8(len_hex) else { break };
-        let Ok(len) = usize::from_str_radix(len_str, 16) else { break };
+        let Ok(len_str) = std::str::from_utf8(len_hex) else {
+            break;
+        };
+        let Ok(len) = usize::from_str_radix(len_str, 16) else {
+            break;
+        };
         if len == 0 {
             // Flush packet — end of the ref-update section.
             break;
@@ -476,6 +506,67 @@ fn parse_receive_pack_ref_updates(body: &[u8]) -> Vec<RefUpdate> {
 ///   the repository.
 /// - Reads (`git-upload-pack` / `info/refs`) of private repositories
 ///   require the owner; public repositories are readable anonymously.
+/// The git service verb a request addresses, if any.
+///
+/// A git-over-HTTP path has the shape `/<owner>/<repo>.git/<verb>[/...]`,
+/// where `<verb>` is the third path segment. Parsing the verb *structurally*
+/// matters: a substring match on the whole path would classify every
+/// request for a repository literally named `git-receive-pack` as a write.
+fn request_verb(path_info: &str) -> Option<&str> {
+    let mut parts = path_info.trim_start_matches('/').split('/');
+    let _owner = parts.next()?;
+    let _repo = parts.next()?;
+    let verb = parts.next()?;
+    if verb.is_empty() {
+        None
+    } else {
+        Some(verb)
+    }
+}
+
+/// Classify a git request as a read of, or a write to, the repository it
+/// addresses.
+///
+/// The classification must be **path-structural**, not a substring match on
+/// the whole path. `git http-backend` serves the "dumb" file endpoints
+/// (`HEAD`, `objects/**`, `objects/info/packs`, the `.pack`/`.idx` files) when
+/// `GIT_HTTP_EXPORT_ALL=1` is set — which it always is here (see
+/// `gita-git::run_http_backend`). Those paths contain neither
+/// `git-upload-pack` nor `info/refs`, so a substring-based check classified
+/// them as "neither read nor write" and let them past the authorization gate
+/// entirely. The result was that an anonymous client could download a
+/// private repository's objects (and hence its whole history) while the
+/// smart-HTTP path correctly answered 401.
+///
+/// Everything under `/<owner>/<repo>.git/` is a read of that repository;
+/// the only write verb is `git-receive-pack`.
+fn is_write_request(path_info: &str, query_string: &Option<String>) -> bool {
+    if request_verb(path_info) == Some("git-receive-pack") {
+        return true;
+    }
+    // The `service=` query parameter is how a client selects the service
+    // before the path carries it (e.g. `?service=git-receive-pack`).
+    query_string
+        .as_deref()
+        .map(|q| q.contains("service=git-receive-pack"))
+        .unwrap_or(false)
+}
+
+/// Whether the request reads the repository's contents.
+///
+/// Conservative by design: a request that addresses the repository and is
+/// not a write is treated as a read. A path we fail to recognise therefore
+/// fails *closed* (a private repository still requires its owner) rather
+/// than open.
+fn is_read_request(path_info: &str, query_string: &Option<String>) -> bool {
+    !is_write_request(path_info, query_string)
+}
+
+/// Authorize a git-over-HTTP request.
+///
+/// Writes (push) require the repository owner. Reads of a private
+/// repository require the owner; public repositories are readable
+/// anonymously.
 async fn authorize_git_request(
     state: &GitHttpState,
     owner: &str,
@@ -484,30 +575,18 @@ async fn authorize_git_request(
     query_string: &Option<String>,
     headers: &HeaderMap,
 ) -> Result<(), Response<Body>> {
-    let is_write = path_info.contains("git-receive-pack")
-        || query_string
-            .as_deref()
-            .map(|q| q.contains("service=git-receive-pack"))
-            .unwrap_or(false);
-    let is_read = path_info.contains("git-upload-pack")
-        || path_info.contains("info/refs")
-        || query_string
-            .as_deref()
-            .map(|q| q.contains("service=git-upload-pack"))
-            .unwrap_or(false);
+    let is_write = is_write_request(path_info, query_string);
+    // Everything that is not a write is a read of the addressed
+    // repository — including the "dumb" file endpoints. See
+    // `is_read_request` for why this cannot be a substring match.
+    let is_read = is_read_request(path_info, query_string);
 
     // Fetch the repository record.
     let repo = state
         .db
         .get_repository_by_name(owner, repo_name)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("db error: {e}"),
-            )
-                .into_response()
-        })?
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("db error: {e}")).into_response())?
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
@@ -540,9 +619,7 @@ async fn authorize_git_request(
 
     // Reads: private repos require the owner; public repos are anonymous-readable.
     if is_read && repo.is_private && !is_owner {
-        return Err(unauthorized_with_challenge(
-            "this repository is private",
-        ));
+        return Err(unauthorized_with_challenge("this repository is private"));
     }
 
     Ok(())
@@ -565,10 +642,7 @@ fn unauthorized_with_challenge(message: &str) -> Response<Body> {
 /// `Authorization: Basic base64(username:token)` (git smart HTTP style).
 /// For Basic auth, the password component is treated as the access token
 /// (PAT or JWT), which mirrors how the server issues tokens to clients.
-async fn resolve_authed_user(
-    state: &GitHttpState,
-    headers: &HeaderMap,
-) -> Option<gita_core::User> {
+async fn resolve_authed_user(state: &GitHttpState, headers: &HeaderMap) -> Option<gita_core::User> {
     let auth_header = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
 
     // Bearer token.
@@ -592,9 +666,8 @@ async fn resolve_authed_user(
 /// A test helper to build the router with a stub database.
 #[cfg(test)]
 pub async fn test_state() -> GitHttpState {
-    let url = std::env::var("GITA_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://gita:gita@127.0.0.1:55432/gita".to_string()
-    });
+    let url = std::env::var("GITA_TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://gita:gita@127.0.0.1:55432/gita".to_string());
     let db = gita_db::new_test_db(&url).await;
     let root = std::env::temp_dir().join(format!("gita-http-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -618,11 +691,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "gita-http-test-{}-{}",
-            std::process::id(),
-            id
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("gita-http-test-{}-{}", std::process::id(), id));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -632,7 +702,10 @@ mod tests {
     async fn git_request_authorization() {
         let state = test_state().await;
         let db = &state.db;
-        let user = db.create_user("carol", "carol@example.com", "h").await.unwrap();
+        let user = db
+            .create_user("carol", "carol@example.com", "h")
+            .await
+            .unwrap();
         let public_repo = db
             .create_repository(user.id, "carol", "pub", "public", false, "main")
             .await
@@ -843,6 +916,150 @@ mod tests {
         assert!(updates.is_empty());
     }
 
+    /// The "dumb" file endpoints that `git http-backend` serves under
+    /// `GIT_HTTP_EXPORT_ALL=1` must be classified as *reads* of the
+    /// addressed repository. They used to match neither the read nor the
+    /// write check, which let an anonymous client download a private
+    /// repository's objects.
+    /// A private repository must reject *every* read path, including the
+    /// "dumb" file endpoints that `git http-backend` serves
+    /// (`HEAD`, `objects/**`, the pack files). Those used to slip past the
+    /// authorization gate entirely, letting an anonymous client download
+    /// the repository's whole history.
+    #[tokio::test]
+    async fn private_repo_rejects_dumb_object_paths() {
+        let state = test_state().await;
+        let user = state
+            .db
+            .create_user("dumbowner", "dumb@example.com", "h")
+            .await
+            .unwrap();
+        state
+            .db
+            .create_repository(user.id, "dumbowner", "secret", "d", true, "main")
+            .await
+            .unwrap();
+        let empty_headers = HeaderMap::new();
+        let no_query = &None;
+
+        for path in [
+            "/dumbowner/secret.git/HEAD",
+            "/dumbowner/secret.git/objects/info/packs",
+            "/dumbowner/secret.git/objects/aa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "/dumbowner/secret.git/objects/pack/pack-0123.pack",
+            "/dumbowner/secret.git/objects/pack/pack-0123.idx",
+            "/dumbowner/secret.git/info/refs",
+        ] {
+            let res = authorize_git_request(
+                &state,
+                "dumbowner",
+                "secret",
+                path,
+                no_query,
+                &empty_headers,
+            )
+            .await;
+            assert!(
+                res.is_err(),
+                "private repo must reject anonymous access to {path}"
+            );
+        }
+    }
+
+    /// The same paths on a *public* repository stay anonymously readable.
+    #[tokio::test]
+    async fn public_repo_allows_dumb_object_paths() {
+        let state = test_state().await;
+        let user = state
+            .db
+            .create_user("dumbpub", "dumbpub@example.com", "h")
+            .await
+            .unwrap();
+        state
+            .db
+            .create_repository(user.id, "dumbpub", "open", "d", false, "main")
+            .await
+            .unwrap();
+        let empty_headers = HeaderMap::new();
+        let no_query = &None;
+
+        for path in [
+            "/dumbpub/open.git/HEAD",
+            "/dumbpub/open.git/objects/info/packs",
+            "/dumbpub/open.git/objects/aa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ] {
+            let res =
+                authorize_git_request(&state, "dumbpub", "open", path, no_query, &empty_headers)
+                    .await;
+            assert!(
+                res.is_ok(),
+                "public repo must allow anonymous access to {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn dumb_file_paths_are_reads_not_neither() {
+        for path in [
+            "/owner/repo.git/HEAD",
+            "/owner/repo.git/objects/info/packs",
+            "/owner/repo.git/objects/aa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "/owner/repo.git/objects/pack/pack-0123.pack",
+            "/owner/repo.git/objects/pack/pack-0123.idx",
+            "/owner/repo.git/config",
+            "/owner/repo.git/info/refs",
+            "/owner/repo.git/git-upload-pack",
+        ] {
+            assert!(
+                !is_write_request(path, &None),
+                "{path} must not be classified as a write"
+            );
+            // Not a write => it is a read => the private-repo check runs.
+            assert_eq!(is_read_request(path, &None), true, "{path} must be a read");
+        }
+    }
+
+    /// The only write verb is `git-receive-pack`.
+    #[test]
+    fn receive_pack_is_the_only_write_verb() {
+        assert!(is_write_request("/owner/repo.git/git-receive-pack", &None));
+        assert!(is_write_request(
+            "/owner/repo.git/info/refs",
+            &Some("service=git-receive-pack".to_string())
+        ));
+        assert!(!is_write_request("/owner/repo.git/git-upload-pack", &None));
+        assert!(!is_write_request(
+            "/owner/repo.git/info/refs",
+            &Some("service=git-upload-pack".to_string())
+        ));
+    }
+
+    /// A repository literally named `git-receive-pack` must not turn every
+    /// request for it into a write. The verb is the third path segment, not
+    /// a substring of the whole path.
+    #[test]
+    fn a_repo_named_like_a_verb_is_not_misclassified() {
+        let path = "/owner/git-receive-pack.git/info/refs";
+        assert!(!is_write_request(path, &None));
+        assert_eq!(is_read_request(path, &None), true);
+    }
+
+    /// The verb is parsed structurally, so a deeper path still resolves.
+    #[test]
+    fn request_verb_reads_the_third_segment() {
+        assert_eq!(
+            request_verb("/o/r.git/git-receive-pack"),
+            Some("git-receive-pack")
+        );
+        assert_eq!(
+            request_verb("/o/r.git/git-upload-pack"),
+            Some("git-upload-pack")
+        );
+        assert_eq!(request_verb("/o/r.git/objects/info/packs"), Some("objects"));
+        assert_eq!(request_verb("/o/r.git"), None);
+        assert_eq!(request_verb("/o"), None);
+    }
+
     #[tokio::test]
     async fn push_event_payload_contains_pusher_id() {
         // The publish block calls resolve_authed_user; we can't easily
@@ -863,7 +1080,10 @@ mod tests {
 
         let token = state.auth.sign_jwt(&user).unwrap();
         let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
 
         let authed = resolve_authed_user(&state, &headers).await;
         assert!(authed.is_some());
