@@ -99,6 +99,7 @@ pub fn auth_routes() -> Router<AppState> {
             "/api/auth/password-reset/confirm",
             axum::routing::post(password_reset_confirm),
         )
+        .route("/api/auth/logout", axum::routing::post(logout))
 }
 
 #[allow(dead_code)]
@@ -116,6 +117,7 @@ pub fn auth_routes_except_login() -> Router<AppState> {
             "/api/auth/password-reset/confirm",
             axum::routing::post(password_reset_confirm),
         )
+        .route("/api/auth/logout", axum::routing::post(logout))
 }
 
 async fn register(
@@ -178,10 +180,19 @@ async fn register(
     // addresses are not) — so a distinct message for each would leak
     // the registered e-mail addresses.
     if let Some(_) = state.db.get_user_by_username(&username).await? {
-        return Err(ApiError::Conflict("username or email already in use".into()));
+        // Hash a dummy password to keep timing constant (mitigate
+        // username enumeration via response time).
+        let _ = Auth::hash_password("dummy-constant-time-mitigation");
+        return Err(ApiError::Conflict(
+            "username or email already in use".into(),
+        ));
     }
     if let Some(_) = state.db.get_user_by_email(&email).await? {
-        return Err(ApiError::Conflict("username or email already in use".into()));
+        // Hash a dummy password to keep timing constant.
+        let _ = Auth::hash_password("dummy-constant-time-mitigation");
+        return Err(ApiError::Conflict(
+            "username or email already in use".into(),
+        ));
     }
 
     // Validate locale if provided (default "zh").
@@ -527,4 +538,53 @@ async fn password_reset_confirm(
     Ok(Json(crate::error::MessageResponse {
         message: "password reset".to_string(),
     }))
+}
+
+/// POST /api/auth/logout — revoke the current session.
+///
+/// The client sends the Bearer token in the Authorization header.
+///
+/// * With a **JWT**, the token's `jti` is added to the revocation list
+///   (together with its expiry), so the token can no longer authenticate.
+///   This is the only thing logout can revoke: the token stays dead until
+///   it would have expired anyway.
+///
+/// * With a **personal access token**, there is no session to end — a PAT
+///   is a long-lived credential that outlives any login. Logging out does
+///   *not* revoke it, and the response says so; a PAT is revoked
+///   explicitly with `DELETE /api/auth/tokens/{id}`.
+async fn logout(
+    State(state): State<AppState>,
+    _user: crate::extract::AuthUserExtractor,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<Json<crate::error::MessageResponse>> {
+    let header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::Unauthorized("missing Authorization header".into()))?;
+    let token = header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| ApiError::Unauthorized("expected Bearer token".into()))?;
+
+    // The extractor already authenticated this token, so it is either a
+    // valid JWT or a valid PAT. Anything that does not decode as a JWT is
+    // therefore a PAT.
+    let message = match state.auth.decode_jwt(token) {
+        Ok(claims) => {
+            let expires_at = chrono::DateTime::from_timestamp(claims.exp as i64, 0)
+                .unwrap_or_else(chrono::Utc::now);
+            if let Some(jti) = &claims.jti {
+                state.auth.revoke_jwt(&state.db, jti, expires_at).await?;
+            }
+            // Opportunistic pruning: rows past their expiry are dead
+            // weight. A failure here must not fail the logout.
+            state.auth.prune_expired_revocations(&state.db).await;
+            "logged out".to_string()
+        }
+        Err(_) => "logged out (this is a personal access token; it is not revoked by \
+             logout — use DELETE /api/auth/tokens/{id} to revoke it)"
+            .to_string(),
+    };
+
+    Ok(Json(crate::error::MessageResponse { message }))
 }

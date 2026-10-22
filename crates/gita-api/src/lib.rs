@@ -18,6 +18,8 @@ pub mod middleware;
 pub mod routes;
 pub mod state;
 
+use axum::response::IntoResponse;
+
 pub use auth::Auth;
 pub use error::{ApiError, ApiResult, MessageResponse, message};
 pub use extract::{AuthUserExtractor, OptionalAuthUser, OptionalConnectInfo};
@@ -42,7 +44,19 @@ pub fn api_router(state: AppState) -> axum::Router {
         .merge(routes::avatar_routes())
         .merge(routes::ssh_key_routes())
         .merge(docs::docs_routes())
+        // Catch-all for unknown API paths. Must be an explicit route (not a
+        // `fallback`) because the server merges this router with `web_router`,
+        // which itself carries a SPA fallback — two fallbacks cannot merge.
+        // Concrete routes always win over this wildcard, so real endpoints
+        // are unaffected. Returns JSON 404 instead of the SPA's HTML.
+        .route("/api/{*rest}", axum::routing::any(fallback_404))
         .with_state(state)
+}
+
+/// Fallback handler for unknown API routes — returns JSON 404
+/// instead of the SPA's HTML.
+pub async fn fallback_404() -> impl axum::response::IntoResponse {
+    ApiError::NotFound("API endpoint not found".into()).into_response()
 }
 
 /// Build the Pages static-site serving router, mounted at the server root

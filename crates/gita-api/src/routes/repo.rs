@@ -232,16 +232,16 @@ async fn delete_repo(
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
-    if owner != user.username {
-        return Err(ApiError::Forbidden(
-            "only the owner can delete this repo".into(),
-        ));
-    }
     let repo = state
         .db
         .get_repository_by_name(&owner, &repo)
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    if repo.owner_id != user.id {
+        return Err(ApiError::Forbidden(
+            "only the owner can delete this repo".into(),
+        ));
+    }
     state.db.delete_repository(repo.id).await?;
     state.git.delete_repo(&owner, &repo.name)?;
     state.bus.publish(

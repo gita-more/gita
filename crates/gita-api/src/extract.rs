@@ -64,7 +64,7 @@ impl FromRequestParts<AppState> for OptionalAuthUser {
                 id: user.id,
                 username: user.username,
             }))),
-            Err(_) => Ok(OptionalAuthUser(None)),
+            Err(e) => Err(e),
         }
     }
 }

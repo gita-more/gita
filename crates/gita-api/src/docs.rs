@@ -1107,6 +1107,18 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/api/auth/logout": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Log out and revoke the current session",
+        "description": "Revokes the JWT used for this request by adding its JTI to the revocation list. The token can no longer be used for authentication. When the request presents a personal access token instead of a JWT, there is no session to end: the response says so and the PAT is left untouched — revoke a PAT explicitly with DELETE /api/auth/tokens/{id}.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Logged out" },
+          "401": { "description": "Missing or invalid token" }
+        }
+      }
+    },
     "/api/repos/{owner}/{repo}/branches/{branch}": {
       "delete": {
         "tags": ["repos"],
