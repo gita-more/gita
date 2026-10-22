@@ -38,6 +38,14 @@ pub struct RunnerConfig {
     /// Maximum concurrent jobs this runner will execute
     #[arg(long, env = "GITA_CONCURRENT_JOBS", default_value = "1")]
     pub concurrent_jobs: usize,
+
+    /// Maximum wall-clock time a single job may run (seconds).
+    ///
+    /// A job script is arbitrary shell from a pushed file. Without a limit
+    /// a `sleep infinity` would pin the runner forever. 0 disables the
+    /// timeout.
+    #[arg(long, env = "GITA_JOB_TIMEOUT_SECS", default_value = "3600")]
+    pub job_timeout_secs: u64,
 }
 
 impl RunnerConfig {
@@ -49,15 +57,14 @@ impl RunnerConfig {
         Duration::from_secs(self.claim_lease_secs)
     }
 
-    /// Clone URL for a repo using the runner token as Basic auth password.
-    pub fn clone_url(&self, owner: &str, repo: &str) -> String {
-        // git clone https://x-access-token:<token>@host/owner/repo.git
-        // The token is used as the password in Basic auth.
-        format!(
-            "https://x-access-token:{}@{}/{}",
-            self.runner_token,
-            self.server_base_url.trim_start_matches("http://").trim_start_matches("https://"),
-            format!("{}/{}", owner, repo)
-        )
+    /// How long a single job may run before it is killed.
+    ///
+    /// `None` means "no limit" (the job timeout is disabled).
+    pub fn job_timeout(&self) -> Option<Duration> {
+        if self.job_timeout_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(self.job_timeout_secs))
+        }
     }
 }

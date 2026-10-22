@@ -14,9 +14,19 @@ pub fn run_work_dir(config: &RunnerConfig, run_id: i64) -> PathBuf {
 pub fn job_work_dir(config: &RunnerConfig, run_id: i64, job_name: &str) -> PathBuf {
     let safe: String = job_name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    config.work_dir.join("ci-work").join(run_id.to_string()).join(&safe)
+    config
+        .work_dir
+        .join("ci-work")
+        .join(run_id.to_string())
+        .join(&safe)
 }
 
 fn base_host(config: &RunnerConfig) -> &str {
@@ -27,7 +37,11 @@ fn base_host(config: &RunnerConfig) -> &str {
 }
 
 /// Build the clone URL with the runner token as Basic auth password.
-/// git clone https://x-access-token:<TOKEN>@<host>/<owner>/<repo>.git
+/// git clone https://x-access-token:<TOKEN>@<host>/git/<owner>/<repo>.git
+///
+/// The `/git/` prefix is the path the server mounts its smart-HTTP git
+/// endpoints on (`gita-http::router`). Without it the clone would hit the
+/// SPA fallback and fail.
 ///
 /// A `file://` server base is passed through unchanged, without the token,
 /// so a runner can be pointed at a local bare repository. That is what the
@@ -38,8 +52,10 @@ pub fn clone_url(config: &RunnerConfig, owner: &str, repo: &str) -> String {
         return format!("{base}/{owner}/{repo}.git");
     }
     format!(
-        "https://x-access-token:{}@{}",
+        "https://x-access-token:{}@{}/git/{}/{}.git",
         config.runner_token,
-        format!("{}/{}.git", base_host(config), format!("{}/{}", owner, repo))
+        base_host(config),
+        owner,
+        repo
     )
 }

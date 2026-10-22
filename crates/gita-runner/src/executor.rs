@@ -7,9 +7,9 @@ use anyhow::Context;
 use chrono::Utc;
 use gita_db::{Db, PipelineRunRow};
 use gita_pipeline::{expand, parse_yaml};
-use std::process::Stdio;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{interval, Duration};
@@ -51,6 +51,7 @@ pub async fn execute_pipeline(
 
     let repo_dir = work_dir.join("repo");
     let url = clone_url(config, &owner, &repo_name);
+
     // If the repo is already present (e.g. a prior run left it, or an
     // integration test pre-cloned it), skip the network clone.
     if !repo_dir.join(".git").exists() {
@@ -83,10 +84,6 @@ pub async fn execute_pipeline(
             .context("git clone")?;
 
         if !clone_output.status.success() {
-            tracing::warn!(
-                "git clone of {url} (branch {short_branch}) failed: {}",
-                String::from_utf8_lossy(&clone_output.stderr).trim()
-            );
             // Branch may not exist anymore or ref is deleted; mark run failed.
             db.update_pipeline_run_status(run.id, "failed").await?;
             return Ok(());
@@ -98,6 +95,17 @@ pub async fn execute_pipeline(
         // one it reports. A shallow clone may not contain the SHA at all,
         // so fetch it explicitly first.
         if !run.head_sha.is_empty() {
+            // Fetch the exact commit. A shallow clone only contains the
+            // branch tip, so the commit the run was created for has to be
+            // fetched explicitly — and the fetch also deepens the history
+            // enough for `checkout --detach` to succeed (checking out a
+            // commit whose parent is missing fails even though the commit
+            // object itself is present).
+            //
+            // A non-shallow clone (e.g. from a `file://` remote, where
+            // git ignores `--depth`) already has the commit; the fetch
+            // then fails harmlessly, which is why the result is not
+            // treated as fatal on its own.
             let fetch_status = Command::new("git")
                 .arg("-C")
                 .arg(&repo_dir)
@@ -112,8 +120,21 @@ pub async fn execute_pipeline(
                 .status()
                 .await
                 .context("git fetch")?;
-            if fetch_status.success() {
-                let checkout_status = Command::new("git")
+            let have_commit = Command::new("git")
+                .arg("-C")
+                .arg(&repo_dir)
+                .arg("cat-file")
+                .arg("-e")
+                .arg(&format!("{}^{{commit}}", run.head_sha))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .status()
+                .await
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if fetch_status.success() || have_commit {
+                let co = Command::new("git")
                     .arg("-C")
                     .arg(&repo_dir)
                     .arg("checkout")
@@ -122,22 +143,33 @@ pub async fn execute_pipeline(
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())
-                    .status()
+                    .output()
                     .await
                     .context("git checkout")?;
+                let checkout_status = co.status;
+                if !checkout_status.success() {}
                 if !checkout_status.success() {
+                    // The run records `head_sha`, but the working tree is
+                    // not at that commit. Running anyway would make the
+                    // run report one commit while executing another.
                     tracing::warn!(
-                        "checkout of {} failed; continuing with the branch tip",
+                        "checkout of {} failed; failing the run rather than                          executing a different commit",
                         run.head_sha
                     );
+                    db.update_pipeline_run_status(run.id, "failed").await?;
+                    return Ok(());
                 }
             } else {
-                // The commit is no longer reachable (force-pushed away). Run
-                // against the branch tip rather than failing outright.
+                // The commit is no longer reachable (force-pushed away).
+                // Falling back to the branch tip would make the run report
+                // `head_sha` while executing something else — fail the run
+                // instead so the mismatch is visible.
                 tracing::warn!(
-                    "fetch of {} failed; continuing with the branch tip",
+                    "fetch of {} failed; failing the run rather than                      executing the branch tip instead",
                     run.head_sha
                 );
+                db.update_pipeline_run_status(run.id, "failed").await?;
+                return Ok(());
             }
         }
     }
@@ -146,7 +178,14 @@ pub async fn execute_pipeline(
     let yaml_path = repo_dir.join(".gita-ci.yml");
     let yaml = match tokio::fs::read_to_string(&yaml_path).await {
         Ok(s) => s,
-        Err(_) => {
+        Err(e) => {
+            let listing = std::fs::read_dir(repo_dir)
+                .map(|d| {
+                    d.filter_map(|e| e.ok())
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             db.update_pipeline_run_status(run.id, "failed").await?;
             return Ok(());
         }
@@ -164,7 +203,6 @@ pub async fn execute_pipeline(
     let plans = match expand(&spec) {
         Ok(p) => p,
         Err(e) => {
-            tracing::warn!("expand pipeline failed: {e}");
             db.update_pipeline_run_status(run.id, "failed").await?;
             return Ok(());
         }
@@ -201,8 +239,10 @@ pub async fn execute_pipeline(
         return Ok(());
     }
 
-    db.update_pipeline_run_status(run.id, if any_failed { "failed" } else { "success" })
+    let final_run_status = if any_failed { "failed" } else { "success" };
+    db.update_pipeline_run_status(run.id, final_run_status)
         .await?;
+    let after = db.get_pipeline_run(run.id).await.unwrap().map(|r| r.status);
     Ok(())
 }
 
@@ -216,13 +256,7 @@ async fn run_job(
     job: &gita_pipeline::ParsedJob,
 ) -> anyhow::Result<bool> {
     let job_id = db
-        .insert_job(
-            run.id,
-            &job.name,
-            &job.stage,
-            &job.needs,
-            &job.script,
-        )
+        .insert_job(run.id, &job.name, &job.stage, &job.needs, &job.script)
         .await?;
 
     db.update_job_status(job_id, "running", None).await?;
@@ -234,28 +268,70 @@ async fn run_job(
     }
     tokio::fs::create_dir_all(&job_dir).await?;
 
-    // For Phase 1 we share the repo clone with the job workspace via a
-    // symlink so the job sees the checkout without a second clone.
-    // Simpler: we run the script with cwd = the repo clone. Jobs that
-    // need isolation can copy. To keep logs tied to the job we keep the
-    // same repo dir (already cloned).
+    // The repository's owner/name, for the job's environment. The run row
+    // carries only `repo_id`.
+    let repo_label = match get_repo_owner_name(db, run).await? {
+        Some((owner, repo_name)) => format!("{owner}/{repo_name}"),
+        None => String::new(),
+    };
+
+    // Each job gets its own working directory, created as a git worktree
+    // of the run's clone. Previously every job ran with the *same* cwd
+    // (the run's clone), so a job could see — and overwrite — the files
+    // another job in the same run had produced.
     let repo_dir = run_work_dir(config, run.id).join("repo");
-    let _ = &repo_dir;
+    let job_cwd = match make_job_worktree(&repo_dir, &job_dir, &run.head_sha).await {
+        Some(dir) => dir,
+        // If the worktree cannot be created, fall back to the shared
+        // clone so the job still runs.
+        None => repo_dir.clone(),
+    };
 
     // Join the script into a single shell command.
     let joined_script = job.script.join(" && ");
     let script = format!("set -e\n{joined_script}");
 
-    let child = Command::new("sh")
-        .arg("-c")
+    // The job's environment is built from scratch rather than inherited.
+    //
+    // The runner process holds `GITA_DATABASE_URL` (with the database
+    // password) and `GITA_RUNNER_TOKEN` (a personal access token that can
+    // push to every repository its owner owns). A job script is arbitrary
+    // shell from a pushed file; if it inherited the runner's environment,
+    // `env` alone would hand it both credentials. Start from an empty
+    // environment and add back only what a build needs.
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
         .arg(&script)
-        .current_dir(&repo_dir)
+        .current_dir(&job_cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
         .process_group(0)
-        .spawn()
-        .context("spawn sh")?;
+        .env_clear();
+    // A minimal PATH so `/usr/bin/env` and the usual toolchain still work.
+    cmd.env(
+        "PATH",
+        std::env::var("PATH").unwrap_or_else(|_| {
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()
+        }),
+    );
+    // HOME points at the job's own workspace, not the runner user's home.
+    cmd.env("HOME", &job_dir);
+    // Tell the script which repository it is running against, without
+    // exposing any credential.
+    cmd.env("GITA_REPOSITORY", &repo_label);
+    cmd.env("GITA_COMMIT_SHA", &run.head_sha);
+    cmd.env("GITA_REF", &run.ref_name);
+    cmd.env("GITA_JOB_NAME", &job.name);
+    cmd.env("GITA_RUN_ID", run.id.to_string());
+    // Keep the runner's own environment out of the job.
+    cmd.env_remove("GITA_DATABASE_URL");
+    cmd.env_remove("GITA_RUNNER_TOKEN");
+    cmd.env_remove("DATABASE_URL");
+    cmd.env_remove("GITA_SERVER_URL");
+    cmd.env_remove("GITA_SERVER_DB_URL");
+
+    let child = cmd.spawn().context("spawn sh")?;
 
     // Register the child so a cancel-watcher (spawned below) can find
     // it via JobRegistry::kill_run.
@@ -280,13 +356,7 @@ async fn run_job(
         while let Ok(Some(line)) = stdout_reader.next_line().await {
             let s = seq_stdout.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let _ = db_stdout
-                .insert_log(
-                    job_id_stdout,
-                    s,
-                    "stdout",
-                    &line,
-                    &Utc::now().to_rfc3339(),
-                )
+                .insert_log(job_id_stdout, s, "stdout", &line, &Utc::now().to_rfc3339())
                 .await;
         }
     });
@@ -298,13 +368,7 @@ async fn run_job(
         while let Ok(Some(line)) = stderr_reader.next_line().await {
             let s = seq_stderr.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let _ = db_stderr
-                .insert_log(
-                    job_id_stderr,
-                    s,
-                    "stderr",
-                    &line,
-                    &Utc::now().to_rfc3339(),
-                )
+                .insert_log(job_id_stderr, s, "stderr", &line, &Utc::now().to_rfc3339())
                 .await;
         }
     });
@@ -332,8 +396,7 @@ async fn run_job(
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            let Ok(Some(fresh)) = watcher_db.get_pipeline_run(watcher_run_id).await
-            else {
+            let Ok(Some(fresh)) = watcher_db.get_pipeline_run(watcher_run_id).await else {
                 break;
             };
             if fresh.status == "canceled" {
@@ -351,6 +414,18 @@ async fn run_job(
     // the child (the watcher owns that). The watcher keeps the registry
     // alive.
     drop(registry.clone());
+
+    // A job script is arbitrary shell; a wall-clock limit keeps one
+    // runaway job from pinning the runner forever.
+    let timeout = config.job_timeout();
+    // `Box::pin` makes the optional timeout a concrete future, so it can
+    // take part in the `select!` below.
+    let sleep_until_timeout: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+        match timeout {
+            Some(d) => Box::pin(tokio::time::sleep(d)),
+            None => Box::pin(std::future::pending()),
+        };
+    let mut timed_out = false;
 
     let status = tokio::select! {
         s = child.wait() => s.context("wait for sh")?,
@@ -374,6 +449,27 @@ async fn run_job(
             }
             child.wait().await.context("wait after kill")?
         }
+        _ = sleep_until_timeout => {
+            timed_out = true;
+            // The job exceeded its wall-clock limit. Kill it the same way
+            // a cancel does, so the whole process group goes away.
+            tracing::warn!(
+                job = %job.name,
+                timeout_secs = ?timeout,
+                "job exceeded its timeout; killing it"
+            );
+            let _ = child.start_kill();
+            #[cfg(unix)]
+            {
+                if let Some(pid) = child.id() {
+                    let _ = Command::new("kill")
+                        .args(["-TERM", "--", &format!("-{pid}")])
+                        .status()
+                        .await;
+                }
+            }
+            child.wait().await.context("wait after timeout kill")?
+        }
     };
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stdout_task).await;
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), stderr_task).await;
@@ -391,10 +487,13 @@ async fn run_job(
     // exit-code check (143 = 128 + 15) since ExitStatusExt isn't
     // available.
     #[cfg(unix)]
-    let was_canceled = matches!(exit_code, Some(143))
-        || matches!(status.signal(), Some(15) | Some(9));
+    let was_signaled =
+        matches!(exit_code, Some(143)) || matches!(status.signal(), Some(15) | Some(9));
     #[cfg(not(unix))]
-    let was_canceled = matches!(exit_code, Some(143));
+    let was_signaled = matches!(exit_code, Some(143));
+    // A job killed by the timeout is a failure, not a cancellation: the
+    // run was not cancelled by anyone, the script simply took too long.
+    let was_canceled = was_signaled && !timed_out;
     let ok = status.success();
     let final_status = if was_canceled {
         "canceled"
@@ -404,12 +503,69 @@ async fn run_job(
         "failed"
     };
 
-    db.update_job_status(job_id, final_status, exit_code).await?;
+    db.update_job_status(job_id, final_status, exit_code)
+        .await?;
 
-    // Clean up the job workspace to avoid accumulating dirs.
+    // Clean up the job workspace to avoid accumulating dirs. A git
+    // worktree has to be removed through git so the clone's worktree
+    // bookkeeping stays consistent.
+    if job_cwd == job_dir {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&repo_dir)
+            .arg("worktree")
+            .arg("remove")
+            .arg("--force")
+            .arg(&job_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await;
+    }
     tokio::fs::remove_dir_all(&job_dir).await.ok();
 
     Ok(ok)
+}
+
+/// Create a per-job working directory as a git worktree of the run's
+/// clone.
+///
+/// A worktree is cheap (no second clone) and gives the job its own
+/// checkout, so jobs in the same run cannot see or clobber each other's
+/// files. Returns `None` if the worktree could not be created, in which
+/// case the caller falls back to the shared clone.
+async fn make_job_worktree(
+    repo_dir: &std::path::Path,
+    job_dir: &std::path::Path,
+    head_sha: &str,
+) -> Option<std::path::PathBuf> {
+    if !repo_dir.join(".git").exists() {
+        return None;
+    }
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_dir)
+        .arg("worktree")
+        .arg("add")
+        .arg("--detach")
+        .arg(job_dir)
+        .arg(head_sha)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        tracing::warn!(
+            "git worktree add failed for {}: {}",
+            job_dir.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        return None;
+    }
+    Some(job_dir.to_path_buf())
 }
 
 /// Resolve (owner, repo) for a run from the repositories table.
