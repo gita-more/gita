@@ -21,13 +21,12 @@ use gita_runner::workspace::run_work_dir;
 use std::path::Path;
 use std::process::Command;
 
-fn push_ci_yml(
-    app: &gita_server::App,
-    owner: &str,
-    name: &str,
-    yaml: &str,
-) {
-    let bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
+fn push_ci_yml(app: &gita_server::App, owner: &str, name: &str, yaml: &str) {
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join(owner)
+        .join(format!("{name}.git"));
     let bare_url = format!("file://{}", bare.display());
     let work_parent = app.data_dir.join(format!(".work-{}", std::process::id()));
     std::fs::create_dir_all(&work_parent).unwrap();
@@ -121,24 +120,47 @@ jobs:
         branches.iter().any(|b| b == "main"),
         "expected main branch in {branches:?}"
     );
-    let head_sha = app.git.head_sha("ciowner", "cirepo", "refs/heads/main")
+    let head_sha = app
+        .git
+        .head_sha("ciowner", "cirepo", "refs/heads/main")
         .expect("head_sha");
 
-    let owner_user = db.get_user_by_username(&user.username).await.unwrap().unwrap();
+    let owner_user = db
+        .get_user_by_username(&user.username)
+        .await
+        .unwrap()
+        .unwrap();
 
     // Upsert pipeline + insert run as the HTTP handler would.
     let pid = db
-        .upsert_pipeline(repo_id, ".gita-ci.yml", "refs/heads/main", &head_sha, "stages: [build]")
+        .upsert_pipeline(
+            repo_id,
+            ".gita-ci.yml",
+            "refs/heads/main",
+            &head_sha,
+            "stages: [build]",
+        )
         .await
         .unwrap();
     let run_id = db
-        .insert_pipeline_run(pid, repo_id, "refs/heads/main", &head_sha, Some(owner_user.id), None)
+        .insert_pipeline_run(
+            pid,
+            repo_id,
+            "refs/heads/main",
+            &head_sha,
+            Some(owner_user.id),
+            None,
+        )
         .await
         .unwrap();
 
     // Build a ClaimedRun row and pre-clone the repo into the workspace
     // so execute_pipeline skips the network clone.
-    let claimed = db.claim_pipeline_run("test-runner", 300).await.unwrap().unwrap();
+    let claimed = db
+        .claim_pipeline_run("test-runner", 300)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(claimed.id, run_id);
 
     let runner_config = RunnerConfig {
@@ -150,11 +172,16 @@ jobs:
         poll_interval_secs: 1,
         claim_lease_secs: 300,
         concurrent_jobs: 1,
+        job_timeout_secs: 300,
     };
 
     // Pre-clone the repo at head_sha into the run workspace.
     let repo_dir = run_work_dir(&runner_config, run_id).join("repo");
-    let bare = app.data_dir.join("repos").join("ciowner").join("cirepo.git");
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join("ciowner")
+        .join("cirepo.git");
     let bare_url = format!("file://{}", bare.display());
     let clone_out = Command::new("git")
         .arg("clone")
@@ -190,9 +217,7 @@ jobs:
     assert_eq!(job.status, "success");
 
     let logs = db.list_logs_since(job.id, -1, 100).await.unwrap();
-    let any_sentinel = logs
-        .iter()
-        .any(|l| l.line.contains("sentinel-CI-RAN-OK"));
+    let any_sentinel = logs.iter().any(|l| l.line.contains("sentinel-CI-RAN-OK"));
     assert!(any_sentinel, "logs should contain sentinel; got {:?}", logs);
 }
 
@@ -241,11 +266,24 @@ jobs:
         .unwrap();
 
     let pid = db
-        .upsert_pipeline(repo_id, ".gita-ci.yml", "refs/heads/main", &head_sha, "stages: [wait]")
+        .upsert_pipeline(
+            repo_id,
+            ".gita-ci.yml",
+            "refs/heads/main",
+            &head_sha,
+            "stages: [wait]",
+        )
         .await
         .unwrap();
     let run_id = db
-        .insert_pipeline_run(pid, repo_id, "refs/heads/main", &head_sha, Some(owner_user.id), None)
+        .insert_pipeline_run(
+            pid,
+            repo_id,
+            "refs/heads/main",
+            &head_sha,
+            Some(owner_user.id),
+            None,
+        )
         .await
         .unwrap();
 
@@ -266,6 +304,7 @@ jobs:
         poll_interval_secs: 1,
         claim_lease_secs: 300,
         concurrent_jobs: 1,
+        job_timeout_secs: 300,
     };
     let _ = std::fs::create_dir_all(&runner_config.work_dir);
     let bare = app
@@ -317,14 +356,11 @@ jobs:
     db.update_pipeline_run_status(run_id, "canceled")
         .await
         .unwrap();
-    let exec_result = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        exec_handle,
-    )
-    .await
-    .expect("executor did not finish within 15s after cancel")
-    .expect("executor task join error")
-    .expect("executor returned an error");
+    let exec_result = tokio::time::timeout(std::time::Duration::from_secs(15), exec_handle)
+        .await
+        .expect("executor did not finish within 15s after cancel")
+        .expect("executor task join error")
+        .expect("executor returned an error");
     let _ = exec_result;
     let elapsed = cancel_started.elapsed();
     // Executor should reap the killed child promptly (a few seconds),
@@ -415,7 +451,14 @@ jobs:
         .await
         .unwrap();
     let run_id = db
-        .insert_pipeline_run(pid, repo_id, "refs/heads/main", &head_sha, Some(owner_user.id), None)
+        .insert_pipeline_run(
+            pid,
+            repo_id,
+            "refs/heads/main",
+            &head_sha,
+            Some(owner_user.id),
+            None,
+        )
         .await
         .unwrap();
 
@@ -436,6 +479,7 @@ jobs:
         poll_interval_secs: 1,
         claim_lease_secs: 300,
         concurrent_jobs: 1,
+        job_timeout_secs: 300,
     };
     let _ = std::fs::create_dir_all(&runner_config.work_dir);
     let bare = app
@@ -478,7 +522,9 @@ jobs:
     }
     // Every job must have run successfully.
     for name in ["compile", "unit", "lint", "release"] {
-        let job = by_name.get(name).unwrap_or_else(|| panic!("missing job {name}"));
+        let job = by_name
+            .get(name)
+            .unwrap_or_else(|| panic!("missing job {name}"));
         assert_eq!(job.status, "success", "job {name} should be success");
     }
 
@@ -867,7 +913,11 @@ async fn http_push_with_ci_config_enqueues_run() {
 
     // The bare repo is the push target.
     let bare = app.data_dir.join("repos").join("pushci").join("cirepo.git");
-    assert!(bare.exists(), "bare repo should exist at {}", bare.display());
+    assert!(
+        bare.exists(),
+        "bare repo should exist at {}",
+        bare.display()
+    );
     let url = format!("http://127.0.0.1:{port}/git/pushci/cirepo.git");
 
     // Commit a `.gita-ci.yml` and push it over HTTP with credentials in the
@@ -902,7 +952,10 @@ async fn http_push_with_ci_config_enqueues_run() {
     git(&["add", "."]);
     git(&["commit", "-q", "-m", "add ci config"]);
 
-    let push_url = format!("http://pushci:{}@127.0.0.1:{port}/git/pushci/cirepo.git", user.token);
+    let push_url = format!(
+        "http://pushci:{}@127.0.0.1:{port}/git/pushci/cirepo.git",
+        user.token
+    );
     let push = Command::new("git")
         .current_dir(&work)
         .args(["push", &push_url, "main:main"])
@@ -941,7 +994,11 @@ async fn http_push_with_ci_config_enqueues_run() {
         "a push containing .gita-ci.yml should create a pipeline; if this fails, \
          check that the receive-pack handler resolves the pushed commit SHA",
     );
-    assert!(pipeline.ref_name.contains("main"), "unexpected ref: {}", pipeline.ref_name);
+    assert!(
+        pipeline.ref_name.contains("main"),
+        "unexpected ref: {}",
+        pipeline.ref_name
+    );
     assert!(!pipeline.ref_sha.is_empty(), "head sha should be recorded");
 }
 
@@ -1013,7 +1070,10 @@ async fn pipeline_run_is_linked_to_its_triggering_event() {
     git(&["add", "."]);
     git(&["commit", "-q", "-m", "add ci config"]);
 
-    let push_url = format!("http://linkci2:{}@127.0.0.1:{port}/git/linkci2/cirepo.git", user.token);
+    let push_url = format!(
+        "http://linkci2:{}@127.0.0.1:{port}/git/linkci2/cirepo.git",
+        user.token
+    );
     let push = Command::new("git")
         .current_dir(&work)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -1187,7 +1247,10 @@ async fn pipelines_endpoint_lists_the_repo_ci_config() {
     );
     assert_eq!(pipelines[0]["path"], ".gita-ci.yml");
     assert!(
-        !pipelines[0]["ref_sha"].as_str().unwrap_or_default().is_empty(),
+        !pipelines[0]["ref_sha"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
         "the listed pipeline should record the ref it was read at"
     );
 }
@@ -1252,7 +1315,10 @@ async fn http_push_with_top_level_ci_config_enqueues_run() {
     git(&["add", "."]);
     git(&["commit", "-q", "-m", "add ci config"]);
 
-    let push_url = format!("http://topci:{}@127.0.0.1:{port}/git/topci/cirepo.git", user.token);
+    let push_url = format!(
+        "http://topci:{}@127.0.0.1:{port}/git/topci/cirepo.git",
+        user.token
+    );
     let push = Command::new("git")
         .current_dir(&work)
         .args(["push", &push_url, "main:main"])
@@ -1285,10 +1351,13 @@ async fn http_push_with_top_level_ci_config_enqueues_run() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let pipeline = pipeline.expect(
-        "a .gita-ci.yml in the documented top-level form should create a pipeline",
+    let pipeline =
+        pipeline.expect("a .gita-ci.yml in the documented top-level form should create a pipeline");
+    assert!(
+        pipeline.content.contains("echo built"),
+        "unexpected content: {}",
+        pipeline.content
     );
-    assert!(pipeline.content.contains("echo built"), "unexpected content: {}", pipeline.content);
 }
 
 /// The runner must be able to clone the repository itself, from a full ref.
@@ -1328,19 +1397,31 @@ async fn runner_clones_the_repository_using_a_full_ref() {
         .git
         .head_sha("cloneci", "cirepo", "main")
         .expect("head sha");
-    let yaml = "stages: [build]\njobs:\n  build:\n    stage: build\n    script:\n      - echo cloned-ok\n";
+    let yaml =
+        "stages: [build]\njobs:\n  build:\n    stage: build\n    script:\n      - echo cloned-ok\n";
     let pipeline_id = db
         .upsert_pipeline(repo.id, ".gita-ci.yml", "refs/heads/main", &head_sha, yaml)
         .await
         .unwrap();
     let run_id = db
-        .insert_pipeline_run(pipeline_id, repo.id, "refs/heads/main", &head_sha, None, None)
+        .insert_pipeline_run(
+            pipeline_id,
+            repo.id,
+            "refs/heads/main",
+            &head_sha,
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     // The runner clones the bare repo directly — no pre-clone — so the
     // executor's own clone path runs.
-    let bare = app.data_dir.join("repos").join("cloneci").join("cirepo.git");
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join("cloneci")
+        .join("cirepo.git");
     let runner_config = RunnerConfig {
         server_db_url: common::test_db_url(),
         server_base_url: format!("file://{}", bare.parent().unwrap().display()),
@@ -1357,6 +1438,7 @@ async fn runner_clones_the_repository_using_a_full_ref() {
         poll_interval_secs: 1,
         claim_lease_secs: 300,
         concurrent_jobs: 1,
+        job_timeout_secs: 300,
     };
     // The bare repo lives at <base>/cloneci/cirepo.git, so the clone URL
     // must be built from the parent of the bare repo.
@@ -1384,6 +1466,7 @@ async fn runner_clones_the_repository_using_a_full_ref() {
 
     // The run must succeed — the clone has to work.
     let finished = db.get_pipeline_run(run_id).await.unwrap().unwrap();
+    let all = db.list_pipeline_runs(pipeline_id, 50).await.unwrap();
     assert_eq!(
         finished.status, "success",
         "the runner's own clone should have succeeded"
@@ -1523,7 +1606,6 @@ async fn except_paths_filter_skips_a_docs_only_push() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    eprintln!("DEBUG runs found: {runs:?}");
     assert!(
         runs.is_empty(),
         "a docs-only push should have been filtered out by except.paths, \
