@@ -1131,7 +1131,13 @@ sqlx 的 `migrate!` 用 `pg_advisory_lock(current_database())`，是**数据库�
 
 ---
 
-## 10. 修复进度（2026-10-22 第一批）
+## 10. 修复进度
+
+> **编号说明**：本文 §8 的问题编号是权威编号。本节早期版本另起了一套编号，
+> 与 §8 相差 1～4（例：§8 的 P1-11「注册枚举」在本节旧表里写作 P1-10）。
+> 下表统一采用 **§8 的编号**，旧编号不再使用。
+
+### 第一批（2026-10-22）
 
 第一批修复已完成并实机验证。**`cargo test --workspace`：225 passed / 0 failed**
 （修复前 213；新增 12 个测试）。
@@ -1150,8 +1156,8 @@ sqlx 的 `migrate!` 用 `pg_advisory_lock(current_database())`，是**数据库�
 | **P0-9** | PR / Issue 返回 `"id": 0` | INSERT 加 `RETURNING id` | 实测返回真实 id |
 | **P0-8** | clone URL 缺 `/git`（前端 + runner） | UI 与 `gita-runner` 的 clone URL 都加 `/git` 前缀；e2e 断言同步更新 | 新增 e2e：**真的跑 `git clone`** 验证 UI 给的 URL 可用 |
 | **P1-7** | `cancel_run` 无鉴权 | 校验 owner + run 属于该仓 | 代码层 |
-| **P1-10** | 注册接口是账户枚举 oracle | 未修（见"未修复"） | — |
-| **P1-11** | `GET /api/auth/tokens` 重返 PAT 明文 | 未修（见"未修复"） | — |
+| **P1-11** | 注册接口是账户枚举 oracle | 见第二批 | — |
+| **P1-12** | `GET /api/auth/tokens` 重返 PAT 明文 | PAT 改哈希存储；列表不再返回原文（`token` 字段为空串） | 提交 `79477b3` |
 | **P1-19** | `/commits/{ref}` 只认 40 位 hex | `get_commit` 改走 `classify_reference` + `resolve_reference_id` | 实测 `HEAD`/`main` 均 200 |
 | **P1-20** | 不存在的 sha → 500 | 新增 `not_found_or_internal` 映射 | 实测 404 |
 | **P1-21** | 未知 ref 的 tree → 200 空列表 | 显式检查 ref 存在性；**空仓例外**（无任何 commit 时返回空列表，否则空仓欢迎卡会 404） | 实测未知 ref → 404，空仓 → 200 |
@@ -1169,17 +1175,64 @@ sqlx 的 `migrate!` 用 `pg_advisory_lock(current_database())`，是**数据库�
 
 ### 未修复（下一批）
 
-- **P1-10** 注册接口的 409 是账户/邮箱枚举 oracle
-- **P1-11** PAT 明文存储且列表接口重返原文
 - **P1-5** 无优雅关闭
-- **P1-6** 500 响应泄露绝对路径和 SQL 原文
-- **P1-13** `/api/*` 无 JSON 404（未知路径返回 200 HTML）
-- **P1-14** `OptionalAuthUser` 把无效 token 静默降级为匿名
-- **P1-15** JWT 不可吊销
-- **P1-16** `delete_repo` 用字符串比较
 - **P2-\*** 大部分 P2 项
-- **P0-6 的长期项**：CI runner 仍无真正的沙箱（bubblewrap / 容器）——本次只做了环境隔离、超时、目录隔离
-- **SSH push 仍不产生事件、不触发 CI**（P1-18）
+- **P0-6 的长期项**：CI runner 仍无真正的沙箱（bubblewrap / 容器）——第一批只做了环境隔离、超时、目录隔离
+- **P1-19** SSH push 仍不产生事件、不触发 CI
+- **P1-15** OpenAPI 规格与实际路由仍有出入（漂移测试只比对 path、不比对 method）
+
+### 第二批（2026-10-23）
+
+第二批修复完成并实机验证。**新增 10 个集成测试 + 2 个 e2e**；
+`cargo test --workspace` 233 passed / 0 failed，Playwright 20 passed。
+
+| 编号 | 问题 | 修法 | 验证 |
+|---|---|---|---|
+| **P1-11** | 注册接口是账户 / 邮箱枚举 oracle | 冲突时统一返回同一条 message（"username or email already in use"），用户名冲突与邮箱冲突的**响应体逐字节相同**；额外算一次 dummy 密码哈希，把响应时间拉平 | 新增 2 个集成测试；冲突响应用 `assert_eq!(body_a, body_b)` 断言不可区分 |
+| **P1-13** | `/api/*` 无 JSON 404（未知路径返回 200 HTML） | API router 加显式 catch-all `route("/api/{*rest}", any(fallback_404))`，返回标准 `{"error":{...}}` 信封 | 实测未知路径 → 404 + `content-type: application/json`；新增 2 个集成测试（GET + 全方法） |
+| **P1-14** | 500 响应泄露绝对路径和 SQL 原文 | `ApiError::Internal`/`Database`/`Io` 对客户端只回 "internal error"，详情只进日志 | 提交 `79477b3`（第一批已修，本批更新文档） |
+| **P1-16** | `OptionalAuthUser` 把无效 token 静默降级为匿名 | 解析失败**返回 401**，不再降级为匿名；无 token 仍走匿名 | 实测无效 token → 401、匿名 → 200；新增集成测试 |
+| **P1-17** | JWT 不可吊销 | 新增 `jwt_revocation_list` 表（migration `20261022090000`）；JWT 带 `jti`；`POST /api/auth/logout` 把 `jti` 加入吊销表；`resolve_bearer` 每次校验吊销状态 | 实测 logout 前 `me`→200、logout 后同 token→401；新增 3 个集成测试 + 2 个 e2e |
+| **P1-18** | `delete_repo` 用字符串比较 | 改为比较 `repository.owner_id == user.id`，与全站其它属主判定一致 | 新增集成测试；非属主 403、属主 200 |
+
+**JWT 吊销的两个设计决定**（值得记下来，避免以后被当成 bug 改回去）：
+
+1. **吊销的是"这一个 token"，不是"这个用户"**。同一用户两次登录得到两个 JWT，
+   登出其中一个不影响另一个——这与"登出=结束当前会话"一致，
+   也与 GitHub/Gitea 的行为一致。
+2. **用 PAT 调 logout 不会吊销 PAT**。PAT 是长生命周期凭据，没有"会话"可结束。
+   接口会明确告知"PAT 未被吊销，请用 `DELETE /api/auth/tokens/{id}` 撤销"，
+   而不是假装登出成功。
+
+**logout 的实现细节**：`verify_jwt` 被拆成 `decode_jwt`（纯解码，不查库）
+和 `verify_jwt`（解码 + 查吊销表）。logout 只用 `decode_jwt`——调用方的
+extractor 已经完成认证（含吊销检查），再查一次是多余的 DB 往返。
+
+**旧 token 的兼容**：`jti` 是 `Option<String>` + `#[serde(default)]`，
+而不是必填。升级前签发的 JWT 没有 `jti`，若把它设成必填字段，
+serde 解码会因 "missing field `jti`" 失败——**等于把每一个在线用户
+强制登出**。现在的做法是：`decode_jwt` 发现没有 `jti` 时，用
+`"legacy:" + sha256(token)` 派生一个**稳定**的 id。它是确定性的，
+所以同一个旧 token 永远映射到同一条吊销记录，旧 token 同样可以被登出。
+
+**API 404 的实现约束**：`api_router` **不能**用 axum 的 `.fallback()`——
+server 层要把它和 `gita-web` 的 SPA fallback `merge` 到一起，
+而两个带 fallback 的 Router 无法 merge（`Cannot merge two Routers that both
+have a fallback`）。所以 API 的 404 走**显式通配路由**而不是 fallback。
+具体路径永远优先于通配路由，真实端点不受影响。
+
+**前端配套**：登出按钮原本只清 localStorage，服务端的 JWT 仍然有效 7 天。
+现在 `useAuth.logout()` 会先 `POST /api/auth/logout`（fire-and-forget，
+失败不阻塞 UI）再清本地状态；新增 e2e 断言"登出后原 token 在服务端返回 401"。
+
+### 仍未修复
+
+- **P1-5** 无优雅关闭（SIGTERM 直接杀进程，事件行/webhook 可能丢）
+- **P1-15** OpenAPI 规格漂移（只比对 path 不比对 method；3 个搜索端点标了 auth 但实际匿名）
+- **P1-19** SSH push 不产生事件、不触发 CI
+- **P1-20** 鉴权判定仍散在 smart HTTP / dumb HTTP / SSH / REST 读路径 / REST 写路径 五处
+- **P2-\*** 大部分 P2 项
+- **CI runner 仍无真正的沙箱**（bubblewrap / 容器）
 
 ---
 

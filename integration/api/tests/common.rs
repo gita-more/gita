@@ -15,9 +15,8 @@ use gita_server::Config;
 
 /// Database URL for integration tests. Override via `GITA_TEST_DATABASE_URL`.
 pub fn test_db_url() -> String {
-    std::env::var("GITA_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://gita:gita@127.0.0.1:55432/gita".to_string()
-    })
+    std::env::var("GITA_TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://gita:gita@127.0.0.1:55432/gita".to_string())
 }
 
 /// Holds the per-test schema and bookkeeping for best-effort cleanup.
@@ -34,11 +33,9 @@ impl Drop for TestAppGuard {
             let schema = self.schema.clone();
             handle.spawn(async move {
                 if let Ok(pool) = sqlx::PgPool::connect(&base_url).await {
-                    let _ = sqlx::query(&format!(
-                        "DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
-                    ))
-                    .execute(&pool)
-                    .await;
+                    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+                        .execute(&pool)
+                        .await;
                     pool.close().await;
                 }
             });
@@ -129,10 +126,7 @@ pub struct AuthedUser {
 }
 
 /// Register a user via the App's HTTP layer and return a bearer token.
-pub async fn register_user(
-    app: &gita_server::App,
-    username: &str,
-) -> AuthedUser {
+pub async fn register_user(app: &gita_server::App, username: &str) -> AuthedUser {
     use tower::ServiceExt;
     let body = serde_json::json!({
         "username": username,
@@ -151,7 +145,9 @@ pub async fn register_user(
         axum::http::StatusCode::OK,
         "register failed for {username}"
     );
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     AuthedUser {
         token: v["token"].as_str().unwrap().to_string(),
@@ -180,7 +176,9 @@ pub async fn create_repo(app: &gita_server::App, token: &str, name: &str) -> Str
         axum::http::StatusCode::OK,
         "create_repo {name} failed"
     );
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     v["full_name"].as_str().unwrap().to_string()
 }
@@ -192,7 +190,11 @@ pub async fn create_repo(app: &gita_server::App, token: &str, name: &str) -> Str
 /// Creates an isolated work tree under `data_dir/.work-<rand>`, commits a
 /// README + an extra file, then pushes to origin/main.
 pub fn push_initial_commit(app: &gita_server::App, owner: &str, name: &str) {
-    let bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join(owner)
+        .join(format!("{name}.git"));
     if !bare.exists() {
         panic!(
             "bare repo path not found: {} (data_dir={})",
@@ -283,7 +285,9 @@ pub async fn request(
     };
     let resp = app.router().oneshot(req).await.unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, value)
 }
@@ -306,7 +310,9 @@ pub async fn request_bytes(
     let resp = app.router().oneshot(req).await.unwrap();
     let status = resp.status();
     let headers = resp.headers().clone();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 22)
+        .await
+        .unwrap();
     (status, headers, bytes.to_vec())
 }
 
@@ -321,7 +327,11 @@ pub fn push_files(
     branch: &str,
     message: &str,
 ) {
-    let bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join(owner)
+        .join(format!("{name}.git"));
     if !bare.exists() {
         panic!(
             "bare repo path not found: {} (data_dir={})",
@@ -413,9 +423,5 @@ pub async fn set_pages(
 /// Convenience: require that a path exists on disk (used to confirm the
 /// git CLI created the expected work directory).
 pub fn ensure_exists(p: &Path) {
-    assert!(
-        p.exists(),
-        "expected path {} to exist",
-        p.display()
-    );
+    assert!(p.exists(), "expected path {} to exist", p.display());
 }
