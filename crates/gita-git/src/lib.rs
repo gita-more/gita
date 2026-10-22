@@ -14,7 +14,8 @@
 use anyhow::{anyhow, Context, Result};
 use gita_core::{Commit, FileContent, TreeEntry};
 use gix::Repository;
-use std::path::{PathBuf};
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::process::Stdio;
 use tracing::debug;
 
@@ -89,7 +90,12 @@ impl GitManager {
     }
 
     /// Initialize a new bare repository.
-    pub async fn create_repo(&self, owner: &str, name: &str, default_branch: &str) -> Result<PathBuf> {
+    pub async fn create_repo(
+        &self,
+        owner: &str,
+        name: &str,
+        default_branch: &str,
+    ) -> Result<PathBuf> {
         let path = self.safe_repo_path(owner, name)?;
         if path.exists() {
             return Err(anyhow!("repository already exists: {owner}/{name}"));
@@ -98,13 +104,17 @@ impl GitManager {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create parent dir {}", parent.display()))?;
         }
-        let _repo = gix::init_bare(&path)
-            .map_err(|e| anyhow!("init bare repo {}: {e}", path.display()))?;
+        let _repo =
+            gix::init_bare(&path).map_err(|e| anyhow!("init bare repo {}: {e}", path.display()))?;
         // Set the default branch for fresh repositories.
         let _ = git_cmd()
             .arg("--git-dir")
             .arg(&path)
-            .args(["symbolic-ref", "HEAD", &format!("refs/heads/{default_branch}")])
+            .args([
+                "symbolic-ref",
+                "HEAD",
+                &format!("refs/heads/{default_branch}"),
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -141,7 +151,9 @@ impl GitManager {
             return Err(anyhow!("repository not found: {old_owner}/{old_name}"));
         }
         if new_path.exists() {
-            return Err(anyhow!("target repository already exists: {new_owner}/{new_name}"));
+            return Err(anyhow!(
+                "target repository already exists: {new_owner}/{new_name}"
+            ));
         }
         if let Some(parent) = new_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -164,10 +176,14 @@ impl GitManager {
         let src = self.safe_repo_path(src_owner, src_name)?;
         let dst = self.safe_repo_path(dst_owner, dst_name)?;
         if !src.exists() {
-            return Err(anyhow!("source repository not found: {src_owner}/{src_name}"));
+            return Err(anyhow!(
+                "source repository not found: {src_owner}/{src_name}"
+            ));
         }
         if dst.exists() {
-            return Err(anyhow!("destination repository already exists: {dst_owner}/{dst_name}"));
+            return Err(anyhow!(
+                "destination repository already exists: {dst_owner}/{dst_name}"
+            ));
         }
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
@@ -190,11 +206,19 @@ impl GitManager {
     /// Open a bare repository with gix.
     pub fn open(&self, owner: &str, name: &str) -> Result<Repository> {
         let path = self.repo_path(owner, name);
-        gix::open(&path)
-            .with_context(|| format!("open bare repo {}", path.display()))
+        gix::open(&path).with_context(|| format!("open bare repo {}", path.display()))
     }
 
     /// Run `git http-backend` as a CGI subprocess to serve a smart HTTP request.
+    ///
+    /// `GIT_HTTP_EXPORT_ALL=1` is always set, so the CGI will serve any
+    /// repository under the root. That is a protocol-level decision with no
+    /// per-repository granularity: without the variable `git http-backend`
+    /// answers 404 for *every* repository (it has no per-repo export
+    /// mechanism). The per-repository access control therefore has to live
+    /// in the caller — see `gita-http::authorize_git_request`, which gates
+    /// every request that addresses a repository, including the "dumb" file
+    /// endpoints (`HEAD`, `objects/**`) that the CGI also serves.
     pub fn run_http_backend(
         &self,
         method: &str,
@@ -355,10 +379,18 @@ impl GitManager {
     ///
     /// Each hit is returned as `(owner, repo, path, line_number, content)`.
     /// Repositories without a HEAD (empty, just initialised) are skipped.
+    ///
+    /// `allowed` restricts which repositories are scanned. The caller
+    /// supplies the set of repositories the requesting user is allowed to
+    /// read; a repository outside that set is **not** scanned at all, so its
+    /// contents cannot leak through the results. `None` means "no
+    /// restriction" and is only appropriate for callers that have already
+    /// established that every repository is visible.
     pub fn search_code(
         &self,
         query: &str,
         limit: usize,
+        allowed: Option<&HashSet<(String, String)>>,
     ) -> Result<Vec<(String, String, String, i64, String)>> {
         let mut out = Vec::new();
         if !self.root.exists() {
@@ -394,6 +426,12 @@ impl GitManager {
                     .strip_suffix(".git")
                     .unwrap_or(&repo_with_git)
                     .to_string();
+                // Skip repositories the caller is not allowed to read.
+                if let Some(allowed) = allowed {
+                    if !allowed.contains(&(owner.clone(), repo_name.clone())) {
+                        continue;
+                    }
+                }
                 let bare = repo_entry.path();
                 // Skip empty repos (HEAD symbolic ref pointing to a non-existent branch).
                 if bare.join("HEAD").exists() {
@@ -414,18 +452,14 @@ impl GitManager {
                     Ok(id) => id,
                     Err(_) => continue,
                 };
-                let Ok(tree) = repo_obj.find_commit(head_id.detach()).and_then(|c| c.tree()) else {
+                let Ok(tree) = repo_obj
+                    .find_commit(head_id.detach())
+                    .and_then(|c| c.tree())
+                else {
                     continue;
                 };
                 Self::scan_tree_for_query(
-                    &repo_obj,
-                    &tree,
-                    "",
-                    query,
-                    &owner,
-                    &repo_name,
-                    limit,
-                    &mut out,
+                    &repo_obj, &tree, "", query, &owner, &repo_name, limit, &mut out,
                 );
             }
         }
@@ -454,7 +488,9 @@ impl GitManager {
             } else {
                 format!("{prefix}/{filename}")
             };
-            let Ok(entry_obj) = entry.object() else { continue };
+            let Ok(entry_obj) = entry.object() else {
+                continue;
+            };
             if entry_obj.kind == gix::object::Kind::Blob {
                 let Ok(text) = std::str::from_utf8(&entry_obj.data) else {
                     continue;
@@ -474,16 +510,11 @@ impl GitManager {
                     }
                 }
             } else if entry_obj.kind == gix::object::Kind::Tree {
-                let Ok(subtree) = repo.find_tree(entry_obj.id) else { continue };
+                let Ok(subtree) = repo.find_tree(entry_obj.id) else {
+                    continue;
+                };
                 Self::scan_tree_for_query(
-                    repo,
-                    &subtree,
-                    &path,
-                    query,
-                    owner,
-                    repo_name,
-                    limit,
-                    out,
+                    repo, &subtree, &path, query, owner, repo_name, limit, out,
                 );
             }
         }
@@ -608,7 +639,10 @@ impl GitManager {
         } else if branches.contains(&"master".to_string()) {
             Ok("master".to_string())
         } else {
-            Ok(branches.first().cloned().unwrap_or_else(|| "main".to_string()))
+            Ok(branches
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "main".to_string()))
         }
     }
 
@@ -772,11 +806,8 @@ impl GitManager {
                 author_email: author.email.to_string(),
                 message: message.trim().to_string(),
                 parent_shas: commit.parent_ids().map(|p| p.to_string()).collect(),
-                authored_at: chrono::DateTime::from_timestamp(
-                    committer.seconds(),
-                    0,
-                )
-                .unwrap_or_else(chrono::Utc::now),
+                authored_at: chrono::DateTime::from_timestamp(committer.seconds(), 0)
+                    .unwrap_or_else(chrono::Utc::now),
             });
         }
         Ok(commits)
@@ -794,7 +825,14 @@ impl GitManager {
         let output = git_cmd()
             .args(["--git-dir"])
             .arg(&path)
-            .args(["diff", "--no-color", "--no-ext-diff", base_ref, head_ref, "--"])
+            .args([
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                base_ref,
+                head_ref,
+                "--",
+            ])
             .output()
             .map_err(|e| anyhow!("git diff failed: {e}"))?;
         if !output.status.success() {
@@ -808,12 +846,7 @@ impl GitManager {
 
     /// Run `git show <sha>` and return its combined patch (works for the
     /// root commit too, which has no parent).
-    pub fn show_commit(
-        &self,
-        owner: &str,
-        name: &str,
-        sha: &str,
-    ) -> Result<String> {
+    pub fn show_commit(&self, owner: &str, name: &str, sha: &str) -> Result<String> {
         let path = self.repo_path(owner, name);
         let output = git_cmd()
             .args(["--git-dir"])
@@ -904,26 +937,21 @@ impl GitManager {
         Ok(id.to_string())
     }
 
-    /// Fetch a single commit by SHA.
-    pub fn get_commit(
-        &self,
-        owner: &str,
-        name: &str,
-        sha: &str,
-    ) -> Result<gita_core::CommitMeta> {
+    /// Fetch a single commit by reference.
+    ///
+    /// The reference may be a full object id or any ref name — `HEAD`,
+    /// a short branch name, or a fully-qualified `refs/...`. It is
+    /// resolved through the same `classify_reference` /
+    /// `resolve_reference_id` path the tree and file readers use, so
+    /// `get_commit("HEAD")` and `list_tree("HEAD")` agree.
+    pub fn get_commit(&self, owner: &str, name: &str, sha: &str) -> Result<gita_core::CommitMeta> {
         let repo = self.open(owner, name)?;
-        let id = gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes()))
-            .map_err(|e| anyhow!("invalid sha {sha}: {e}"))?;
+        let id = resolve_reference_id(&repo, sha)?;
         let commit = repo
             .find_commit(id)
             .map_err(|e| anyhow!("commit {sha} not found: {e}"))?;
-        let parents: Vec<String> = commit
-            .parent_ids()
-            .map(|p| p.to_string())
-            .collect();
-        let sig = commit
-            .author()
-            .map_err(|e| anyhow!("author error: {e}"))?;
+        let parents: Vec<String> = commit.parent_ids().map(|p| p.to_string()).collect();
+        let sig = commit.author().map_err(|e| anyhow!("author error: {e}"))?;
         let message = commit
             .message_raw()
             .map_err(|e| anyhow!("message error: {e}"))?;
@@ -933,11 +961,8 @@ impl GitManager {
             author_email: sig.email.to_string(),
             message: message.to_string(),
             parent_shas: parents,
-            authored_at: chrono::DateTime::from_timestamp(
-                sig.time.parse().ok().unwrap_or(0),
-                0,
-            )
-            .unwrap_or_else(chrono::Utc::now),
+            authored_at: chrono::DateTime::from_timestamp(sig.time.parse().ok().unwrap_or(0), 0)
+                .unwrap_or_else(chrono::Utc::now),
         })
     }
 
@@ -964,22 +989,30 @@ impl GitManager {
     ///
     /// Uses a temporary index file so the bare repository is never
     /// mutated. Returns the list of conflicting paths (empty = clean merge).
-    pub fn check_merge_conflict(
+    /// Compute the three-way merge of `head_sha` into `target_branch`.
+    ///
+    /// Returns the merge tree's object id on a clean merge, or the list of
+    /// conflicting paths when the merge cannot be resolved automatically.
+    ///
+    /// The merge tree is the *correct* result of merging: it contains the
+    /// target branch's changes **and** the source branch's changes. Using
+    /// the source commit's tree instead would silently drop everything the
+    /// target branch changed on its own.
+    fn compute_merge_tree(
         &self,
-        owner: &str,
-        name: &str,
-        target_branch: &str,
+        path: &std::path::Path,
+        target_sha: &str,
         head_sha: &str,
-    ) -> Result<Vec<String>> {
-        let repo = self.open(owner, name)?;
-        let target_sha = resolve_reference_id(&repo, &format!("refs/heads/{target_branch}"))?
-            .to_string();
-        let path = self.repo_path(owner, name);
-
+    ) -> Result<Result<String, Vec<String>>> {
         let tmp = tempfile::tempdir().map_err(|e| anyhow!("create temp dir: {e}"))?;
         let index_file = tmp.path().join("index");
-        let git_index = index_file.to_str().ok_or_else(|| anyhow!("bad temp path"))?;
-        let work_tree = tmp.path().to_str().ok_or_else(|| anyhow!("bad temp path"))?;
+        let git_index = index_file
+            .to_str()
+            .ok_or_else(|| anyhow!("bad temp path"))?;
+        let work_tree = tmp
+            .path()
+            .to_str()
+            .ok_or_else(|| anyhow!("bad temp path"))?;
 
         // Compute the merge base for a three-way merge.
         let merge_base = git_cmd()
@@ -994,7 +1027,9 @@ impl GitManager {
                 String::from_utf8_lossy(&merge_base.stderr)
             ));
         }
-        let base_sha = String::from_utf8_lossy(&merge_base.stdout).trim().to_string();
+        let base_sha = String::from_utf8_lossy(&merge_base.stdout)
+            .trim()
+            .to_string();
         if base_sha.is_empty() {
             return Err(anyhow!("no merge base between {target_sha} and {head_sha}"));
         }
@@ -1026,7 +1061,10 @@ impl GitManager {
             .output()
             .map_err(|e| anyhow!("git write-tree failed: {e}"))?;
         if write_tree.status.success() {
-            return Ok(Vec::new()); // clean merge
+            let tree = String::from_utf8_lossy(&write_tree.stdout)
+                .trim()
+                .to_string();
+            return Ok(Ok(tree));
         }
 
         // Extract conflicting paths from `git ls-files --unmerged`.
@@ -1048,7 +1086,30 @@ impl GitManager {
             .collect();
         paths.sort();
         paths.dedup();
-        Ok(paths)
+        Ok(Err(paths))
+    }
+
+    /// List the paths that conflict when merging `head_sha` into
+    /// `target_branch`. Empty means the merge is clean.
+    ///
+    /// The repository is never mutated: the merge is computed in a
+    /// temporary index.
+    pub fn check_merge_conflict(
+        &self,
+        owner: &str,
+        name: &str,
+        target_branch: &str,
+        head_sha: &str,
+    ) -> Result<Vec<String>> {
+        let repo = self.open(owner, name)?;
+        let target_sha =
+            resolve_reference_id(&repo, &format!("refs/heads/{target_branch}"))?.to_string();
+        let path = self.repo_path(owner, name);
+
+        match self.compute_merge_tree(&path, &target_sha, head_sha)? {
+            Ok(_tree) => Ok(Vec::new()),
+            Err(conflicts) => Ok(conflicts),
+        }
     }
 
     /// Merge a source commit into a target branch.
@@ -1097,47 +1158,38 @@ impl GitManager {
             return Ok(());
         }
 
-        // Non-fast-forward: detect conflicts first.
-        let conflicts = self.check_merge_conflict(owner, name, target_branch, head_sha)?;
-        if !conflicts.is_empty() {
-            return Err(anyhow!(
-                "merge conflict in: {}",
-                conflicts.join(", ")
-            ));
-        }
-
         // Create a merge commit with parents (target, head).
         let message = format!(
             "Merge branch '{}' into {}\n\n(merged via Gita PR)",
             target_branch, head_sha
         );
-        let merge_base = git_cmd()
-            .args(["--git-dir"])
-            .arg(&path)
-            .args(["merge-base", &target_sha, head_sha])
-            .output()
-            .map_err(|e| anyhow!("git merge-base failed: {e}"))?;
-        let base_sha = String::from_utf8_lossy(&merge_base.stdout).trim().to_string();
-        if base_sha.is_empty() {
-            return Err(anyhow!("no merge base between {target_sha} and {head_sha}"));
-        }
 
-        // The tree for the merge commit is the head commit's tree (a clean
-        // merge with no conflicts means the head tree already contains all
-        // changes; git's default strategy would normally re-derive it).
-        let head_tree = git_cmd()
-            .args(["--git-dir"])
-            .arg(&path)
-            .args(["rev-parse", &format!("{head_sha}^{{tree}}")])
-            .output()
-            .map_err(|e| anyhow!("git rev-parse tree failed: {e}"))?;
-        let tree_sha = String::from_utf8_lossy(&head_tree.stdout).trim().to_string();
+        // The merge commit's tree is the *merge tree*: the three-way merge
+        // of the target branch and the head commit. Using the head commit's
+        // tree instead would silently drop every change the target branch
+        // made on its own — "no conflicts" only means the two sides did not
+        // touch the same lines, not that the head tree already contains the
+        // target's work.
+        //
+        // `compute_merge_tree` also reports conflicts, so no separate
+        // pre-check is needed.
+        let tree_sha = match self.compute_merge_tree(&path, &target_sha, head_sha)? {
+            Ok(tree) => tree,
+            Err(conflicts) => {
+                return Err(anyhow!("merge conflict in: {}", conflicts.join(", ")));
+            }
+        };
         if tree_sha.is_empty() {
-            return Err(anyhow!("git rev-parse returned an empty tree SHA"));
+            return Err(anyhow!("git write-tree returned an empty tree SHA"));
         }
 
         let commit_tree = git_cmd()
-            .args(["-c", &format!("user.name={author_name}"), "-c", &format!("user.email={author_email}")])
+            .args([
+                "-c",
+                &format!("user.name={author_name}"),
+                "-c",
+                &format!("user.email={author_email}"),
+            ])
             .args(["--git-dir"])
             .arg(&path)
             .args([
@@ -1158,7 +1210,9 @@ impl GitManager {
                 String::from_utf8_lossy(&commit_tree.stderr)
             ));
         }
-        let merge_sha = String::from_utf8_lossy(&commit_tree.stdout).trim().to_string();
+        let merge_sha = String::from_utf8_lossy(&commit_tree.stdout)
+            .trim()
+            .to_string();
         if merge_sha.is_empty() {
             return Err(anyhow!("git commit-tree returned an empty SHA"));
         }
@@ -1169,9 +1223,9 @@ impl GitManager {
             gix::refs::FullName::try_from(full_target.as_str())
                 .map_err(|e| anyhow!("invalid ref name {full_target}: {e}"))?,
             merge_id,
-            gix::refs::transaction::PreviousValue::MustExistAndMatch(
-                gix::refs::Target::Object(target.id().detach()),
-            ),
+            gix::refs::transaction::PreviousValue::MustExistAndMatch(gix::refs::Target::Object(
+                target.id().detach(),
+            )),
             format!("merge: {target_branch} <- {head_sha}"),
         );
         repo.edit_references([edit])
@@ -1228,10 +1282,8 @@ fn resolve_ref_id(repo: &Repository, full: &str) -> Option<gix::ObjectId> {
 
 fn resolve_reference_id(repo: &Repository, reference: &str) -> Result<gix::ObjectId> {
     match classify_reference(reference) {
-        RefSpec::ObjectId(sha) => {
-            gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes()))
-                .map_err(|e| anyhow!("invalid sha {sha}: {e}"))
-        }
+        RefSpec::ObjectId(sha) => gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes()))
+            .map_err(|e| anyhow!("invalid sha {sha}: {e}")),
         RefSpec::Ref(full) => {
             resolve_ref_id(repo, &full).with_context(|| format!("find reference {full}"))
         }
@@ -1244,10 +1296,12 @@ fn resolve_reference_id(repo: &Repository, reference: &str) -> Result<gix::Objec
 /// empty result instead of an error/500.
 fn resolve_reference_id_opt(repo: &Repository, reference: &str) -> Result<Option<gix::ObjectId>> {
     match classify_reference(reference) {
-        RefSpec::ObjectId(sha) => match gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes())) {
-            Ok(id) => Ok(Some(id)),
-            Err(_) => Ok(None),
-        },
+        RefSpec::ObjectId(sha) => {
+            match gix::ObjectId::from_hex(gix::bstr::BStr::new(sha.as_bytes())) {
+                Ok(id) => Ok(Some(id)),
+                Err(_) => Ok(None),
+            }
+        }
         RefSpec::Ref(full) => Ok(resolve_ref_id(repo, &full)),
     }
 }
@@ -1328,7 +1382,10 @@ fn find_cgi_header_end(bytes: &[u8]) -> Option<usize> {
     if let Some(pos) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
         return Some(pos + 4);
     }
-    bytes.windows(2).position(|w| w == b"\n\n").map(|pos| pos + 2)
+    bytes
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .map(|pos| pos + 2)
 }
 
 /// Returns whether `git` is available on PATH.
@@ -1390,14 +1447,25 @@ mod tests {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                panic!("git command failed: {:?}\nstdout: {}\nstderr: {}", args, stdout, stderr);
+                panic!(
+                    "git command failed: {:?}\nstdout: {}\nstderr: {}",
+                    args, stdout, stderr
+                );
             }
         };
         run(&["init", "-b", "main"]);
         std::fs::write(work.join("README.md"), "# Hello\n\nThis is a test repo.\n").unwrap();
         std::fs::write(work.join("main.rs"), "fn main() { println!(\"hi\"); }\n").unwrap();
         run(&["add", "."]);
-        run(&["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "initial commit"]);
+        run(&[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-m",
+            "initial commit",
+        ]);
 
         let repo_url = format!("file://{}", repo_path.to_string_lossy());
         eprintln!("Pushing to repo URL: {}", repo_url);
@@ -1416,9 +1484,8 @@ mod tests {
         let root = temp_dir();
         let mgr = GitManager::new(root.clone());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let repo_path = rt.block_on(async {
-            mgr.create_repo("alice", "test", "main").await.unwrap()
-        });
+        let repo_path =
+            rt.block_on(async { mgr.create_repo("alice", "test", "main").await.unwrap() });
         eprintln!("Created repo at: {}", repo_path.display());
         eprintln!("Repo exists: {}", repo_path.exists());
         if repo_path.exists() {
@@ -1456,9 +1523,8 @@ mod tests {
         let root = temp_dir();
         let mgr = GitManager::new(root.clone());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let repo_path = rt.block_on(async {
-            mgr.create_repo("alice", "sha", "main").await.unwrap()
-        });
+        let repo_path =
+            rt.block_on(async { mgr.create_repo("alice", "sha", "main").await.unwrap() });
         push_initial_commit(&mgr, "alice", "sha", &repo_path);
 
         let sha = mgr.head_sha("alice", "sha", "main").unwrap();
@@ -1492,25 +1558,31 @@ mod tests {
         let root = temp_dir();
         let mgr = GitManager::new(root.clone());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let repo_path = rt.block_on(async {
-            mgr.create_repo("alice", "badsha", "main").await.unwrap()
-        });
+        let repo_path =
+            rt.block_on(async { mgr.create_repo("alice", "badsha", "main").await.unwrap() });
         push_initial_commit(&mgr, "alice", "badsha", &repo_path);
 
         // 40 chars but not hex: must degrade to an empty result, not panic or error.
         let bogus = "z".repeat(40);
         assert!(
-            mgr.list_commits("alice", "badsha", &bogus, 10).unwrap().is_empty(),
+            mgr.list_commits("alice", "badsha", &bogus, 10)
+                .unwrap()
+                .is_empty(),
             "malformed sha should yield no commits"
         );
         assert!(
-            mgr.read_file("alice", "badsha", &bogus, "README.md").unwrap().is_none(),
+            mgr.read_file("alice", "badsha", &bogus, "README.md")
+                .unwrap()
+                .is_none(),
             "read_file at a malformed sha should return None"
         );
 
         // A well-formed SHA that simply doesn't exist in this repo.
         let absent = "0".repeat(40);
-        assert!(mgr.list_commits("alice", "badsha", &absent, 10).unwrap().is_empty());
+        assert!(mgr
+            .list_commits("alice", "badsha", &absent, 10)
+            .unwrap()
+            .is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1615,7 +1687,10 @@ mod tests {
     async fn create_repo_then_repo_exists() {
         let root = temp_dir();
         let mgr = GitManager::new(root.clone());
-        assert!(!mgr.repo_exists("alice", "test"), "fresh repo should not exist");
+        assert!(
+            !mgr.repo_exists("alice", "test"),
+            "fresh repo should not exist"
+        );
         mgr.create_repo("alice", "test", "main").await.unwrap();
         assert!(mgr.repo_exists("alice", "test"));
     }
@@ -1625,10 +1700,7 @@ mod tests {
         let root = temp_dir();
         let mgr = GitManager::new(root.clone());
         mgr.create_repo("alice", "test", "main").await.unwrap();
-        let err = mgr
-            .create_repo("alice", "test", "main")
-            .await
-            .unwrap_err();
+        let err = mgr.create_repo("alice", "test", "main").await.unwrap_err();
         assert!(err.to_string().contains("repository already exists"));
     }
 
@@ -1660,7 +1732,10 @@ mod tests {
         let res = mgr
             .read_file("alice", "test", "main", "does-not-exist.txt")
             .unwrap();
-        assert!(res.is_none(), "missing file should return Ok(None), got {res:?}");
+        assert!(
+            res.is_none(),
+            "missing file should return Ok(None), got {res:?}"
+        );
     }
 
     #[tokio::test]
@@ -1726,9 +1801,15 @@ mod tests {
         );
 
         // A path that is a file (not a directory) yields an empty listing.
-        assert!(mgr.list_tree("alice", "deep", "main", "README.md").unwrap().is_empty());
+        assert!(mgr
+            .list_tree("alice", "deep", "main", "README.md")
+            .unwrap()
+            .is_empty());
         // A path that does not exist yields an empty listing.
-        assert!(mgr.list_tree("alice", "deep", "main", "nope").unwrap().is_empty());
+        assert!(mgr
+            .list_tree("alice", "deep", "main", "nope")
+            .unwrap()
+            .is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1736,11 +1817,11 @@ mod tests {
     /// A real 1x1 PNG. Chosen because it contains bytes that are invalid
     /// UTF-8, so any lossy decode mangles it visibly.
     const TINY_PNG: &[u8] = &[
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-        0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x26, 0x08, 0x02, 0x00, 0x00, 0x00, 0x39, 0x1D, 0x09,
-        0x7C, 0x11, 0xFF, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01,
-        0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
-        0x44, 0xAE, 0x42, 0x60, 0x82,
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x26, 0x08, 0x02, 0x00, 0x00, 0x00, 0x39,
+        0x1D, 0x09, 0x7C, 0x11, 0xFF, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C,
+        0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
     ];
 
     #[tokio::test]
@@ -1793,7 +1874,10 @@ mod tests {
         );
 
         // Text files come through unchanged on both paths.
-        let html = mgr.read_file_bytes("alice", "bin", "main", "index.html").unwrap().unwrap();
+        let html = mgr
+            .read_file_bytes("alice", "bin", "main", "index.html")
+            .unwrap()
+            .unwrap();
         assert_eq!(html.data, b"<h1>hi</h1>\n");
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1828,20 +1912,23 @@ mod tests {
         // A directory resolves to a tree entry; that is not file content and
         // must not blow up in `into_blob`.
         assert!(
-            mgr.read_file_bytes("alice", "bytes", "main", "docs").unwrap().is_none(),
+            mgr.read_file_bytes("alice", "bytes", "main", "docs")
+                .unwrap()
+                .is_none(),
             "a directory path should be None, not a panic"
         );
         // Same for read_file, which previously would have decoded a tree.
         assert!(
-            mgr.read_file("alice", "bytes", "main", "docs").unwrap().is_none(),
+            mgr.read_file("alice", "bytes", "main", "docs")
+                .unwrap()
+                .is_none(),
             "read_file on a directory should be None"
         );
         // Missing reference.
-        assert!(
-            mgr.read_file_bytes("alice", "bytes", "no-such-branch", "docs/index.html")
-                .unwrap()
-                .is_none()
-        );
+        assert!(mgr
+            .read_file_bytes("alice", "bytes", "no-such-branch", "docs/index.html")
+            .unwrap()
+            .is_none());
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1907,6 +1994,88 @@ mod tests {
         assert_ne!(sha, sha2, "head_sha must advance after a push");
     }
 
+    /// A merge must keep the changes the *target* branch made on its own.
+    ///
+    /// The merge commit's tree used to be the head commit's tree, which
+    /// silently reverted every file the target branch had changed but the
+    /// source branch had not. "No conflicts" means the two sides did not
+    /// touch the same lines — it does not mean the head tree already
+    /// contains the target's work.
+    #[tokio::test]
+    async fn merge_keeps_target_branch_only_changes() {
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let path = mgr.create_repo("alice", "mergetest", "main").await.unwrap();
+        push_initial_commit(&mgr, "alice", "mergetest", &path);
+
+        let work = path.parent().unwrap().join("mergework");
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        let run = |args: &[&str]| {
+            let out = git_cmd()
+                .args(args)
+                .current_dir(&work)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "t@e.io")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "t@e.io")
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        let bare_url = format!("file://{}", path.display());
+        run(&["clone", "-q", &bare_url, "."]);
+
+        // A shared base file, so the two branches are genuinely related.
+        std::fs::write(work.join("shared.txt"), "base").unwrap();
+        run(&["add", "shared.txt"]);
+        run(&["commit", "-q", "-m", "base"]);
+        run(&["push", "-q", "origin", "main"]);
+
+        // The feature branch adds a file of its own.
+        run(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(work.join("only_feature.txt"), "from feature").unwrap();
+        run(&["add", "only_feature.txt"]);
+        run(&["commit", "-q", "-m", "feature change"]);
+        run(&["push", "-q", "origin", "feature"]);
+        let head_sha = mgr.head_sha("alice", "mergetest", "feature").unwrap();
+
+        // The target branch adds a *different* file of its own.
+        run(&["checkout", "-q", "main"]);
+        std::fs::write(work.join("only_main.txt"), "from main").unwrap();
+        run(&["add", "only_main.txt"]);
+        run(&["commit", "-q", "-m", "main change"]);
+        run(&["push", "-q", "origin", "main"]);
+
+        // No conflicts: the two sides touched different files.
+        let conflicts = mgr
+            .check_merge_conflict("alice", "mergetest", "main", &head_sha)
+            .unwrap();
+        assert!(
+            conflicts.is_empty(),
+            "expected a clean merge, got {conflicts:?}"
+        );
+
+        mgr.merge_branch("alice", "mergetest", "main", &head_sha, "Test", "t@e.io")
+            .unwrap();
+
+        // The merged tree must contain BOTH sides' files.
+        let entries = mgr.list_tree("alice", "mergetest", "main", "").unwrap();
+        let paths: Vec<String> = entries.into_iter().map(|e| e.path).collect();
+        assert!(
+            paths.contains(&"only_feature.txt".to_string()),
+            "source branch's file missing after merge: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"only_main.txt".to_string()),
+            "target branch's own change was dropped by the merge: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"shared.txt".to_string()),
+            "base file missing after merge: {paths:?}"
+        );
+    }
+
     #[tokio::test]
     async fn branch_and_tag_crud() {
         let root = temp_dir();
@@ -1915,18 +2084,22 @@ mod tests {
         push_initial_commit(&mgr, "alice", "branchtag", &path);
 
         // Create a branch from HEAD.
-        mgr.create_branch("alice", "branchtag", "feature", None).unwrap();
+        mgr.create_branch("alice", "branchtag", "feature", None)
+            .unwrap();
         let branches = mgr.list_branches("alice", "branchtag").unwrap();
         assert!(branches.contains(&"feature".to_string()));
 
         // Create a branch from a specific sha (main head).
         let main_sha = mgr.head_sha("alice", "branchtag", "main").unwrap();
-        mgr.create_branch("alice", "branchtag", "from-sha", Some(&main_sha)).unwrap();
+        mgr.create_branch("alice", "branchtag", "from-sha", Some(&main_sha))
+            .unwrap();
         let branches = mgr.list_branches("alice", "branchtag").unwrap();
         assert!(branches.contains(&"from-sha".to_string()));
 
         // Duplicate branch -> error.
-        let err = mgr.create_branch("alice", "branchtag", "feature", None).unwrap_err();
+        let err = mgr
+            .create_branch("alice", "branchtag", "feature", None)
+            .unwrap_err();
         assert!(err.to_string().contains("already exists"));
 
         // Delete branch.
@@ -1935,12 +2108,15 @@ mod tests {
         assert!(!branches.contains(&"feature".to_string()));
 
         // Tags.
-        mgr.create_tag("alice", "branchtag", "v1.0.0", Some(&main_sha)).unwrap();
+        mgr.create_tag("alice", "branchtag", "v1.0.0", Some(&main_sha))
+            .unwrap();
         let tags = mgr.list_tags("alice", "branchtag").unwrap();
         assert!(tags.contains(&"v1.0.0".to_string()));
 
         // Duplicate tag -> error.
-        let err = mgr.create_tag("alice", "branchtag", "v1.0.0", None).unwrap_err();
+        let err = mgr
+            .create_tag("alice", "branchtag", "v1.0.0", None)
+            .unwrap_err();
         assert!(err.to_string().contains("already exists"));
 
         mgr.delete_tag("alice", "branchtag", "v1.0.0").unwrap();
@@ -1958,7 +2134,8 @@ mod tests {
         assert!(mgr.repo_exists("alice", "before"));
 
         // Rename within the same namespace.
-        mgr.rename_repo("alice", "before", "alice", "after").unwrap();
+        mgr.rename_repo("alice", "before", "alice", "after")
+            .unwrap();
         assert!(!mgr.repo_exists("alice", "before"));
         assert!(mgr.repo_exists("alice", "after"));
 
@@ -1969,7 +2146,9 @@ mod tests {
 
         // Rename to existing target -> error.
         mgr.create_repo("alice", "collision", "main").await.unwrap();
-        let err = mgr.rename_repo("bob", "shared", "alice", "collision").unwrap_err();
+        let err = mgr
+            .rename_repo("bob", "shared", "alice", "collision")
+            .unwrap_err();
         assert!(err.to_string().contains("already exists"));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2039,7 +2218,11 @@ mod tests {
                 .output()
                 .expect("git");
             if !out.status.success() {
-                panic!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+                panic!(
+                    "git {:?} failed: {}",
+                    args,
+                    String::from_utf8_lossy(&out.stderr)
+                );
             }
         };
         let bare_url = format!("file://{}", path.display());
@@ -2062,15 +2245,32 @@ mod tests {
         push_initial_commit(&mgr, "alice", "ff", &path);
 
         // Create a feature branch that extends main.
-        push_branch(&mgr, "alice", "ff", "feature", &[("feature.txt", "x\n")], "feature work");
+        push_branch(
+            &mgr,
+            "alice",
+            "ff",
+            "feature",
+            &[("feature.txt", "x\n")],
+            "feature work",
+        );
         let main_before = mgr.head_sha("alice", "ff", "main").unwrap();
         let feature_sha = mgr.head_sha("alice", "ff", "feature").unwrap();
 
         // Fast-forward: feature is a descendant of main.
-        assert!(mgr.is_ancestor("alice", "ff", &main_before, &feature_sha).unwrap());
+        assert!(mgr
+            .is_ancestor("alice", "ff", &main_before, &feature_sha)
+            .unwrap());
 
         // Merge should advance main to feature sha.
-        mgr.merge_branch("alice", "ff", "main", &feature_sha, "Test", "test@example.com").unwrap();
+        mgr.merge_branch(
+            "alice",
+            "ff",
+            "main",
+            &feature_sha,
+            "Test",
+            "test@example.com",
+        )
+        .unwrap();
         let main_after = mgr.head_sha("alice", "ff", "main").unwrap();
         assert_eq!(main_after, feature_sha);
 
@@ -2086,28 +2286,60 @@ mod tests {
         let main_before = mgr.head_sha("alice", "merge", "main").unwrap();
 
         // Branch feature from main, add a file.
-        push_branch(&mgr, "alice", "merge", "feature", &[("feat.md", "feature\n")], "feat");
+        push_branch(
+            &mgr,
+            "alice",
+            "merge",
+            "feature",
+            &[("feat.md", "feature\n")],
+            "feat",
+        );
         let feature_sha = mgr.head_sha("alice", "merge", "feature").unwrap();
 
         // Advance main independently (different file -> no conflict).
-        push_branch(&mgr, "alice", "merge", "main", &[("main.md", "main\n")], "main work");
+        push_branch(
+            &mgr,
+            "alice",
+            "merge",
+            "main",
+            &[("main.md", "main\n")],
+            "main work",
+        );
         let main_diverged = mgr.head_sha("alice", "merge", "main").unwrap();
         assert_ne!(main_diverged, feature_sha);
 
         // No conflict expected.
-        let conflicts = mgr.check_merge_conflict("alice", "merge", "main", &feature_sha).unwrap();
-        assert!(conflicts.is_empty(), "expected no conflict, got {conflicts:?}");
+        let conflicts = mgr
+            .check_merge_conflict("alice", "merge", "main", &feature_sha)
+            .unwrap();
+        assert!(
+            conflicts.is_empty(),
+            "expected no conflict, got {conflicts:?}"
+        );
 
         // Merge should create a merge commit (not fast-forward).
-        mgr.merge_branch("alice", "merge", "main", &feature_sha, "Test", "test@example.com").unwrap();
+        mgr.merge_branch(
+            "alice",
+            "merge",
+            "main",
+            &feature_sha,
+            "Test",
+            "test@example.com",
+        )
+        .unwrap();
         let main_after = mgr.head_sha("alice", "merge", "main").unwrap();
-        assert_ne!(main_after, feature_sha, "merge commit should not equal feature head");
+        assert_ne!(
+            main_after, feature_sha,
+            "merge commit should not equal feature head"
+        );
         assert_ne!(main_after, main_diverged, "main should advance");
         // The new head should have two parents (merge commit).
         let parents = mgr
             .open("alice", "merge")
             .unwrap()
-            .find_commit(gix::ObjectId::from_hex(gix::bstr::BStr::new(main_after.as_bytes())).unwrap())
+            .find_commit(
+                gix::ObjectId::from_hex(gix::bstr::BStr::new(main_after.as_bytes())).unwrap(),
+            )
             .unwrap()
             .parent_ids()
             .count();
@@ -2124,23 +2356,50 @@ mod tests {
         push_initial_commit(&mgr, "alice", "conflict", &path);
 
         // Feature modifies README.md.
-        push_branch(&mgr, "alice", "conflict", "feature", &[("README.md", "# Feature\n")], "feat readme");
+        push_branch(
+            &mgr,
+            "alice",
+            "conflict",
+            "feature",
+            &[("README.md", "# Feature\n")],
+            "feat readme",
+        );
         let feature_sha = mgr.head_sha("alice", "conflict", "feature").unwrap();
 
         // Main also modifies README.md differently.
-        push_branch(&mgr, "alice", "conflict", "main", &[("README.md", "# Main\n")], "main readme");
+        push_branch(
+            &mgr,
+            "alice",
+            "conflict",
+            "main",
+            &[("README.md", "# Main\n")],
+            "main readme",
+        );
         let main_sha = mgr.head_sha("alice", "conflict", "main").unwrap();
-        assert!(!mgr.is_ancestor("alice", "conflict", &main_sha, &feature_sha).unwrap());
+        assert!(!mgr
+            .is_ancestor("alice", "conflict", &main_sha, &feature_sha)
+            .unwrap());
 
         // Conflict detection should report README.md.
-        let conflicts = mgr.check_merge_conflict("alice", "conflict", "main", &feature_sha).unwrap();
+        let conflicts = mgr
+            .check_merge_conflict("alice", "conflict", "main", &feature_sha)
+            .unwrap();
         assert!(
             conflicts.iter().any(|p| p == "README.md"),
             "expected README.md conflict, got {conflicts:?}"
         );
 
         // merge_branch must fail with a conflict error and leave main untouched.
-        let err = mgr.merge_branch("alice", "conflict", "main", &feature_sha, "Test", "test@example.com").unwrap_err();
+        let err = mgr
+            .merge_branch(
+                "alice",
+                "conflict",
+                "main",
+                &feature_sha,
+                "Test",
+                "test@example.com",
+            )
+            .unwrap_err();
         assert!(err.to_string().contains("merge conflict"), "got: {err}");
         let main_after = mgr.head_sha("alice", "conflict", "main").unwrap();
         assert_eq!(main_after, main_sha, "main must not change on conflict");
