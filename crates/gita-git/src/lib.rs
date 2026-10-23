@@ -851,7 +851,16 @@ impl GitManager {
         let output = git_cmd()
             .args(["--git-dir"])
             .arg(&path)
-            .args(["show", "--no-color", "--no-ext-diff", sha])
+            // `--end-of-options` tells git that everything after it is a
+            // revision, not an option. Without it a reference such as
+            // `--output=/tmp/x` would be taken as an option.
+            .args([
+                "show",
+                "--no-color",
+                "--no-ext-diff",
+                "--end-of-options",
+                sha,
+            ])
             .output()
             .map_err(|e| anyhow!("git show failed: {e}"))?;
         if !output.status.success() {
@@ -876,7 +885,14 @@ impl GitManager {
         let output = git_cmd()
             .args(["--git-dir"])
             .arg(&path)
-            .args(["diff", "--name-status", "--no-color", base_ref, head_ref])
+            .args([
+                "diff",
+                "--name-status",
+                "--no-color",
+                "--end-of-options",
+                base_ref,
+                head_ref,
+            ])
             .output()
             .map_err(|e| anyhow!("git diff --name-status failed: {e}"))?;
         if !output.status.success() {
@@ -913,7 +929,12 @@ impl GitManager {
         let output = git_cmd()
             .args(["--git-dir"])
             .arg(&path)
-            .args(["rev-list", "--reverse", &format!("{base_ref}..{head_ref}")])
+            .args([
+                "rev-list",
+                "--reverse",
+                "--end-of-options",
+                &format!("{base_ref}..{head_ref}"),
+            ])
             .output()
             .map_err(|e| anyhow!("git rev-list failed: {e}"))?;
         if !output.status.success() {
@@ -979,7 +1000,13 @@ impl GitManager {
         let output = git_cmd()
             .args(["--git-dir"])
             .arg(&path)
-            .args(["merge-base", "--is-ancestor", ancestor, descendant])
+            .args([
+                "merge-base",
+                "--is-ancestor",
+                "--end-of-options",
+                ancestor,
+                descendant,
+            ])
             .output()
             .map_err(|e| anyhow!("git merge-base --is-ancestor failed: {e}"))?;
         Ok(output.status.success())
@@ -1018,7 +1045,7 @@ impl GitManager {
         let merge_base = git_cmd()
             .args(["--git-dir"])
             .arg(&path)
-            .args(["merge-base", &target_sha, head_sha])
+            .args(["merge-base", "--end-of-options", target_sha, head_sha])
             .output()
             .map_err(|e| anyhow!("git merge-base failed: {e}"))?;
         if !merge_base.status.success() {
@@ -1041,7 +1068,14 @@ impl GitManager {
             .env("GIT_WORK_TREE", work_tree)
             .args(["-c", "core.bare=false", "--git-dir"])
             .arg(&path)
-            .args(["read-tree", "-m", &base_sha, &target_sha, head_sha])
+            .args([
+                "read-tree",
+                "-m",
+                "--end-of-options",
+                base_sha.as_str(),
+                target_sha,
+                head_sha,
+            ])
             .output()
             .map_err(|e| anyhow!("git read-tree -m failed: {e}"))?;
         if !merge_tree.status.success() {
@@ -1510,6 +1544,54 @@ mod tests {
         let file = mgr.read_file("alice", "test", "main", "README.md").unwrap();
         assert!(file.is_some());
         assert!(file.unwrap().content.contains("Hello"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A reference that looks like a git *option* must be treated as a
+    /// revision, not as an option.
+    ///
+    /// `git show --output=<file>` writes its output to a file, so a
+    /// caller-supplied reference reaching the git command line unchecked
+    /// would be an arbitrary-file-write primitive. The `--end-of-options`
+    /// marker makes git treat everything after it as a revision.
+    #[test]
+    fn a_reference_that_looks_like_an_option_is_not_an_option() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let repo_path =
+            rt.block_on(async { mgr.create_repo("alice", "inject", "main").await.unwrap() });
+        push_initial_commit(&mgr, "alice", "inject", &repo_path);
+
+        let victim = root.join("pwned.txt");
+        let malicious = format!("--output={}", victim.display());
+
+        // `show_commit` must fail rather than write the file.
+        let result = mgr.show_commit("alice", "inject", &malicious);
+        assert!(
+            result.is_err(),
+            "a revision that looks like an option must not be accepted"
+        );
+        assert!(
+            !victim.exists(),
+            "the git command line was injectable: it wrote {}",
+            victim.display()
+        );
+
+        // The same for the diff, which takes two references.
+        let victim2 = root.join("pwned2.txt");
+        let malicious2 = format!("--output={}", victim2.display());
+        let _ = mgr.diff_files_between("alice", "inject", &malicious2, "main");
+        assert!(
+            !victim2.exists(),
+            "the git command line was injectable: it wrote {}",
+            victim2.display()
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
