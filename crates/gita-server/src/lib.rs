@@ -1,5 +1,7 @@
 //! Gita server: configuration, application assembly and startup.
 
+pub mod shutdown;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use gita_api::auth::Auth;
@@ -289,6 +291,13 @@ pub struct App {
     pub db: Db,
     pub git: Arc<GitManager>,
     pub bus: EventBus,
+    /// Background tasks that must finish before the process exits.
+    ///
+    /// The event row for something that just happened, and the webhooks
+    /// that event fans out to, are written from background tasks. A
+    /// shutdown that did not wait for them would lose events that
+    /// happened — and webhooks that were never delivered.
+    pub background_tasks: shutdown::BackgroundTasks,
     pub api_state: gita_api::AppState,
     pub git_http_state: GitHttpState,
     pub config: Config,
@@ -332,12 +341,21 @@ impl App {
         // Persist every published event to the database so the `/api/events`
         // endpoint and AI-readable event stream reflect real activity.
         // Also fan out repository-scoped events to any registered webhooks.
+        //
+        // Both happen in background tasks, tracked so that a shutdown can
+        // wait for them: an event that happened and a webhook that was
+        // never delivered are both losses the user cannot see the
+        // boundary of.
         let event_db = db.clone();
         let event_git_root = git.root().to_path_buf();
+        let background_tasks = shutdown::BackgroundTasks::new();
+        let hook_tasks = background_tasks.clone();
         let bus = EventBus::new(Some(Arc::new(move |event: gita_core::Event| {
             let db = event_db.clone();
             let git_root = event_git_root.clone();
-            tokio::spawn(async move {
+            let tasks = hook_tasks.clone();
+            let outer_tasks = tasks.clone();
+            tasks.spawn(async move {
                 // An event that already carries a database id was inserted by
                 // its publisher — the push handler needs the id to set
                 // `pipeline_runs.trigger_event_id`, and it cannot wait for
@@ -376,7 +394,11 @@ impl App {
                                     "created_at": event.created_at.to_rfc3339(),
                                 });
                                 let body = serde_json::to_string(&payload).unwrap_or_default();
-                                tokio::spawn(async move {
+                                // The delivery is tracked too: a webhook
+                                // that was never sent is a webhook the
+                                // user was told about and never got.
+                                let delivery_tasks = outer_tasks.clone();
+                                delivery_tasks.spawn(async move {
                                     let client = reqwest::Client::new();
                                     let mut req = client
                                         .post(&url)
@@ -447,6 +469,7 @@ impl App {
             db,
             git,
             bus,
+            background_tasks,
             api_state,
             git_http_state,
             data_dir: config.server.data_dir.clone(),
@@ -601,12 +624,38 @@ pub async fn run(config: Config) -> Result<()> {
     // Per-IP login rate limiter: 5 req/s with burst 10 — slows brute force
     // without affecting normal users.
     let limiter = gita_api::build_limiter(5, 10);
-    let router = app.router_with_limiter(limiter);    axum::serve(
+    let router = app.router_with_limiter(limiter);
+
+    // Stop accepting new connections when the process is asked to stop,
+    // but let the requests that are already running finish. A `SIGTERM`
+    // that killed the process outright cut them off mid-flight.
+    let serve = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await
-    .context("axum serve error")
+    .with_graceful_shutdown(shutdown::shutdown_signal());
+
+    if let Err(e) = serve.await {
+        warn!("axum serve error: {e}");
+    }
+
+    // The HTTP listener is closed; now let the work that is still in
+    // flight finish. The event row for something that just happened, and
+    // the webhooks that event fans out to, are written from background
+    // tasks — without this wait they would be lost.
+    let pending = app.background_tasks.active();
+    if pending > 0 {
+        info!("waiting for {pending} background task(s) to finish");
+    }
+    app.background_tasks.drain().await;
+
+    // The SSH listener has its own accept loop; stop it too.
+    if let Some(handle) = app.ssh_handle.take() {
+        handle.shutdown().await;
+    }
+
+    info!("Gita stopped");
+    Ok(())
 }
 
 /// Mint a runner token for `username`, stored under `name`, and return

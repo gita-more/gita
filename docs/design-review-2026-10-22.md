@@ -684,6 +684,24 @@ goal.md §10.1 声称"Phase 1 仅支持 `stages`/`script`/`needs` 三种 key，�
 后果：SIGINT/SIGTERM 立即杀进程 → 进行中的请求被截断、事件行丢失、webhook 投递丢失、
 SSH 会话不收尾。容器 `docker stop` 就会触发。
 
+**已修（第五批）**。三件事分开处理：
+
+- **进行中的请求**：`axum::serve(...).with_graceful_shutdown(...)` 停止接受新连接，
+  但让已经在跑的请求跑完。
+- **事件行与 webhook 投递**：这两件事都是从后台任务里写的，进程一死就没了。
+  新增 `gita_server::shutdown::BackgroundTasks` 追踪这些任务，关闭时等它们完成
+  （drain 期间新产生的任务也会被等到）。
+- **SSH 会话**：`SshServerHandle::shutdown()` 让 accept 循环停下来，
+  已经打开的会话跑完。
+
+**实测**：向服务器发 SIGTERM，日志显示
+"received SIGTERM, shutting down" → "waiting for 1 background task(s) to finish"
+→ "Gita stopped"，退出码 0。信号前 1 毫秒创建的仓库，其事件行完整落库。
+
+新增测试：3 个进程级测试（真的跑 `gita-server` 二进制并发 SIGTERM），
+外加 3 个 `BackgroundTasks` 单测。**其中"webhook 投递进行中时关闭"那个测试
+真的能抓住回归**——把 drain 去掉，服务器 57ms 就退出了（而不是等投递完成）。
+
 ---
 
 ### P1-6　`ApiError::Database` / `Io` 把内部错误原文回给客户端
@@ -1250,10 +1268,47 @@ have a fallback`）。所以 API 的 404 走**显式通配路由**而不是 fall
 
 ### 仍未修复
 
-- **P1-5** 无优雅关闭（SIGTERM 直接杀进程，事件行/webhook 可能丢）
 - **P1-15** OpenAPI 规格漂移（只比对 path 不比对 method；3 个搜索端点标了 auth 但实际匿名）
 - **P2-\*** 大部分 P2 项
 - **CI runner 仍无真正的沙箱**（bubblewrap / 容器）
+
+### 第五批（2026-10-23）：优雅关闭
+
+**P1-5**。服务器以前是被"杀"而不是被"停"的：`SIGINT`/`SIGTERM` 直接终结进程，
+进行中的请求被截断，后台任务里的事件行和 webhook 投递一起消失。
+`docker stop` 发的正是 SIGTERM。
+
+三件事分开处理：
+
+- **进行中的请求** —— `axum::serve(...).with_graceful_shutdown(...)`：
+  停止接受新连接，但让已经在跑的请求跑完。
+- **事件行与 webhook 投递** —— 这两件事都是从后台任务里写的，进程一死就没了。
+  新增 `gita_server::shutdown::BackgroundTasks` 追踪它们，关闭时等完成
+  （drain 期间新产生的任务也会被等到，不会漏）。
+- **SSH 会话** —— `SshServerHandle::shutdown()` 让 accept 循环停下来，
+  已经打开的会话跑完。
+
+  这里有个坑值得记下来：关闭信号**不能绑在 handle 的生命周期上**。
+  用 `watch::channel` 时，handle 一被 drop，channel 就关闭，
+  接收端的 `changed()` 立即返回 `Err`——监听循环会立刻把它当成
+  "该停了"而退出。而 handle 经常在读出端口后就被丢掉
+  （集成测试里的 `start_ssh` 就是只返回端口），于是**服务器在启动
+  之后立刻就死了**，表现为 "Connection refused"。
+
+  现在的做法是 `Arc<ShutdownSignal>`：`AtomicBool` + `Notify`，
+  handle 和监听任务各持一份。handle 被 drop 不影响服务器，
+  只有显式调用 `shutdown()` 才会停它。
+
+**实测**：发 SIGTERM，日志显示 "received SIGTERM, shutting down" →
+"waiting for 1 background task(s) to finish" → "Gita stopped"，退出码 0。
+信号前 1 毫秒创建的仓库，事件行完整落库。
+
+新增测试：3 个进程级测试（真的跑 `gita-server` 二进制并发 SIGTERM）+
+3 个 `BackgroundTasks` 单测。
+
+**其中"webhook 投递进行中时关闭"那个测试真的能抓住回归**——把 drain 去掉，
+服务器 57ms 就退出了，而不是等投递完成。这类测试如果只断言"事件行还在"
+是抓不住的：事件写入快，信号来之前就写完了。
 
 ### 第四批（2026-10-23）：SSH push 也产生事件、也触发 CI
 
