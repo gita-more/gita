@@ -3,8 +3,15 @@
 //! Serves a hand-written OpenAPI 3.0 JSON document at
 //! `/api/docs/openapi.json` and a Swagger UI HTML page at `/api/docs`.
 //! The UI loads the standard Swagger UI assets from a CDN.
+//!
+//! The same document is rendered into `docs/api.md` — a readable endpoint
+//! reference — by [`render_api_reference`]. A test compares the rendered
+//! text with the committed file, so the two cannot drift apart.
 
 use crate::AppState;
+
+/// The HTTP methods a path entry can have in an OpenAPI document.
+pub const HTTP_METHODS: [&str; 5] = ["get", "post", "put", "delete", "patch"];
 
 /// The OpenAPI 3.0 document describing Gita's REST API.
 ///
@@ -124,6 +131,41 @@ pub const OPENAPI_JSON: &str = r##"{
             }
           },
           "401": { "description": "Not authenticated" }
+        }
+      },
+      "patch": {
+        "tags": ["auth"],
+        "summary": "Update the current user's locale, e-mail or password",
+        "description": "Every field is optional, so a body-less PATCH is a no-op. Changing the e-mail or the password requires `current_password`.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "locale": { "type": "string", "enum": ["zh", "en"] },
+                  "email": { "type": "string", "format": "email" },
+                  "current_password": { "type": "string" },
+                  "new_password": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated user",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PublicUser" }
+              }
+            }
+          },
+          "400": { "description": "Invalid locale, e-mail or missing current password" },
+          "401": { "description": "Not authenticated, or the current password is wrong" },
+          "409": { "description": "The e-mail is already registered" }
         }
       }
     },
@@ -283,6 +325,45 @@ pub const OPENAPI_JSON: &str = r##"{
           "200": { "description": "Deleted" },
           "404": { "description": "Not found, or not the repository's owner" }
         }
+      },
+      "patch": {
+        "tags": ["repos"],
+        "summary": "Update a repository (owner only)",
+        "description": "Change the description, the visibility, the name, or transfer the repository to another user or group. A non-owner gets 404, not 403: the refusal must not disclose that the repository exists.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "description": { "type": "string" },
+                  "is_private": { "type": "boolean" },
+                  "new_name": { "type": "string", "description": "Rename within the same namespace" },
+                  "new_owner": { "type": "string", "description": "Transfer target: a username or a group name" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated repository",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Repository" }
+              }
+            }
+          },
+          "400": { "description": "Invalid name" },
+          "404": { "description": "Not found, or not the repository's owner" },
+          "409": { "description": "The target name is already taken" }
+        }
       }
     },
     "/api/repos/{owner}/{repo}/tree": {
@@ -347,6 +428,48 @@ pub const OPENAPI_JSON: &str = r##"{
               }
             }
           }
+        }
+      },
+      "post": {
+        "tags": ["repos"],
+        "summary": "Create a branch",
+        "description": "Creating a branch changes the repository's refs, so it takes the same rights as pushing to it.",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "description": "The new branch name" },
+                  "ref": { "type": "string", "description": "The commit or branch to start it from (default: the repository's default branch)" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The created branch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "branch": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid branch name, or the start point does not exist" },
+          "404": { "description": "Not found, or not allowed to push to it" }
         }
       }
     },
@@ -487,7 +610,7 @@ pub const OPENAPI_JSON: &str = r##"{
       "get": {
         "tags": ["search"],
         "summary": "Search repositories and code",
-        "security": [{ "bearerAuth": [] }],
+        "description": "No authentication required. An anonymous caller only sees public repositories; an authenticated one also sees the private repositories they may read.",
         "parameters": [
           { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
           { "name": "type", "in": "query", "schema": { "type": "string", "enum": ["repos", "code", "all"] } },
@@ -503,7 +626,7 @@ pub const OPENAPI_JSON: &str = r##"{
       "get": {
         "tags": ["search"],
         "summary": "Search repositories by name/description",
-        "security": [{ "bearerAuth": [] }],
+        "description": "No authentication required. An anonymous caller only sees public repositories.",
         "parameters": [
           { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
           { "name": "limit", "in": "query", "schema": { "type": "integer" } }
@@ -517,7 +640,7 @@ pub const OPENAPI_JSON: &str = r##"{
       "get": {
         "tags": ["search"],
         "summary": "Search code in all repositories",
-        "security": [{ "bearerAuth": [] }],
+        "description": "No authentication required. The search only covers the repositories the caller may read, so an anonymous caller only ever matches public code.",
         "parameters": [
           { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
           { "name": "limit", "in": "query", "schema": { "type": "integer" } }
@@ -1188,6 +1311,21 @@ pub const OPENAPI_JSON: &str = r##"{
       }
     },
     "schemas": {
+      "Error": {
+        "type": "object",
+        "description": "The error envelope every failed request returns.",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["message", "status"],
+            "properties": {
+              "message": { "type": "string", "description": "A human-readable description of what went wrong." },
+              "status": { "type": "integer", "description": "The HTTP status code, repeated for convenience." }
+            }
+          }
+        }
+      },
       "RegisterRequest": {
         "type": "object",
         "required": ["username", "email", "password"],
@@ -1483,6 +1621,154 @@ pub fn docs_routes() -> axum::Router<AppState> {
         .route("/api/docs", get(swagger_ui))
 }
 
+/// Render the OpenAPI document as a Markdown endpoint reference.
+///
+/// The output is what `docs/api.md` contains. It is generated rather than
+/// written by hand so that the reference and the served specification
+/// cannot describe different APIs — `cargo run -p gita-api --bin
+/// gen-api-docs > docs/api.md` regenerates it, and a test fails when the
+/// committed file is out of date.
+pub fn render_api_reference() -> String {
+    let spec: serde_json::Value =
+        serde_json::from_str(OPENAPI_JSON).expect("OPENAPI_JSON should be valid JSON");
+
+    let mut out = String::new();
+
+    out.push_str("# Gita REST API\n\n");
+    let description = spec["info"]["description"].as_str().unwrap_or_default();
+    out.push_str(description);
+    out.push_str("\n\n");
+
+    let version = spec["info"]["version"].as_str().unwrap_or_default();
+    out.push_str(&format!(
+        "规范版本 `{version}`。运行中的服务器同时提供：\n\n\
+         - OpenAPI 文档：`/api/docs/openapi.json`\n\
+         - Swagger UI：`/api/docs`\n\n"
+    ));
+
+    out.push_str(
+        "> 本文件由 `crates/gita-api/src/docs.rs` 里的 OpenAPI 文档生成，\
+         不要手工编辑。\n> 重新生成：`cargo run -p gita-api --bin gen-api-docs > docs/api.md`\n\n",
+    );
+
+    out.push_str("## 约定\n\n");
+    out.push_str(
+        "- **认证**：除特别说明外，接口需要 `Authorization: Bearer <token>`。\
+         Token 可以是登录得到的 JWT，也可以是个人访问令牌（PAT）。\n\
+         - **错误**：所有失败都返回同一个信封 \
+         `{\"error\": {\"message\": \"…\", \"status\": 404}}`，`status` 与 HTTP 状态码一致。\n\
+         - **拒绝方式**：没有权限访问的仓库一律返回 `404`，而不是 `403`——\
+         拒绝本身不应该泄露“这个仓库存在”。\n\
+         - **路径参数**：`{owner}` 可以是用户名，也可以是群组名。\n\n",
+    );
+
+    // The tag list drives the grouping, so an endpoint without a tag still
+    // shows up (under "其它") instead of vanishing from the reference.
+    let tags = spec["tags"].as_array().cloned().unwrap_or_default();
+    let mut tag_names: Vec<String> = tags
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+        .collect();
+
+    // Collect every operation, keyed by tag.
+    let paths = spec["paths"]
+        .as_object()
+        .expect("paths should be an object");
+    let mut by_tag: std::collections::BTreeMap<String, Vec<Operation>> = Default::default();
+    for (path, item) in paths {
+        let Some(ops) = item.as_object() else {
+            continue;
+        };
+        for (method, op) in ops {
+            if !HTTP_METHODS.contains(&method.as_str()) {
+                continue;
+            }
+            let tag = op["tags"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|t| t.as_str())
+                .unwrap_or("misc")
+                .to_string();
+            if !tag_names.contains(&tag) {
+                tag_names.push(tag.clone());
+            }
+            by_tag.entry(tag).or_default().push(Operation {
+                method: method.to_uppercase(),
+                path: path.clone(),
+                summary: op["summary"].as_str().unwrap_or_default().to_string(),
+                description: op["description"].as_str().unwrap_or_default().to_string(),
+                auth: op.get("security").is_some(),
+                responses: op["responses"]
+                    .as_object()
+                    .map(|r| r.keys().map(|k| k.as_str().to_string()).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+                query: op["parameters"]
+                    .as_array()
+                    .map(|params| {
+                        params
+                            .iter()
+                            .filter(|p| p["in"].as_str() == Some("query"))
+                            .filter_map(|p| p["name"].as_str())
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            });
+        }
+    }
+
+    for tag in tag_names {
+        let Some(ops) = by_tag.get(&tag) else {
+            continue;
+        };
+        if ops.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("## {tag}\n\n"));
+        if let Some(desc) = tags
+            .iter()
+            .find(|t| t["name"].as_str() == Some(tag.as_str()))
+            .and_then(|t| t["description"].as_str())
+        {
+            out.push_str(desc);
+            out.push_str("\n\n");
+        }
+        for op in ops {
+            out.push_str(&format!("### `{} {}`\n\n", op.method, op.path));
+            if !op.summary.is_empty() {
+                out.push_str(&format!("{}\n\n", op.summary));
+            }
+            if !op.description.is_empty() {
+                out.push_str(&format!("{}\n\n", op.description));
+            }
+            let mut facts: Vec<String> = Vec::new();
+            facts.push(if op.auth {
+                "需要认证".to_string()
+            } else {
+                "无需认证".to_string()
+            });
+            if !op.query.is_empty() {
+                facts.push(format!("查询参数：`{}`", op.query.join("`, `")));
+            }
+            facts.push(format!("响应码：`{}`", op.responses.join("`, `")));
+            out.push_str(&format!("- {}\n\n", facts.join("\n- ")));
+        }
+    }
+
+    out
+}
+
+/// One documented operation, flattened out of the OpenAPI path item.
+struct Operation {
+    method: String,
+    path: String,
+    summary: String,
+    description: String,
+    auth: bool,
+    responses: Vec<String>,
+    query: Vec<String>,
+}
+
 async fn openapi_json() -> impl axum::response::IntoResponse {
     axum::Json(serde_json::from_str::<serde_json::Value>(OPENAPI_JSON).unwrap())
 }
@@ -1494,6 +1780,27 @@ async fn swagger_ui() -> impl axum::response::IntoResponse {
 mod tests {
     use super::*;
 
+    /// `docs/api.md` is generated from the OpenAPI document, so the
+    /// reference a reader opens and the specification the server serves
+    /// cannot describe different APIs.
+    ///
+    /// When this fails, regenerate the file:
+    ///
+    /// ```sh
+    /// cargo run -p gita-api --bin gen-api-docs > docs/api.md
+    /// ```
+    #[test]
+    fn api_reference_document_is_up_to_date() {
+        const COMMITTED: &str =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/api.md"));
+        let rendered = render_api_reference();
+        assert_eq!(
+            COMMITTED, rendered,
+            "docs/api.md is out of date; regenerate it with \
+             `cargo run -p gita-api --bin gen-api-docs > docs/api.md`"
+        );
+    }
+
     /// The OpenAPI document is a hand-maintained JSON string, so a stray
     /// comma or brace breaks the endpoint at runtime rather than at compile
     /// time.
@@ -1503,34 +1810,75 @@ mod tests {
             .expect("OPENAPI_JSON should be valid JSON");
     }
 
-    /// Every route the API registers should appear in the spec.
+    /// Every route the API registers should appear in the spec, and every
+    /// route the spec describes should exist.
     ///
     /// The spec is maintained by hand, so it drifted: 17 of the 35 API
     /// routes were missing, including the whole pipeline family and every
     /// PR action. Rather than trust a checklist, this compares the spec
     /// against the routes the server actually registers.
+    ///
+    /// The comparison is on **path *and* method**. Comparing paths alone
+    /// missed three combinations whose methods the spec did not have —
+    /// including `PATCH /api/auth/me` and `PATCH /api/repos/{owner}/{repo}`,
+    /// the two that change a user's own account and a repository's
+    /// visibility. A path that is documented for `get` is not
+    /// documentation of its `patch`.
+    ///
+    /// It is also bidirectional: a spec entry for a route that does not
+    /// exist is just as wrong as a route with no spec entry, and is
+    /// what a client would try to call.
     #[test]
     fn openapi_documents_every_registered_api_route() {
         let spec: serde_json::Value =
             serde_json::from_str(OPENAPI_JSON).expect("OPENAPI_JSON should be valid JSON");
-        let paths = spec["paths"].as_object().expect("paths should be an object");
+        let paths = spec["paths"]
+            .as_object()
+            .expect("paths should be an object");
 
-        // Every path key in the spec, with parameter names normalised away
-        // so `{owner}` and `{group}` compare equal.
-        let documented: std::collections::HashSet<String> = paths
-            .keys()
-            .map(|p| normalize_path(p))
-            .collect();
+        // What the spec documents: every (path, method) pair.
+        let mut documented: std::collections::HashSet<(String, String)> = Default::default();
+        for (path, item) in paths {
+            let Some(methods) = item.as_object() else {
+                continue;
+            };
+            let normalised = normalize_path(path);
+            for method in methods.keys() {
+                // `parameters` and the like are not operations.
+                if !HTTP_METHODS.contains(&method.as_str()) {
+                    continue;
+                }
+                documented.insert((normalised.clone(), method.to_lowercase()));
+            }
+        }
 
         let mut missing: Vec<String> = Vec::new();
-        for route in registered_api_routes() {
-            if !documented.contains(&normalize_path(&route)) {
-                missing.push(route);
+        let mut undocumented: Vec<String> = Vec::new();
+        let registered_routes = registered_api_routes();
+        // The comparison is on the *normalised* path, so that `{owner}`
+        // and `{group}` compare equal; the raw path is kept for the
+        // error message, which is easier to act on.
+        let registered: std::collections::HashSet<(String, String)> = registered_routes
+            .iter()
+            .map(|(path, method)| (normalize_path(path), method.clone()))
+            .collect();
+        for (path, method) in &registered_routes {
+            if !documented.contains(&(normalize_path(path), method.clone())) {
+                missing.push(format!("{} {}", method.to_uppercase(), path));
+            }
+        }
+        for (path, method) in &documented {
+            if !registered.contains(&(path.clone(), method.clone())) {
+                undocumented.push(format!("{} {}", method.to_uppercase(), path));
             }
         }
         assert!(
             missing.is_empty(),
             "these routes are registered but not documented in the OpenAPI spec: {missing:?}"
+        );
+        assert!(
+            undocumented.is_empty(),
+            "the OpenAPI spec documents routes that do not exist: {undocumented:?}"
         );
     }
 
@@ -1552,13 +1900,26 @@ mod tests {
         out
     }
 
-    /// Collect the API route paths registered across the route modules.
+    /// Collect the API routes registered across the route modules, as
+    /// `(path, method)` pairs.
     ///
     /// The routes are built with `axum::Router`, whose path table is not
     /// publicly enumerable, so the paths are read out of the source of each
     /// route module. That keeps the check honest without changing how the
     /// router is assembled.
-    fn registered_api_routes() -> Vec<String> {
+    ///
+    /// The method comes from the method router that follows the path:
+    ///
+    /// ```text
+    /// .route("/api/repos", post(create_repo).get(list_repos))
+    /// .route("/api/auth/me", axum::routing::get(me).patch(update_me))
+    /// ```
+    ///
+    /// so the text between one `.route(` and the next is scanned for
+    /// method names. A handler whose own name ends in a method word
+    /// (`create_post`) is not a method: the name has to be followed by
+    /// `(` and preceded by something that is not a word character.
+    fn registered_api_routes() -> Vec<(String, String)> {
         let mut routes = Vec::new();
         for module in [
             include_str!("routes/auth.rs"),
@@ -1574,10 +1935,6 @@ mod tests {
             include_str!("routes/pages.rs"),
             include_str!("routes/misc.rs"),
         ] {
-            // A route path is the first string literal following a
-            // `.route(` call. The literal is often on the next line, so
-            // scan forward from each `.route(` rather than line by line.
-            let bytes = module.as_bytes();
             let mut idx = 0;
             while let Some(pos) = module[idx..].find(".route(") {
                 let after = idx + pos + ".route(".len();
@@ -1588,14 +1945,87 @@ mod tests {
                 let Some(end) = module[start..].find('"') else {
                     break;
                 };
-                let path = &module[start..start + end];
+                // `end` is an offset *relative to* `start`; the absolute
+                // position of the closing quote is `start + end`.
+                let path_end = start + end;
+                let path = &module[start..path_end];
+
+                // The method router is the rest of this call's argument
+                // list. Scanning stops at the parenthesis that closes it,
+                // so a method word in the code that follows cannot be
+                // mistaken for one.
+                //
+                // `after` points at the first character *after* the
+                // opening parenthesis of `.route(`, so the parenthesis
+                // itself is at `after - 1`.
+                let scan_end = matching_paren(module, after - 1).unwrap_or(module.len());
+
                 if path.starts_with("/api/") {
-                    routes.push(path.to_string());
+                    for method in methods_in(&module[path_end..scan_end]) {
+                        routes.push((path.to_string(), method));
+                    }
                 }
-                idx = start + end;
-                let _ = bytes;
+                // Resume after the closing quote. Using the relative
+                // offset here would move `idx` *backwards* and spin this
+                // loop forever.
+                idx = path_end;
             }
         }
         routes
+    }
+
+    /// The index just past the parenthesis that closes the one at `open`.
+    ///
+    /// Returns `None` when the parentheses do not balance.
+    fn matching_paren(text: &str, open: usize) -> Option<usize> {
+        let bytes = text.as_bytes();
+        if bytes.get(open) != Some(&b'(') {
+            return None;
+        }
+        let mut depth = 0usize;
+        for (i, b) in bytes.iter().enumerate().skip(open) {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The HTTP methods named in a method-router expression.
+    fn methods_in(expr: &str) -> Vec<String> {
+        let bytes = expr.as_bytes();
+        let mut methods = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            // A method name is a word at a word boundary followed by `(`.
+            if !bytes[i].is_ascii_alphabetic() {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let word = &expr[start..i];
+            let at_boundary = start == 0 || !is_word_byte(bytes[start - 1]);
+            if at_boundary && i < bytes.len() && bytes[i] == b'(' {
+                if let Some(method) = HTTP_METHODS.iter().find(|m| **m == word) {
+                    methods.push((*method).to_string());
+                }
+            }
+        }
+        methods
+    }
+
+    /// Whether a byte can be part of an identifier.
+    fn is_word_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
     }
 }

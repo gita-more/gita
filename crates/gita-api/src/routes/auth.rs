@@ -102,24 +102,6 @@ pub fn auth_routes() -> Router<AppState> {
         .route("/api/auth/logout", axum::routing::post(logout))
 }
 
-#[allow(dead_code)]
-pub fn auth_routes_except_login() -> Router<AppState> {
-    Router::new()
-        .route("/api/auth/register", post(register))
-        .route("/api/auth/tokens", post(create_token).get(list_tokens))
-        .route("/api/auth/tokens/{id}", axum::routing::delete(delete_token))
-        .route("/api/auth/me", axum::routing::get(me).patch(update_me))
-        .route(
-            "/api/auth/password-reset/request",
-            axum::routing::post(password_reset_request),
-        )
-        .route(
-            "/api/auth/password-reset/confirm",
-            axum::routing::post(password_reset_confirm),
-        )
-        .route("/api/auth/logout", axum::routing::post(logout))
-}
-
 async fn register(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,

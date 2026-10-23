@@ -8,7 +8,9 @@
 //! - issues (create, list, get, close)
 //! - event stream (AI-readable)
 //!
-//! The API follows a GitHub-like style and is documented via utoipa.
+//! The API follows a GitHub-like style. Its OpenAPI document is a
+//! hand-written static JSON string in `docs.rs`, checked against the
+//! routes the server actually registers.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
