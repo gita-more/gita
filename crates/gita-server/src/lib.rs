@@ -223,7 +223,9 @@ impl Config {
             if !parsed.server.database_url.is_empty() {
                 config.server.database_url = parsed.server.database_url;
             }
-            if !parsed.server.jwt_secret.is_empty() && parsed.server.jwt_secret != default_jwt_secret() {
+            if !parsed.server.jwt_secret.is_empty()
+                && parsed.server.jwt_secret != default_jwt_secret()
+            {
                 config.server.jwt_secret = parsed.server.jwt_secret;
             }
             // SSH section (only when present in the file).
@@ -254,6 +256,22 @@ impl Config {
                 Err(_) => toml::Value::Table(Default::default()),
             };
             let raw_server = raw.get("server");
+            // Schema pinning. Presence-based like the Pages flags: the
+            // merge loop above works on defaulted values, and `None` is
+            // the default here, so reading it from the parsed struct
+            // could never distinguish "absent" from "explicitly unset".
+            //
+            // This used to be missing entirely: `App::build` honours
+            // `database_schema`, but a config *file* setting it was
+            // silently dropped on the way through `Config::load` — so a
+            // server started with `-c gita.toml` always landed in
+            // `public`, whatever the file said.
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("database_schema"))
+                .and_then(|v| v.as_str())
+            {
+                config.server.database_schema = Some(v.to_string());
+            }
             if let Some(v) = raw_server
                 .and_then(|s| s.get("pages_enabled"))
                 .and_then(|v| v.as_bool())
@@ -276,10 +294,7 @@ impl Config {
                 config.server.allow_insecure_password_reset = v;
             }
         } else {
-            warn!(
-                "config file {} not found, using defaults",
-                path.display()
-            );
+            warn!("config file {} not found, using defaults", path.display());
         }
         Ok(config)
     }
@@ -332,9 +347,7 @@ impl App {
                 })?,
             None => Db::connect(&config.server.database_url)
                 .await
-                .with_context(|| {
-                    format!("connect to database {}", config.server.database_url)
-                })?,
+                .with_context(|| format!("connect to database {}", config.server.database_url))?,
         };
 
         let git = Arc::new(GitManager::new(repos_dir));
@@ -376,7 +389,8 @@ impl App {
                                     continue;
                                 }
                                 if !hook.events.is_empty()
-                                    && !hook.events
+                                    && !hook
+                                        .events
                                         .iter()
                                         .any(|e| e == &event.event_type.to_string())
                                 {
@@ -437,14 +451,10 @@ impl App {
         })));
         let auth = Auth::new(config.server.jwt_secret.clone());
 
-        let api_state = gita_api::AppState::new(
-            db.clone(),
-            auth.clone(),
-            (*git).clone(),
-            bus.clone(),
-        )
-        .with_avatar_dir(config.server.data_dir.join("avatars"))
-        .with_insecure_password_reset(config.server.allow_insecure_password_reset);
+        let api_state =
+            gita_api::AppState::new(db.clone(), auth.clone(), (*git).clone(), bus.clone())
+                .with_avatar_dir(config.server.data_dir.join("avatars"))
+                .with_insecure_password_reset(config.server.allow_insecure_password_reset);
 
         let git_http_state = GitHttpState {
             git: git.clone(),
@@ -456,12 +466,10 @@ impl App {
         // Ensure the SSH host key exists (generated on first run) so a
         // later `run()` can start the SSH listener with a stable identity.
         if config.server.ssh.enabled {
-            let host_key_path = config
-                .server
-                .ssh
-                .host_key
-                .clone()
-                .unwrap_or_else(|| config.server.data_dir.join(gita_ssh::DEFAULT_HOST_KEY_NAME));
+            let host_key_path =
+                config.server.ssh.host_key.clone().unwrap_or_else(|| {
+                    config.server.data_dir.join(gita_ssh::DEFAULT_HOST_KEY_NAME)
+                });
             gita_ssh::load_or_create_host_key(&host_key_path)?;
         }
 
@@ -491,10 +499,7 @@ impl App {
         self.router_with_limiters(
             limiter,
             gita_api::build_limiter(REGISTER_RATE_PER_SECOND, REGISTER_RATE_BURST),
-            gita_api::build_limiter(
-                PASSWORD_RESET_RATE_PER_SECOND,
-                PASSWORD_RESET_RATE_BURST,
-            ),
+            gita_api::build_limiter(PASSWORD_RESET_RATE_PER_SECOND, PASSWORD_RESET_RATE_BURST),
         )
     }
 
@@ -601,12 +606,9 @@ pub async fn run(config: Config) -> Result<()> {
         let ssh_cfg = gita_ssh::SshServerConfig {
             listen_addr: format!("{}:{}", config.server.ssh.host, config.server.ssh.port),
             host_key: gita_ssh::load_or_create_host_key(
-                &config
-                    .server
-                    .ssh
-                    .host_key
-                    .clone()
-                    .unwrap_or_else(|| config.server.data_dir.join(gita_ssh::DEFAULT_HOST_KEY_NAME)),
+                &config.server.ssh.host_key.clone().unwrap_or_else(|| {
+                    config.server.data_dir.join(gita_ssh::DEFAULT_HOST_KEY_NAME)
+                }),
             )?,
             repos_root: config.server.data_dir.join("repos"),
         };
@@ -687,8 +689,8 @@ pub fn sign_webhook_payload(secret: &str, body: &str) -> String {
     use sha2::Sha256;
 
     type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts keys of any length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any length");
     mac.update(body.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
@@ -742,13 +744,38 @@ mod tests {
         // Config::load must NOT treat that as an override (it skips it).
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("gita.toml");
+        std::fs::write(&path, "[server]\njwt_secret = \"dev-secret-change-me\"\n").unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.server.jwt_secret, "dev-secret-change-me");
+    }
+
+    /// A config *file* that pins a schema must reach the running server.
+    ///
+    /// `App::build` has always honoured `database_schema` (that is how the
+    /// schema-isolated integration tests work), but `Config::load` — the
+    /// path the real binary takes with `-c gita.toml` — never merged the
+    /// field, so the file's value was silently dropped and the server
+    /// landed in `public`.
+    #[test]
+    fn config_load_merges_database_schema() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
         std::fs::write(
             &path,
-            "[server]\njwt_secret = \"dev-secret-change-me\"\n",
+            "[server]\ndatabase_schema = \"gita_shutdown_test\"\n",
         )
         .unwrap();
         let config = Config::load(&path).unwrap();
-        assert_eq!(config.server.jwt_secret, "dev-secret-change-me");
+        assert_eq!(
+            config.server.database_schema.as_deref(),
+            Some("gita_shutdown_test")
+        );
+
+        // Absent in the file → stays None.
+        let path = dir.path().join("empty.toml");
+        std::fs::write(&path, "[server]\nport = 3000\n").unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(config.server.database_schema.is_none());
     }
 
     #[test]
@@ -802,13 +829,12 @@ mod tests {
         // pattern would have ignored this; presence-based merging must not).
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("gita.toml");
-        std::fs::write(
-            &path,
-            "[server]\npages_enabled = false\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[server]\npages_enabled = false\n").unwrap();
         let config = Config::load(&path).unwrap();
-        assert!(!config.server.pages_enabled, "pages_enabled=false must be honored");
+        assert!(
+            !config.server.pages_enabled,
+            "pages_enabled=false must be honored"
+        );
 
         // Explicitly true -> on.
         std::fs::write(&path, "[server]\npages_enabled = true\n").unwrap();
@@ -820,11 +846,7 @@ mod tests {
     fn config_pages_url_prefix_is_loaded() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("gita.toml");
-        std::fs::write(
-            &path,
-            "[server]\npages_url_prefix = \"/p\"\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[server]\npages_url_prefix = \"/p\"\n").unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(config.server.pages_url_prefix, "/p");
     }
@@ -845,21 +867,13 @@ mod tests {
         );
 
         // Explicitly enabled.
-        std::fs::write(
-            &path,
-            "[server]\nallow_insecure_password_reset = true\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[server]\nallow_insecure_password_reset = true\n").unwrap();
         let config = Config::load(&path).unwrap();
         assert!(config.server.allow_insecure_password_reset);
 
         // Explicitly disabled again — the flag must be switchable in both
         // directions, which is why it is read by key presence.
-        std::fs::write(
-            &path,
-            "[server]\nallow_insecure_password_reset = false\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[server]\nallow_insecure_password_reset = false\n").unwrap();
         let config = Config::load(&path).unwrap();
         assert!(!config.server.allow_insecure_password_reset);
     }
@@ -874,13 +888,15 @@ mod tests {
     /// example file the operator copies, so the two cannot drift apart.
     #[test]
     fn example_config_parses_pages_keys_under_server() {
-        let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../config/config.example.toml");
+        let example =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/config.example.toml");
         let text = std::fs::read_to_string(&example)
             .unwrap_or_else(|e| panic!("read {}: {e}", example.display()));
 
         let raw: toml::Value = toml::from_str(&text).expect("example config should be valid TOML");
-        let server = raw.get("server").expect("example config should have [server]");
+        let server = raw
+            .get("server")
+            .expect("example config should have [server]");
         assert!(
             server.get("pages_enabled").is_some(),
             "pages_enabled must live under [server], not [server.ssh] — TOML keys \
@@ -899,7 +915,9 @@ mod tests {
         // example documents it commented out, so it must still *parse* as a
         // key of [server] when present — a misplaced one would land under
         // [server.ssh] and be silently ignored.
-        let server = raw.get("server").expect("example config should have [server]");
+        let server = raw
+            .get("server")
+            .expect("example config should have [server]");
         assert!(
             server.get("allow_insecure_password_reset").is_none(),
             "the example must not enable the insecure password reset by default"
@@ -914,13 +932,15 @@ mod tests {
     /// someone tries to turn Pages off in a container and it stays on.
     #[test]
     fn docker_entrypoint_generates_pages_keys_under_server() {
-        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docker/docker-entrypoint.sh");
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docker/docker-entrypoint.sh");
         let text = std::fs::read_to_string(&script)
             .unwrap_or_else(|e| panic!("read {}: {e}", script.display()));
 
         // Locate the generated [server] block and the [server.ssh] header.
-        let server_at = text.find("\n[server]\n").expect("entrypoint should emit [server]");
+        let server_at = text
+            .find("\n[server]\n")
+            .expect("entrypoint should emit [server]");
         let ssh_at = text
             .find("\n[server.ssh]\n")
             .expect("entrypoint should emit [server.ssh]");
@@ -972,7 +992,8 @@ mod tests {
     #[test]
     fn webhook_signature_matches_known_hmac_vector() {
         // RFC 4231 test case 1: key = 20 bytes of 0x0b, data = "Hi There".
-        let key = "\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b";
+        let key =
+            "\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b";
         let expected = "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7";
         assert_eq!(sign_webhook_payload(key, "Hi There"), expected);
     }
