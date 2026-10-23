@@ -587,7 +587,8 @@ pub async fn run(config: Config) -> Result<()> {
             )?,
             repos_root: config.server.data_dir.join("repos"),
         };
-        let handle = gita_ssh::start(ssh_cfg, app.db.clone()).await?;
+        let handle =
+            gita_ssh::start(ssh_cfg, app.db.clone(), app.bus.clone(), app.git.clone()).await?;
         info!(
             "Gita SSH listening on {} (git@{}:{}/owner/repo.git)",
             handle.addr(),

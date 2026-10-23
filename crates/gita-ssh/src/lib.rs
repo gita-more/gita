@@ -11,6 +11,8 @@
 use anyhow::{Context, Result};
 use gita_core::access::Access;
 use gita_db::Db;
+use gita_events::EventBus;
+use gita_git::GitManager;
 use getrandom::rand_core::UnwrapErr;
 use russh::keys::ssh_key;
 use russh::server::Server;
@@ -21,6 +23,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Default file name (inside the data dir) for the SSH host key.
 pub const DEFAULT_HOST_KEY_NAME: &str = "ssh_host_ed25519_key";
+
+/// A pushed ref advertisement can be large for big repositories; keep the
+/// capture bounded so a misbehaving server cannot grow memory without
+/// bound. The refs themselves are at the start, so even a capped capture
+/// covers them.
+pub const MAX_CAPTURED_STDOUT: usize = 4 * 1024 * 1024;
 
 /// Load an existing OpenSSH-format host key or generate a fresh Ed25519
 /// key and persist it (mode 0600) so subsequent restarts keep the same
@@ -61,7 +69,18 @@ impl SshServerHandle {
 }
 
 /// Start the SSH server on `cfg.listen_addr`.
-pub async fn start(cfg: SshServerConfig, db: Db) -> anyhow::Result<SshServerHandle> {
+///
+/// `bus` and `git` are what a push needs *after* it lands: the event to
+/// publish and the repository to read the CI configuration from. They
+/// are passed in rather than looked up, because the SSH server is a
+/// transport: what a push does about it is the same thing the HTTP
+/// transport does, and that lives in `gita_push`.
+pub async fn start(
+    cfg: SshServerConfig,
+    db: Db,
+    bus: EventBus,
+    git: Arc<GitManager>,
+) -> anyhow::Result<SshServerHandle> {
     let socket = tokio::net::TcpListener::bind(&cfg.listen_addr).await?;
     let local_addr = socket.local_addr()?;
 
@@ -73,6 +92,8 @@ pub async fn start(cfg: SshServerConfig, db: Db) -> anyhow::Result<SshServerHand
     let mut factory = GitaServerFactory {
         db: Arc::new(db),
         repos_root: cfg.repos_root.clone(),
+        bus,
+        git,
     };
     let join = tokio::spawn(async move {
         let server = factory.run_on_socket(server_cfg, &socket);
@@ -93,12 +114,19 @@ pub async fn start(cfg: SshServerConfig, db: Db) -> anyhow::Result<SshServerHand
 struct GitaServerFactory {
     db: Arc<Db>,
     repos_root: PathBuf,
+    bus: EventBus,
+    git: Arc<GitManager>,
 }
 
 impl russh::server::Server for GitaServerFactory {
     type Handler = GitaHandler;
     fn new_client(&mut self, _peer_addr: Option<std::net::SocketAddr>) -> Self::Handler {
-        GitaHandler::new(self.db.clone(), self.repos_root.clone())
+        GitaHandler::new(
+            self.db.clone(),
+            self.repos_root.clone(),
+            self.bus.clone(),
+            self.git.clone(),
+        )
     }
 }
 
@@ -110,6 +138,11 @@ struct GitaHandler {
     db: Arc<Db>,
     repos_root: PathBuf,
     authed_user: Option<i64>,
+    /// The event bus a push publishes its `push` event on.
+    bus: EventBus,
+    /// The repository manager, used to read the CI configuration of the
+    /// commit that was pushed.
+    git: Arc<GitManager>,
     /// Russh handle for pushing channel data from spawned tasks.
     handle: Option<russh::server::Handle>,
     /// Shared child stdin (channel data -> git receive-pack).
@@ -117,11 +150,18 @@ struct GitaHandler {
 }
 
 impl GitaHandler {
-    fn new(db: Arc<Db>, repos_root: PathBuf) -> Self {
+    fn new(
+        db: Arc<Db>,
+        repos_root: PathBuf,
+        bus: EventBus,
+        git: Arc<GitManager>,
+    ) -> Self {
         Self {
             db,
             repos_root,
             authed_user: None,
+            bus,
+            git,
             handle: None,
             child_stdin: None,
         }
@@ -337,9 +377,14 @@ impl russh::server::Handler for GitaHandler {
             }
         });
 
-        // Pump stdout -> channel data in a background task.
+        // Pump stdout -> channel data in a background task, keeping a copy
+        // of what the git child wrote. The copy is what the `report-status`
+        // parser reads once the child exits: the section that says which
+        // refs were actually updated lives at the end of stdout.
         let h = handle.clone();
         let channel_id = channel;
+        let capture = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let waiter_capture = capture.clone();
         tokio::spawn(async move {
             let mut out_buf = vec![0u8; 8192];
             let mut stdout_reader = child_stdout;
@@ -350,6 +395,17 @@ impl russh::server::Handler for GitaHandler {
                         break;
                     }
                     Ok(n) => {
+                        // Keep a copy for the report-status parser. The
+                        // advertisement the client needs is small, but a
+                        // cap keeps a misbehaving server from growing the
+                        // buffer without bound.
+                        {
+                            let mut buf = capture.lock().await;
+                            if buf.len() < MAX_CAPTURED_STDOUT {
+                                let room = MAX_CAPTURED_STDOUT - buf.len();
+                                buf.extend_from_slice(&out_buf[..n.min(room)]);
+                            }
+                        }
                         let chunk = bytes::Bytes::copy_from_slice(&out_buf[..n]);
                         if h.data(channel_id, chunk).await.is_err() {
                             break;
@@ -362,9 +418,40 @@ impl russh::server::Handler for GitaHandler {
 
         // Wait for the child and report its exit status / close the channel.
         let h2 = handle.clone();
+        let bus = self.bus.clone();
+        let git = self.git.clone();
+        let db = self.db.clone();
+        let pusher_id = self.authed_user;
+        let push_owner = owner.clone();
+        let push_repo = repo_name.clone();
+        let is_push = verb == "receive-pack";
         tokio::spawn(async move {
             let status = child.wait().await;
             stderr_task.abort();
+            if is_push {
+                // The git child has exited, so its stdout is complete and
+                // the report-status section can be read. A push that landed
+                // publishes an event and may trigger CI — the same things
+                // the HTTP transport does, which is the point: choosing
+                // SSH over HTTP must not change what the repository does.
+                let output = {
+                    let mut buf = waiter_capture.lock().await;
+                    std::mem::take(&mut *buf)
+                };
+                let updates = gita_push::parse_report_status(&output);
+                if !updates.is_empty() {
+                    gita_push::publish_push(
+                        &db,
+                        &bus,
+                        &git,
+                        &push_owner,
+                        &push_repo,
+                        &updates,
+                        pusher_id,
+                    )
+                    .await;
+                }
+            }
             if let Ok(s) = status {
                 if let Some(code) = s.code() {
                     let _ = h2.exit_status_request(channel_id, code as u32).await;

@@ -1447,6 +1447,7 @@ dependencies = [
  "gita-events",
  "gita-git",
  "gita-pipeline",
+ "gita-push",
  "serde",
  "serde_json",
  "thiserror",
@@ -1503,6 +1504,19 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "thiserror",
+]
+
+[[package]]
+name = "gita-push"
+version = "0.0.1"
+dependencies = [
+ "gita-core",
+ "gita-db",
+ "gita-events",
+ "gita-git",
+ "gita-pipeline",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -1573,6 +1587,8 @@ dependencies = [
  "gita-db",
  "gita-events",
  "gita-git",
+ "gita-pipeline",
+ "gita-push",
  "russh",
  "serde",
  "serde_json",

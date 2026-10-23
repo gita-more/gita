@@ -10,6 +10,8 @@ gita-db = { path = "../gita-db" }
 gita-events = { path = "../gita-events" }
 gita-git = { path = "../gita-git" }
 gita-core = { path = "../gita-core" }
+gita-pipeline = { path = "../gita-pipeline" }
+gita-push = { path = "../gita-push" }
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa"] }
 tokio = { workspace = true }
 bytes = "1"

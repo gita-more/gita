@@ -13,12 +13,11 @@ use axum::{body::to_bytes, Router};
 use base64::Engine as _;
 use gita_api::auth::Auth;
 use gita_core::access::Access;
-use gita_core::EventType;
 use gita_db::Db;
 use gita_events::EventBus;
 use gita_git::GitManager;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 /// Shared state for the git HTTP handler.
 #[derive(Clone)]
@@ -142,13 +141,6 @@ async fn handle_git_request(
     // Publish events on successful push.
     if path_info.contains("git-receive-pack") && status < 300 {
         if let (Some(owner), Some(repo_name)) = (&owner, &repo_name) {
-            let repo = state
-                .db
-                .get_repository_by_name(owner, repo_name)
-                .await
-                .ok()
-                .flatten();
-            let repo_id = repo.as_ref().map(|r| r.id);
             // Resolve who pushed — this fixes the long-standing
             // actor_id: None on push events and lets CI enforce policies
             // like "don't run on pushes from bot users".
@@ -165,158 +157,24 @@ async fn handle_git_request(
             // Otherwise a rejected push would publish a `push` event with
             // a sha that was never written, and would trigger CI for a
             // commit that does not exist.
-            let applied_updates: Vec<&RefUpdate> = received_updates
+            let applied_updates: Vec<gita_push::RefUpdate> = received_updates
                 .iter()
                 .filter(|upd| ref_update_applied(&state, owner, repo_name, upd))
+                .cloned()
                 .collect();
-            for upd in &applied_updates {
-                let payload = serde_json::json!({
-                    "owner": owner,
-                    "repo": repo_name,
-                    "ref": upd.ref_name,
-                    "old_sha": upd.old_sha,
-                    "new_sha": upd.new_sha,
-                    "pusher_id": pusher_id,
-                });
-                info!(
-                    push_ref = %upd.ref_name,
-                    new_sha = %upd.new_sha,
-                    "push to {owner}/{repo_name}"
-                );
-                state
-                    .bus
-                    .publish(EventType::Push, repo_id, pusher_id, payload);
-            }
-
-            // Phase 1 CI trigger: if the pushed commit contains
-            // `.gita-ci.yml`, upsert the pipeline, enqueue a run, and
-            // emit a PipelineRequested event.
-            //
-            // The event is persisted here instead of by the bus's persist
-            // hook, so its database id is known and can be stored in
-            // `pipeline_runs.trigger_event_id`. The hook cannot report an
-            // id back — it is synchronous, and the insert is not.
-            if let Some(rid) = repo_id {
-                for upd in &applied_updates {
-                    if upd.new_sha.chars().all(|c| c == '0') {
-                        continue; // branch deletion — skip
-                    }
-                    let Some(file) = state
-                        .git
-                        .read_file(owner, repo_name, &upd.new_sha, ".gita-ci.yml")
-                        .ok()
-                        .flatten()
-                    else {
-                        continue; // no CI config at this commit
-                    };
-                    // Parse + apply only/except filter before enqueueing.
-                    // The changed paths are the difference between the
-                    // pushed commit and the one it replaced, so that
-                    // `only:`/`except:` path filters have something to
-                    // match against. Without them an `except: paths: [...]`
-                    // rule could never fire.
-                    let changed_paths = changed_paths_for_push(&state, owner, repo_name, upd).await;
-                    let changed_refs: Vec<&str> =
-                        changed_paths.iter().map(|p| p.as_str()).collect();
-                    let pipeline_id = state
-                        .db
-                        .upsert_pipeline(
-                            rid,
-                            ".gita-ci.yml",
-                            &upd.ref_name,
-                            &upd.new_sha,
-                            &file.content,
-                        )
-                        .await
-                        .ok();
-                    let Some(pid) = pipeline_id else { continue };
-
-                    // Apply the only/except trigger filters from the
-                    // .gita-ci.yml we just parsed. The branch is matched
-                    // by its short name (`main`), which is what a user
-                    // writes in `branches: [main, release/*]` — matching
-                    // the full ref would never match a short glob.
-                    let short_branch = upd
-                        .ref_name
-                        .strip_prefix("refs/heads/")
-                        .unwrap_or(&upd.ref_name);
-                    match gita_pipeline::parse_yaml(&file.content) {
-                        Ok(spec) => {
-                            use gita_pipeline::TriggerDecision;
-                            if matches!(
-                                spec.triggers.should_run(short_branch, &changed_refs),
-                                TriggerDecision::Skip
-                            ) {
-                                info!(
-                                    "skip enqueue for {}/{} on {} (filtered by only/except)",
-                                    owner, repo_name, upd.ref_name
-                                );
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            // A malformed yaml is fine to skip here:
-                            // the runner will mark the run failed on
-                            // pickup. We just don't enqueue.
-                            tracing::warn!("parse .gita-ci.yml failed (skip enqueue): {e}");
-                            continue;
-                        }
-                    }
-
-                    let run_id = state
-                        .db
-                        .insert_pipeline_run(pid, rid, &upd.ref_name, &upd.new_sha, pusher_id, None)
-                        .await
-                        .ok();
-                    let Some(run_id) = run_id else { continue };
-                    let req_payload = serde_json::json!({
-                        "owner": owner,
-                        "repo": repo_name,
-                        "run_id": run_id,
-                        "pipeline_id": pid,
-                        "ref": upd.ref_name,
-                        "head_sha": upd.new_sha,
-                    });
-
-                    // Persist the event here rather than letting the bus's
-                    // persist hook do it, so we can learn its database id
-                    // and point `pipeline_runs.trigger_event_id` at it.
-                    // The hook would insert the row asynchronously and could
-                    // not report the id back — which is why this column was
-                    // always NULL.
-                    let mut event = gita_core::Event::new(
-                        EventType::PipelineRequested,
-                        Some(rid),
-                        pusher_id,
-                        req_payload,
-                    );
-                    match state.db.insert_event(&event).await {
-                        Ok(event_id) => {
-                            event.id = event_id;
-                            // Backfill the link now that the event exists.
-                            if let Err(e) = state
-                                .db
-                                .set_pipeline_run_trigger_event(run_id, event_id)
-                                .await
-                            {
-                                tracing::warn!(
-                                    "failed to link pipeline run {run_id} to event {event_id}: {e}"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            // The event could not be stored. Publish it
-                            // anyway (with id 0) so subscribers still see
-                            // the request — the bus hook will retry the
-                            // insert.
-                            tracing::warn!("failed to persist PipelineRequested event: {e}");
-                        }
-                    }
-                    state.bus.publish_persisted(event);
-                }
-            }
+            gita_push::publish_push(
+                &state.db,
+                &state.bus,
+                &state.git,
+                owner,
+                repo_name,
+                &applied_updates,
+                pusher_id,
+            )
+            .await;
         }
     }
+
 
     // Build the axum response from CGI output.
     let mut builder =
@@ -358,7 +216,12 @@ async fn handle_git_request(
 /// distinguishes a successful push from one the server rejected (a
 /// non-fast-forward, a failing hook, a lock conflict): `git http-backend`
 /// reports both with HTTP 200, so the status code cannot be used.
-fn ref_update_applied(state: &GitHttpState, owner: &str, repo_name: &str, upd: &RefUpdate) -> bool {
+fn ref_update_applied(
+    state: &GitHttpState,
+    owner: &str,
+    repo_name: &str,
+    upd: &gita_push::RefUpdate,
+) -> bool {
     // A branch deletion is reported by the ref simply being gone.
     if upd.new_sha.chars().all(|c| c == '0') {
         return !state.git.ref_exists(owner, repo_name, &upd.ref_name);
@@ -382,53 +245,6 @@ fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<String>) {
     (owner, repo)
 }
 
-/// The paths a pushed commit changed, relative to the repository root.
-///
-/// This is what `only:`/`except:` path filters match against. For a new
-/// branch the whole tree counts as changed, since there is no earlier
-/// commit to compare against.
-async fn changed_paths_for_push(
-    state: &GitHttpState,
-    owner: &str,
-    repo_name: &str,
-    upd: &RefUpdate,
-) -> Vec<String> {
-    // A branch creation has no previous commit; treat every file as
-    // changed so path filters still have a chance to match.
-    let old_sha = upd.old_sha.trim();
-    if old_sha.is_empty() || old_sha.chars().all(|c| c == '0') {
-        return state
-            .git
-            .list_tree(owner, repo_name, &upd.new_sha, "")
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .filter(|e| e.kind == "blob")
-                    .map(|e| e.path)
-                    .collect()
-            })
-            .unwrap_or_default();
-    }
-    match state
-        .git
-        .diff_files_between(owner, repo_name, old_sha, &upd.new_sha)
-    {
-        Ok(files) => files.into_iter().map(|(_, path)| path).collect(),
-        Err(e) => {
-            warn!("could not compute changed paths for {owner}/{repo_name}: {e}");
-            Vec::new()
-        }
-    }
-}
-
-/// One ref-update line parsed from a git-receive-pack request body.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RefUpdate {
-    old_sha: String,
-    new_sha: String,
-    ref_name: String,
-}
-
 /// Parse the ref-update lines from the body of a `POST .../git-receive-pack`
 /// request.
 ///
@@ -444,7 +260,7 @@ struct RefUpdate {
 ///
 /// Capabilities only appear on the first ref line. We return the parsed
 /// updates without capabilities.
-fn parse_receive_pack_ref_updates(body: &[u8]) -> Vec<RefUpdate> {
+fn parse_receive_pack_ref_updates(body: &[u8]) -> Vec<gita_push::RefUpdate> {
     let mut out = Vec::new();
     if body.is_empty() {
         return out;
@@ -491,7 +307,7 @@ fn parse_receive_pack_ref_updates(body: &[u8]) -> Vec<RefUpdate> {
         let old_sha = String::from_utf8_lossy(fields[0]).to_string();
         let new_sha = String::from_utf8_lossy(fields[1]).to_string();
         let ref_name = String::from_utf8_lossy(fields[2]).to_string();
-        out.push(RefUpdate {
+        out.push(gita_push::RefUpdate {
             old_sha,
             new_sha,
             ref_name,
