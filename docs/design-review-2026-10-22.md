@@ -656,6 +656,11 @@ claim 查询要求 `status = 'queued'`，而 claim 后状态变成 `running`—�
 `docs/gita-ci-writing-guide.md:152-153` 也这么写。集成测试
 `stages_dag_runs_in_dependency_order` 之所以通过，是因为那个 YAML 里所有跨 stage 的 job 都写了 `needs`。
 
+**已修（第七批）**。`expand()` 改成**按阶段逐个处理**，阶段内再按 `needs`
+拓扑排序（同阶段内保持文件顺序）。`stage_index` 现在真的被读、被断言。
+依赖后面阶段的 job 单独报 `ForwardDependency`（过去会以"检测到循环"的形式
+误报）。新增 3 个单测钉住行为。
+
 ---
 
 ### P1-4　`stages` 语义与文档不符 + `deny_unknown_fields` 只覆盖 job 内部
@@ -673,6 +678,18 @@ goal.md §10.1 声称"Phase 1 仅支持 `stages`/`script`/`needs` 三种 key，�
   （writing-guide 说"被解析但只认 job"——假的）
 - `stage` **是必填的**，writing-guide 说"缺省为 test"——假的
 - 没有"保留名"检查：叫 `cache` 或 `variables` 的 job 能正常解析
+
+**已修（第七批）**：
+
+- **顶层不是 job 的键，现在按名字报错**（`UnknownTopLevelKey`），
+  不再被当成一个 job 然后报"引用了不存在的阶段 ''"。
+- job 内部的未知 key 改报 `UnknownField`（过去是含糊的 YAML 错误）。
+- 补了三条校验：**重复阶段名**、**没有 `stage` 的 job**（报 `MissingStage`）。
+- `jobs:` 嵌套写法从 `BTreeMap` 改成 `IndexMap`，保持文件顺序——
+  过去是字典序，同阶段内的执行顺序是随机的。
+- 文档（`goal.md` §10.1）按**实现**改写：`only`/`except` 是支持的，
+  `needs` 只支持数组形式，`stage` 必填，`image`/`artifacts`/`cache`/`when`
+  会被拒绝。
 
 ---
 
@@ -735,6 +752,12 @@ SSH 会话不收尾。容器 `docker stop` 就会触发。
 声明在 `gita-server/src/lib.rs:75`，在 `:309` 被消费，但 `Config::load` **从不把它从 TOML 拷进 config**。
 `grep database_schema` 在 `lib.rs` 里只有 3 处命中，没有一处是 merge。
 只有测试通过直接改 struct 绕过。文档字符串读起来像个支持的特性，实际是惰性的。
+
+**已修（第七批）**。最初复核时误判为"误报"（`App::build` 确实读它），
+随后被优雅关闭测试的间歇性失败打脸——**二进制**走的是 `Config::load`，
+那个手工合并循环漏掉了这个字段，`-c gita.toml` 写了也白写。
+已按键存在性合并，并加单测 `config_load_merges_database_schema`。
+完整发现过程见 §10 第七批。
 
 ---
 
@@ -810,6 +833,24 @@ path+method 组合，其中两个正是最敏感的：
 照规格写客户端的人不会知道 `/api/search/code` 是匿名的私有内容泄露口。
 
 另外规格里**没有 `components/schemas/Error`**，响应 schema 大面积缺失。
+
+**已修（第六批）**：
+
+- **漂移测试改成比对 path *和* method，并且是双向的**。提取方法的方式是从
+  `.route("path", post(a).get(b))` 的参数列表里读方法名，扫描范围限定在
+  该调用的括号配对范围内（否则会扫到后面的代码，误把别的词当成方法）。
+  双向意味着"规格写了但路由不存在"也会被发现——那正是客户端会去调的东西。
+- **补齐 3 个缺失的 path+method**：`PATCH /api/auth/me`、
+  `PATCH /api/repos/{owner}/{repo}`、`POST /api/repos/{owner}/{repo}/branches`。
+- **修正 3 个搜索端点的 security 标注**：它们标着 `bearerAuth`，实际匿名可访问。
+  现在去掉了 `security`，并在 description 里说清匿名调用者只能看到公开内容。
+- **加了 `components/schemas/Error`**，与 `ApiError` 实际返回的
+  `{"error": {"message", "status"}}` 一致。
+- **删掉 `auth_routes_except_login`**——一个没人调用的死函数（还带着
+  `#[allow(dead_code)]`），它让漂移检查看到两套路由。
+- **改掉过时的 utoipa 说明**（`error.rs` 的模块注释和 `goal.md`）。
+
+现在 79 个 (path, method) 组合双向完全一致。
 
 ---
 
@@ -906,6 +947,14 @@ git 客户端在 SSH 下会请求 `side-band-64k` 能力，服务端一旦接受
 `git diff --output=<file>` 是一个真实的写原语。
 
 （`safe_repo_path` 对仓库**名**的校验是严的，但 ref 值来自 API 参数，校验更松。）
+
+**已修（第七批）**。`show` / `diff` / `rev-list` / `merge-base`（两处）/
+`read-tree` 全部加上 `--end-of-options`，git 从此把后面的东西一律当引用。
+
+**实测确认过这个原语是真的**：不带 `--end-of-options` 时
+`git show --no-color --no-ext-diff --output=/tmp/x HEAD` 确实创建了
+`/tmp/x`。新增回归测试：拿 `--output=<文件>` 当引用名调 `show_commit` /
+`diff_files_between`，**文件必须没有被创建**。
 
 ---
 
@@ -1103,6 +1152,9 @@ fire-and-forget 任务删 schema —— 但 `#[tokio::test]` 的 runtime 在测�
 **这个任务被取消，schema 永远删不掉**。dev 库里的 `gita_it_*` / `gita_test_*` schema 已累积到 6630 个，
 每次跑测试还在涨。
 
+**已修（第七批）**：cleanup 改在**独立线程 + 独立 runtime** 上执行并 join，
+带 10 秒超时（数据库不可达不会挂住套件）。本机残留的 763 个 schema 已清空。
+
 ---
 
 ### P2-14　sqlx 迁移用数据库级 advisory lock → 测试串行化
@@ -1137,38 +1189,38 @@ sqlx 的 `migrate!` 用 `pg_advisory_lock(current_database())`，是**数据库�
 | 7 | **Playwright e2e 不在 CI 里**（最脆弱的前端部分无 CI 保护） | `.github/workflows/ci.yml` |
 | 8 | **三个不同的 Postgres 版本**：CI `postgres:17`、compose `pgvector/pgvector:pg16`、本地 `pg17`；且 `pgvector` 没用上（无向量列） | 三处 |
 | 9 | **前端大量已实现但无 UI 的 API**：fork、hooks、群组成员管理、SSH keys、密码修改、头像上传、事件流、cancel run、删仓库、群组建仓 | `web/src/lib/api.ts` |
-| 10 | **README 说"Settings → SSH keys"注册公钥，但 UI 里没有这个页面** | `README.md:147` |
-| 11 | **`web/README.md` 是 Vite 模板原文**，没写任何 Gita 相关内容 | `web/README.md` |
-| 12 | **`i18n` 的 `ERROR_MAP` 对多词前缀失效**：正则 `^\w+:\s*` 匹配不了 `not found: ` / `bad request: ` / `rate limited: `，**9 个后端错误分类里 6 个直接漏英文** | `i18n/index.tsx:134` |
-| 13 | **`error.notFound` 键在 zh/en 两个字典里都不存在**，404 页面直接显示键名 | `App.tsx:140` |
+| 10 | **README 说"Settings → SSH keys"注册公钥，但 UI 里没有这个页面** | `README.md:147` | **已修（第七批）**：README 改成给出 `POST /api/auth/keys` 的调用，并说明 UI 里还没有这个页面。 |
+| 11 | **`web/README.md` 是 Vite 模板原文**，没写任何 Gita 相关内容 | `web/README.md` | **已修（第七批）**：换成 Gita 前端自己的说明（目录结构、命令、加页面的流程）。 |
+| 12 | **`i18n` 的 `ERROR_MAP` 对多词前缀失效**：正则 `^\w+:\s*` 匹配不了 `not found: ` / `bad request: ` / `rate limited: `，**9 个后端错误分类里 6 个直接漏英文** | `i18n/index.tsx:134` | **已修（第七批）**：前缀改成显式列表，剥掉前缀后再试一次"第一个冒号之前"的部分；映射逻辑抽到 `i18n/errors.ts`，新增 9 个 vitest 单测。 |
+| 13 | **`error.notFound` 键在 zh/en 两个字典里都不存在**，404 页面直接显示键名 | `App.tsx:140` | **已修（第七批）**：补上 `error.notFound` 等 6 个分类键（zh/en 都要有）。 |
 | 14 | **Pages 标签页在侧边栏不高亮**（`Layout.tsx:290-297` 没有 `settings` 分支） | `Layout.tsx:290` |
 | 15 | **SSE 日志流无法鉴权**：`EventSource` 发不了 `Authorization` 头，私有仓的日志流 404 | `api.ts:445` |
 | 16 | **前端无 401 处理**：`api.ts` 从不检查 401，token 过期后 UI 静默卡在登录态 | `web/src/lib/api.ts` |
 | 17 | **`useAuth.refresh()` 从不被调用**，`localStorage` 里的用户信息永不校验 | `web/src/hooks/useAuth.ts:81` |
 | 18 | **搜索框无 catch**：搜索失败时是 unhandled rejection，且用户看到的是"无结果" | `Layout.tsx:517` |
-| 19 | **`run_dev.sh` 查 `gita_gita` 镜像，实际是 `docker_gita`** → 每次 start 都无谓重建前后端 | `run_dev.sh:224` |
+| 19 | **`run_dev.sh` 查 `gita_gita` 镜像，实际是 `docker_gita`** → 每次 start 都无谓重建前后端 | `run_dev.sh:224` | **已修（第七批）**：改成问 compose 的**服务名** `gita`（`compose images -q <service>`），镜像名在不同 compose 实现里叫法不同，服务名才是可移植的问法。 |
 | 20 | **仓库搜索硬编码 `is_private = 0`**，用户搜不到自己的私有仓 | `gita-db:471` |
-| 21 | **`goal.md` §6 列的 `docs/architecture.md`、`docs/api.md`、`docs/mcp.md` 三个文件都不存在** | `goal.md` |
-| 22 | **`goal.md` §5.7 列的 `POST /api/agents/run` 不存在** | `goal.md:232` |
+| 21 | **`goal.md` §6 列的 `docs/architecture.md`、`docs/api.md`、`docs/mcp.md` 三个文件都不存在** | `goal.md` | **已修（第七批）**：`docs/api.md` 已建（由 OpenAPI 规格生成 + 漂移测试守住）；`goal.md` 换成真实存在的文档清单——`docs/design-review-2026-10-22.md` 本身就是架构/设计文档，不再单列 `architecture.md`；`docs/mcp.md` 删除（MCP crate 已移除）。 |
+| 22 | **`goal.md` §5.7 列的 `POST /api/agents/run` 不存在** | `goal.md:232` | **已修（第七批）**：从 `goal.md` §5.7 删掉，并注明未实现。 |
 
 ---
 
 ## 9. 设计文档与实现的偏差
 
-| 文档 | 声称 | 实际 |
-|---|---|---|
-| `goal.md:115` / `:309` | "仅支持 fast-forward 合并"、"冲突检测未做" | **两者都已实现**（真实 FF + 双父 merge commit + 三方 merge 冲突检测） |
-| `goal.md:355` | "Phase 1 仅支持 stages/script/needs，其他字段严格拒绝" | 实际还有 `jobs:`/`only:`/`except:`；顶层未知字段不被当未知字段拒；`needs` 对象形式不支持；`stage` 必填 |
-| `goal.md:357` / `:364` / `:373` | "SSE 日志流、cancel 推迟到 Phase 2"、"5 个 REST 端点"、"SPA 2s 轮询" | SSE 和 cancel **都已实现**；端点是 **7 个**；SPA 用的是 SSE 不是轮询 |
-| `goal.md:372` | "`gita worker register`" | 实际是 `gita-server worker register`（二进制名是 `gita-server`） |
-| `goal.md` §6 | `docs/architecture.md`、`docs/api.md`、`docs/mcp.md` | **三个文件都不存在** |
-| `goal.md` §5.5 | "MCP Server stdio 已实现" | crate 已移除，只剩 `/api/mcp/tools` 静态清单 |
-| `README.md:147` | "在 web UI 的 Settings → SSH keys 注册公钥" | **UI 里没有这个页面** |
-| `README.md:116` | `git clone http://.../git/<you>/<repo>.git` | **正确**，但 Web UI 给的是错的（少 `/git`） |
-| `README.md` 架构树 | 8 个 crate | 实际 11 个（漏了 pipeline/runner/ssh） |
-| `README.md:171` | 本地跑指向 `localhost:5432` | compose 的 postgres **没暴露宿主端口** |
-| `docs/gita-ci-writing-guide.md` | 多处 | stage 默认值、needs 对象形式、stage_index 排序、glob `*` 语义、保留名、CI 变量表 —— 见 P1-3/P1-4 |
-| `docs/runner-design-notes.md` | 并发/secret/心跳 三行 | 与实际不符（并发未限、secret 功能不存在、无心跳），其余准确 |
+| 文档 | 声称 | 实际 | 第七批之后 |
+|---|---|---|---|
+| `goal.md:115` / `:309` | "仅支持 fast-forward 合并"、"冲突检测未做" | **两者都已实现**（真实 FF + 双父 merge commit + 三方 merge 冲突检测） | 已订正 |
+| `goal.md:355` | "Phase 1 仅支持 stages/script/needs，其他字段严格拒绝" | 实际还有 `jobs:`/`only:`/`except:`；顶层未知字段不被当未知字段拒；`needs` 对象形式不支持；`stage` 必填 | 已订正（并把"顶层未知字段"的行为修对了） |
+| `goal.md:357` / `:364` / `:373` | "SSE 日志流、cancel 推迟到 Phase 2"、"5 个 REST 端点"、"SPA 2s 轮询" | SSE 和 cancel **都已实现**；端点是 **7 个**；SPA 用的是 SSE 不是轮询 | 已订正 |
+| `goal.md:372` | "`gita worker register`" | 实际是 `gita-server worker register`（二进制名是 `gita-server`） | 已订正 |
+| `goal.md` §6 | `docs/architecture.md`、`docs/api.md`、`docs/mcp.md` | **三个文件都不存在** | 已订正（`docs/api.md` 已建并由测试守住） |
+| `goal.md` §5.5 | "MCP Server stdio 已实现" | crate 已移除，只剩 `/api/mcp/tools` 静态清单 | 仍待订正 |
+| `README.md:147` | "在 web UI 的 Settings → SSH keys 注册公钥" | **UI 里没有这个页面** | 已订正（改成给 API 调用） |
+| `README.md:116` | `git clone http://.../git/<you>/<repo>.git` | **正确**，但 Web UI 给的是错的（少 `/git`） | 第一批已修 |
+| `README.md` 架构树 | 8 个 crate | 实际 12 个（漏了 pipeline/push/runner/ssh） | 已订正 |
+| `README.md:171` | 本地跑指向 `localhost:5432` | compose 的 postgres **没暴露宿主端口** | 仍待订正 |
+| `docs/gita-ci-writing-guide.md` | 多处 | stage 默认值、needs 对象形式、stage_index 排序、glob `*` 语义、保留名、CI 变量表 —— 见 P1-3/P1-4 | 第七批已订正前四项 |
+| `docs/runner-design-notes.md` | 并发/secret/心跳 三行 | 与实际不符（并发未限、secret 功能不存在、无心跳），其余准确 | 仍待订正 |
 
 ---
 
@@ -1418,6 +1470,271 @@ pub fn can_access(repo: &Repository, principal: &Principal, action: Access) -> b
 - 新增 SSH e2e：**群组 developer 能通过 SSH push**（此前不可能）
 - 新增 HTTP 单测：**Basic 认证的用户名必须匹配 token**
 - 5 个既有集成测试的断言从 403 改为 404（统一拒绝方式的行为变更）
+
+---
+
+### 第六批（2026-10-23）：OpenAPI 规格与实际路由对齐
+
+**P1-15**。规格是手写的 JSON 字符串，路由是代码，两边必然会漂。
+
+**已修**：
+
+- **漂移测试改成比对 path *和* method，并且是双向的**。提取方法的方式是从
+  `.route("path", post(a).get(b))` 的参数列表里读方法名，扫描范围限定在
+  该调用的括号配对范围内（否则会扫到后面的代码，误把别的词当成方法）。
+  双向意味着"规格写了但路由不存在"也会被发现——那正是客户端会去调的东西。
+- **补齐 3 个缺失的 path+method**：`PATCH /api/auth/me`、
+  `PATCH /api/repos/{owner}/{repo}`、`POST /api/repos/{owner}/{repo}/branches`。
+- **修正 3 个搜索端点的 security 标注**：它们标着 `bearerAuth`，实际匿名可访问。
+  现在去掉了 `security`，并在 description 里说清匿名调用者只能看到公开内容。
+- **加了 `components/schemas/Error`**，与 `ApiError` 实际返回的
+  `{"error": {"message", "status"}}` 一致。
+- **删掉 `auth_routes_except_login`**——一个没人调用的死函数（还带着
+  `#[allow(dead_code)]`），它让漂移检查看到两套路由。
+- **改掉过时的 utoipa 说明**（`error.rs` 的模块注释和 `goal.md`）。
+
+现在 79 个 (path, method) 组合双向完全一致。
+
+### 第七批（2026-10-23）：把"文档说支持"和"代码真支持"对齐
+
+这一批的主题是**文档与实现对不上**——§8 里一批 P2 项和 §9 的整张偏差表。
+收尾时还被一个"间歇性失败"的测试引着挖出了 **P1-9 的真身**（见下）。
+
+清单：P1-3（stages 顺序）、P1-4（解析器语义）、P1-9（database_schema 被
+`Config::load` 丢弃）、P1-22（git 命令行注入）、P2-13（测试 schema 泄漏）、
+P2-16 #10/#11/#12/#13/#19/#21/#22、glob 语义、CI 变量表，以及第六批
+漂移测试自身的三个 bug。
+
+#### 先说两个坑：第六批的漂移测试自己有 bug
+
+第六批的漂移测试**从来没有跑完过**。它不是失败，是**死循环**：
+`cargo test` 会在 `gita-api` 的测试二进制上 100% CPU 空转十几分钟，
+既不报错也不结束。这解释了为什么"上一批已修完"的印象是错的。
+
+两个 bug：
+
+1. **扫描指针用了相对偏移**。`end` 是相对 `start` 的偏移量，代码却写成了
+   `idx = end`（应该是 `idx = start + end`），于是指针**往回跳**，扫描
+   永远走不到终点。
+2. **括号配对的起点差一位**。`after` 指向 `.route(` 的括号**之后**，
+   拿它去找配对的右括号自然找不到，`matching_paren` 每次都返回 `None`，
+   扫描范围退化成"文件剩余的全部"。
+
+第二个 bug 还有个更隐蔽的后果：**方法名提取完全失效**，每个路径都被算成
+五种方法都注册了。修好之后又暴露了第三个：注册路由的路径**没有归一化**
+（`{owner}` vs `{group}`），而规格那边归一化了，于是所有带参数的路由
+都判成"没写进规格"。
+
+三个 bug 叠在一起，才让"规格漂移"这个结论看起来像是对的方向、但一次也
+没被真正验证过。**教训：一个不会失败的检查，等于没有检查。**
+
+#### P1-3　`stages` 顺序根本不生效
+
+`expand()` 过去只按 `needs` 做拓扑排序，`stage_index` 算出来后**从来没被
+读过**（死字段）。后果是：
+
+```yaml
+stages: [build, test]
+jobs:
+  test:
+    stage: test
+    script: [echo t]     # 没有 needs
+  build:
+    stage: build
+    script: [echo b]
+```
+
+`test` 会**先于** `build` 执行——阶段列表只是摆设。这不是"顺序没生效"，
+是"顺序反了"。
+
+**已修**：`expand()` 改成**按阶段逐个处理**，阶段内再用 `needs` 排序；
+同阶段内保持文件顺序（原来的 `swap_remove` 会打乱顺序，改成了 `remove`）。
+`stage_index` 现在真的被写进 `JobPlan`，并被测试断言。
+
+顺带加了一条规则：**不允许依赖后面的阶段**。过去这种情况会以
+"检测到循环依赖"的错误形式报出来，指错了方向；现在单独报
+`ForwardDependency`。
+
+`jobs:` 嵌套写法过去用 `BTreeMap`，键是**字典序**而不是文件顺序——
+同阶段内的执行顺序因此是随机的。改成 `IndexMap`，两种写法都保持文件顺序。
+
+#### P1-4　顶层的拼写错误被当成一个 job
+
+`.gita-ci.yml` 里 `stges:`（`stages` 拼错）这样的顶层键，过去会被当成
+一个叫 "stges" 的 job，然后报"job 'stges' 引用了不存在的阶段 ''"——
+指向了完全错误的问题。顶层**任何**不是 job 的键现在都会**按名字**报错：
+
+```
+unknown top-level key 'stges': it is not a job. A job is a mapping with
+at least one of ["stage", "script", "needs"]; the reserved top-level keys
+are ["stages", "jobs", "only", "except"]
+```
+
+同时补了三条以前没有的校验：**重复的阶段名**（会让 `expand()` 把该阶段的
+job 跑两遍）、**没有 `stage` 的 job**（过去报"未知阶段 ''"）、
+以及 job 内部的未知字段现在报 `UnknownField` 而不是含糊的 YAML 错误。
+
+#### P1-22　git 命令行没有 `--end-of-options`
+
+用户可控的引用名直接进了 git 命令行。`git show --output=<file>` 会**把输出
+写进文件**——这是一个任意文件写原语。已实测确认（不带
+`--end-of-options` 时 `git show --output=/tmp/x HEAD` 确实创建了该文件）。
+
+**已修**：`show` / `diff` / `rev-list` / `merge-base`（两处）/
+`read-tree` 全部加上 `--end-of-options`。新增回归测试：拿
+`--output=<文件>` 当引用名调用，**文件必须没有被创建**。
+
+#### P2-13　测试的 teardown 从来没执行过，schema 一直在泄漏
+
+`TestAppGuard::drop` 用 `handle.spawn(...)` 起一个 fire-and-forget 任务去
+`DROP SCHEMA`。但 `#[tokio::test]` 的 runtime 在测试函数返回时就被销毁，
+**那个任务还没开始跑就被取消了**。所以每一个测试都留下一个 schema。
+本机 dev 库里实测堆积了 **763 个** `gita_it_*` schema。
+
+**已修**：cleanup 改在一个**独立线程 + 独立 runtime** 上跑，并 join，
+带 10 秒超时（数据库不可达时不会挂住整个测试套件）。
+
+#### P2-16 #12/#13　前端错误信息本地化基本没生效
+
+`translateError` 用 `/^\w+:\s*/` 剥掉后端的分类前缀（"not found: "、
+"bad request: "、"rate limited: "）。但 `\w` 不匹配空格，**这三个前缀全都
+匹配不上**——六个错误分类里有六个直接漏英文。
+
+**已修**：
+
+- 前缀改成**显式列表**（`bad request` / `unauthorized` / `forbidden` /
+  `not found` / `conflict` / `rate limited`），长前缀优先。
+- 剥掉前缀之后还会再试一次"第一个冒号之前"的部分
+  （后端写的是 `source branch not found: main`）。
+- 都认不出来时，翻译**分类**并保留细节：`未找到: whatever`。
+- 补上了 zh/en 字典里缺失的 `error.notFound` 等 6 个分类键。
+  404 页面过去直接显示键名 `error.notFound`。
+- 映射逻辑从 `i18n/index.tsx`（React 文件）抽到 `i18n/errors.ts`，
+  **新增 9 个 vitest 单测**钉住这些行为；原来的字典一致性测试也覆盖
+  新增的键。
+
+#### 文档与实现的偏差（§9 那张表）
+
+`goal.md` 是"权威参考"，但它有多处和代码对不上。已订正：
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| `goal.md` §5.7 | 列了不存在的 `POST /api/agents/run` | 删掉，并注明未实现 |
+| `goal.md` §6 | 列了不存在的 `docs/architecture.md`、`docs/mcp.md` | 换成真实存在的文档 |
+| `goal.md` §6 | crate 树只有 8 个 | 12 个（含 pipeline/push/runner/ssh） |
+| `goal.md` v0.2 / Phase 5 | "冲突检测未做，仅支持 fast-forward" | 冲突检测、FF、双父 merge commit **都已实现** |
+| `goal.md` §10.1 | "Phase 1 仅支持 stages/script/needs" | 实际还支持 `jobs`/`only`/`except`；已按实现改写 |
+| `goal.md` §10.3 | "5 个 REST 端点"、"2s 轮询" | 7 个端点、SSE 实时流 |
+| `goal.md` §10.3 | `gita worker register` | `gita-server worker register` |
+| `goal.md` 章节号 | 有两个 "## 10." | 验收标准改为 §11 |
+| `README.md` | 架构树 8 个 crate | 12 个 |
+| `README.md` | "在 Settings → SSH keys 注册公钥" | UI 里**没有这个页面**；改成给出 API 调用 |
+| `web/README.md` | Vite 模板原文 | Gita 前端自己的说明 |
+
+`docs/gita-ci-writing-guide.md` 同样有几处和实现对不上，一并订正：
+
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| `stage:` | "缺省为 test" | **必填**，缺了报 `MissingStage` |
+| `needs:` 对象形式 | "被解析但只认 job" | **解析错误** |
+| `expand()` | "按 (stage_index, needs) 做 Kahn 拓扑排序" | 按阶段逐个处理，阶段内再按 `needs` |
+| 保留名 | 一堆 Phase 2/3 的名字 | 实际只有 `stages`/`jobs`/`only`/`except` |
+| glob 语义 | "`*` 不跨 `/`" | 文档是对的，**代码是错的**——见下 |
+
+#### glob 的 `*` 过去会跨目录
+
+writing guide 写的是"`*` 匹配任意非 `/` 字符"，这是 GitHub/GitLab 的约定，
+也是作者写 `release/*` 时的本意。但实现用的是 globset 的**默认**匹配器，
+那里 `*` **也匹配 `/`**。于是 `release/*` 会选中 `release/a/b` 这个分支——
+作者根本没打算选它。
+
+**已修**：改用 `GlobBuilder::new(pat).literal_separator(true)`，`**` 仍然
+跨目录。新增单测钉住 `release/*` 不匹配 `release/1.x/rc`、`src/*` 不匹配
+`src/deep/file.rs`、`**/*.md` 匹配 `docs/README.md`。
+
+#### CI 变量表是凭空写的
+
+writing guide 里那张 `CI_COMMIT_BRANCH` / `CI_PIPELINE_SOURCE` 的表，
+**列的变量一个都不存在**。runner 实际设置的是 `GITA_REPOSITORY` /
+`GITA_COMMIT_SHA` / `GITA_REF` / `GITA_JOB_NAME` / `GITA_RUN_ID`，
+而且 job 的环境是 `env_clear()` 之后的**空白环境**（只补 `PATH` 和 `HOME`），
+刻意不继承 runner 的数据库密码和 token。
+
+**已修**：变量表换成实际存在的那些，并说明**没有** `CI_*` 变量。
+
+#### 新增 `docs/api.md`（端点参考）
+
+`goal.md` §6 要求有 `docs/api.md`，之前不存在。现在有了，而且**是生成的**：
+
+- `cargo run -p gita-api --bin gen-api-docs > docs/api.md`
+- 由 `crates/gita-api/src/docs.rs` 里的 OpenAPI 文档渲染
+- **有测试守着**：文件与渲染结果不一致时测试失败
+
+这样"人读的参考"和"服务端的规格"就不可能各说各话。
+
+#### 顺手修的：优雅关闭测试间歇性失败——顺手挖出一个 P1 级 bug
+
+`graceful_shutdown` 里的 `the_shutdown_waits_for_a_webhook_delivery_in_flight`
+在整个工作区测试套件里**间歇性失败**（单独跑 22 次全过）。报错是
+`create hook: 500`，看起来像"服务器没等后台任务"，完全是误导。
+
+把服务器日志打进断言消息之后，真凶现形：
+
+```
+ERROR gita_api::error: internal error: error occurred while decoding
+column "is_private": mismatched types; Rust type `i64` (as SQL type
+`INT8`) is not compatible with SQL type `INT4`
+```
+
+链条是这样的：
+
+1. 这些测试跑**真实二进制**（`-c gita.toml`），不是 `App::build`；
+2. 配置文件里写了 `database_schema`，但 **`Config::load` 的手工合并循环
+   根本没有这个字段**（P1-9！）——值被静默丢弃，服务器永远落在 `public`；
+3. `public` 里躺着一张**旧形状的** `repositories` 表：`is_private` 是
+   `INT4`，而现在的 migration 和代码都是 `BIGINT`/`i64`。migration 记录
+   显示"已应用"（`CREATE TABLE IF NOT EXISTS` 静默跳过了旧表），
+   所以谁也不会发现；
+4. `load_adminable_repo` 一读 `is_private`，500。
+
+为什么"间歇"？**不间歇**——每次都落在 `public`。只是时序够快时
+（绝大多数时候）这个特定查询恰好没被踩到，测试就过了。
+单独跑和整套跑的差异只是概率。
+
+**已修**：
+
+- **P1-9 真修了**：`Config::load` 按键存在性合并 `database_schema`，
+  新增单测 `config_load_merges_database_schema`。
+- 测试本身也加了 per-test schema 隔离（现在真的生效了），`Drop` 时在
+  独立线程上删掉；"事件是否幸存"的验证查询改成**带上 schema 限定**
+  （它过去读的是 `public.events`，隔离之后那里永远查不到）。
+- "至少一次投递"的断言从 `== 1` 放宽成 `>= 1`（投递重试不是这个测试
+  要验证的东西），轮询期限 10s → 30s。
+
+修的过程中还顺手踩了一个值得记下来的 Postgres 引号坑：schema 限定要写成
+`"schema".events`——**点号在引号外面**。写成 `"schema.events"`（点号在
+引号里面）Postgres 会把它当成一个名字就叫 `schema.events` 的标识符，
+报 `relation "schema.events" does not exist`，而表明明就在那里。
+
+**顺带发现的雷**：`public` 里那张旧形状的表还在，而且**没法用 migration
+修**——migration 对它已经"应用过了"。任何直连 `public` 的部署（比如
+某个 operator 手写 `database_url` 不带 schema）都会踩同一个 500。
+这张表需要一次真实的数据迁移或者手工 `ALTER`，本批不动它，先记录在这里。
+
+> 注：`public` 里已经残留了 shutdown 测试历次写入的行（12 个仓库、
+> 7 个用户）。清理语句的执行被权限拒绝，需要手工清：
+>
+> ```sql
+> DELETE FROM public.webhooks; DELETE FROM public.issues;
+> DELETE FROM public.pull_requests; DELETE FROM public.repositories;
+> DELETE FROM public.users;
+> ```
+
+#### 两条复核结论：§8 里这两项其实是误报
+
+| 编号 | §8 的说法 | 复核结论 |
+|---|---|---|
+| **P1-8** | `.env.example` 里三个 Pages/重置环境变量名是错的 | **基本没错**。`.env` 里写的是 `GITA_PAGES_ENABLED` 这类**面向用户**的名字，`docker-compose.yml` 负责转成容器内的 `GITA_SERVER_PAGES_ENABLED`。只有 `GITA_SSH_PORT` 确实是死的（compose 把容器端口写死成 2222）——已修（容器端口和端口映射现在都跟着 `GITA_SSH_PORT` 走） |
+| **P1-9** | `server.database_schema` 被静默忽略 | **第七批先判"误报"，后来被自己的测试打脸**。`App::build` 确实读它（集成测试就是靠它隔离的），但**二进制**走的是 `Config::load`，那个手工合并循环**漏掉了 `database_schema`**——`-c gita.toml` 里写了也白写，服务器永远落在 `public`。已修：按键存在性合并，并加了单测。发现过程见上一节。 |
 
 ---
 

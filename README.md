@@ -41,12 +41,16 @@ Cargo workspace with focused crates:
 
 ```
 crates/
-├── gita-core    # domain models, events
+├── gita-core    # domain models, events, the shared access-control rule
 ├── gita-db      # SQLx data access (PostgreSQL)
 ├── gita-git      # bare repo management, git protocol via gix + git CLI
 ├── gita-events  # event bus (pushes, PRs, issues)
 ├── gita-http    # Smart HTTP Git protocol endpoint (/git/*)
+├── gita-ssh     # embedded SSH server (Git over SSH)
 ├── gita-api     # REST API (/api/*) + OpenAPI docs
+├── gita-pipeline # .gita-ci.yml parser and stage DAG
+├── gita-push    # what a push does afterwards: events + CI enqueue
+├── gita-runner  # CI runner (separate binary)
 ├── gita-web     # static frontend serving
 └── gita-server  # entrypoint: config, app assembly, startup
 ```
@@ -144,8 +148,15 @@ Notes:
   `GITA_SSH_ENABLED=true` (see `.env.example`). SSH is disabled by default and
   the `2222` host port mapping is commented out in `docker-compose.yml`; to
   use it, set `GITA_SSH_ENABLED=true` in `.env`, uncomment the `2222` port
-  mapping, then `git clone ssh://git@<host>:<GITA_SSH_PORT>/owner/repo.git`
-  (register a public key under **Settings → SSH keys** in the web UI first).
+  mapping, then `git clone ssh://git@<host>:<GITA_SSH_PORT>/owner/repo.git`.
+  The web UI has no SSH-key page yet, so register the public key through the
+  API first:
+
+  ```bash
+  curl -X POST http://127.0.0.1:3100/api/auth/keys \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"title":"laptop","public_key":"ssh-ed25519 AAAA... laptop"}'
+  ```
 - The bundled `postgres` service is the default. Override `DATABASE_URL` in
   `.env` to point at an external Postgres (for managed DBs or multi-node
   setups).

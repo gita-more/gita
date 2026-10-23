@@ -63,8 +63,9 @@ parallelism).
 stages: [lint, test, build, deploy]
 ```
 
-If a job's `stage:` is missing or unknown, the pipeline is rejected
-at parse time with `UnknownStage { job, stage, declared }`.
+If a job's `stage:` is missing, the pipeline is rejected at parse time
+with `MissingStage { job }`; if it names a stage that is not in the
+list, with `UnknownStage { job, stage, declared }`.
 
 ---
 
@@ -135,7 +136,8 @@ test:
 ### `stage:`
 
 Names the stage this job belongs to. Must appear in the top-level
-`stages:` list. Defaults to `test` if no `stage:` is given.
+`stages:` list. **`stage:` is required** — a job without one is
+rejected at parse time with `MissingStage { job }`.
 
 ### `needs:`
 
@@ -149,16 +151,17 @@ release:
   needs: [unit, lint]
 ```
 
-`expand()` in `gita-pipeline` does a Kahn topological sort by
-`(stage_index, needs)`. The runner emits jobs in an order that
-always runs a job after all of its `needs:` predecessors.
-
-The runner emits jobs in an order that always runs a job after
-all of its `needs:` predecessors.
+`expand()` in `gita-pipeline` walks the stages **in the order they are
+declared**, and within a stage does a topological sort by `needs`. So a
+job in a later stage never starts before every job in an earlier stage
+has finished, even if it is written first in the file and has no
+`needs:`. A job may only depend on jobs in its own stage or an earlier
+one — depending on a **later** stage is rejected with
+`ForwardDependency`.
 
 > Phase 1 only supports the simple list form (`needs: [a, b]`). The
-> object form (`needs: [{ job: a, artifacts: false }, ...]`) is
-> parsed but only `job` is honoured.
+> object form (`needs: [{ job: a, artifacts: false }, ...]`) is a
+> **parse error**, not a silently-ignored form.
 
 ---
 
@@ -598,6 +601,9 @@ Glob semantics:
 - `?` matches one character
 - A pattern without metachars is plain equality
 
+`src/*` therefore matches `src/lib.rs` but **not** `src/deep/file.rs` —
+use `src/**` for that, exactly as on GitHub and GitLab.
+
 Semantics:
 
 - Empty `only:` → no branch/path constraint (every event can run).
@@ -611,12 +617,26 @@ tab on a repo and click **Run pipeline**.
 
 ## Reserved job-name conflicts
 
-These names cannot be used as job keys:
+These top-level keys are reserved by the pipeline itself and **cannot be
+used as job names**:
 
 ```
-image, services, stages, types, before_script, after_script,
-variables, cache, include
+stages, jobs, only, except
 ```
+
+The Phase 2/3 keywords (`image`, `services`, `variables`, `cache`,
+`include`, `default`, `workflow`, `rules`, `trigger`, `artifacts`) are
+**not supported in Phase 1**. Writing one at the top level is rejected
+by name:
+
+```
+unknown top-level key 'cache': it is not a job. A job is a mapping with
+at least one of ["stage", "script", "needs"]; the reserved top-level
+keys are ["stages", "jobs", "only", "except"]
+```
+
+The same applies to a typo in a keyword you meant to use — `stges:`
+is reported by name, not as a job with a broken stage.
 
 ---
 
@@ -639,21 +659,25 @@ variables, cache, include
 `6 mos`, `1 day`, `47 yrs 6 mos and 4d`, `3 weeks and 2 days`,
 `never`.
 
-### Common CI/CD variables (selected)
+### Environment variables available to a job
+
+A job's script runs with an **empty environment** apart from the
+variables below. The runner's own environment — including the database
+URL and the runner token — is deliberately *not* inherited.
 
 | Variable | Meaning |
 | --- | --- |
-| `CI_COMMIT_BRANCH` | The branch the commit is on. |
-| `CI_COMMIT_TAG` | The tag name if the commit is a tag. |
-| `CI_COMMIT_REF_NAME` | Branch or tag name. |
-| `CI_COMMIT_REF_SLUG` | Lowercased, dash-replaced branch/tag for safe filenames. |
-| `CI_COMMIT_SHORT_SHA` | First 8 chars of the commit SHA. |
-| `CI_COMMIT_MESSAGE` | Full commit message. |
-| `CI_PIPELINE_SOURCE` | `push` / `merge_request_event` / `schedule` / `web` / `parent_pipeline` / `trigger` / `api`. |
-| `CI_PROJECT_DIR` | Absolute path to the repo on the runner. |
-| `CI_DEFAULT_BRANCH` | The repo's default branch (usually `main`). |
-| `CI_JOB_NAME` / `CI_JOB_STAGE` | Current job name and stage. |
-| `CACHE_FALLBACK_KEY` | Pipeline-level cache fallback (see `cache:` above). |
+| `PATH` | The runner's `PATH` (so the usual toolchain works). |
+| `HOME` | The job's own workspace directory. |
+| `GITA_REPOSITORY` | The repository the job runs against, as `owner/name`. |
+| `GITA_COMMIT_SHA` | The commit the job tests — the one the run was created for. |
+| `GITA_REF` | The full ref that triggered the run, e.g. `refs/heads/main`. |
+| `GITA_JOB_NAME` | The name of the job. |
+| `GITA_RUN_ID` | The id of the pipeline run. |
+
+> There are **no `CI_*` variables** in Phase 1. The table of GitLab-style
+> `CI_COMMIT_*` names that used to be listed here was aspirational; the
+> runner sets the `GITA_*` names above and nothing else.
 
 ---
 

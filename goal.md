@@ -112,7 +112,7 @@ gita/
 > 注：AI 评审与语义代码搜索功能已于 v0.0.1 后期移除，后续 AI 能力将以新的方式重新引入。
 
 ### v0.2 —— 语义搜索 + PR 工作流
-- [x] PR（Pull Request）模型：分支对比、合并、冲突检测（创建/合并/关闭已实现；冲突检测未做，仅支持 fast-forward 合并）
+- [x] PR（Pull Request）模型：分支对比、合并、冲突检测（创建/合并/关闭、**冲突检测、真实 fast-forward 与双父 merge commit** 均已实现）
 - [ ] **语义代码搜索**：代码分块 → embedding → pgvector 检索
 - [ ] 自然语言搜索 UI（"哪里处理了 JWT 过期？"）
 - [x] Issue 系统（基础版）
@@ -218,21 +218,31 @@ code_embeddings(id, repo_id, blob_sha, file_path, chunk_index, content, embeddin
 
 ### 5.7 REST API（crates/gita-api）
 
+完整端点清单见 [`docs/api.md`](docs/api.md)（由 OpenAPI 文档生成），运行中的服务器
+在 `/api/docs` 提供 Swagger UI、`/api/docs/openapi.json` 提供规格本身。下面只是
+主干端点的摘录：
+
 ```
 GET    /api/repos
 POST   /api/repos
 GET    /api/repos/{owner}/{repo}
+PATCH  /api/repos/{owner}/{repo}          (改描述/可见性/改名/转移)
 GET    /api/repos/{owner}/{repo}/tree?path=&ref=
 GET    /api/repos/{owner}/{repo}/commits
 GET    /api/repos/{owner}/{repo}/commits/{sha}
+GET    /api/repos/{owner}/{repo}/branches
+POST   /api/repos/{owner}/{repo}/branches
 POST   /api/repos/{owner}/{repo}/prs
 GET    /api/repos/{owner}/{repo}/prs/{number}
+POST   /api/repos/{owner}/{repo}/prs/{number}/merge
 POST   /api/repos/{owner}/{repo}/issues
-GET    /api/events?repo=&type=        (AI 可读事件流)
-POST   /api/agents/run                 (触发 agent 任务，后续)
+GET    /api/events?repo=&type=            (AI 可读事件流)
+GET    /api/search?type=&q=               (仓库 + 代码搜索)
 ```
 
-统一响应格式、OpenAPI 文档（utoipa）、分页、错误码。
+统一响应格式、OpenAPI 文档（手写规格 + 与实际路由的漂移测试）、分页、错误码。
+
+> 注：`POST /api/agents/run`（触发 agent 任务）**尚未实现**，Agent 自动化重新引入时再加。
 
 ### 5.8 Web UI（web/）
 
@@ -248,27 +258,33 @@ POST   /api/agents/run                 (触发 agent 任务，后续)
 gita/
 ├── Cargo.toml                # workspace
 ├── crates/
-│   ├── gita-core/
-│   ├── gita-git/
-│   ├── gita-db/              # migrations/ 存放 SQL
-│   ├── gita-api/
-│   ├── gita-http/
-│   ├── gita-events/
-│   ├── gita-web/
-│   └── gita-server/
+│   ├── gita-core/            # 领域模型 + 访问控制规则
+│   ├── gita-git/             # 裸仓库管理（gix + git CLI）
+│   ├── gita-db/              # SQLx 数据访问 + migrations/ 存放 SQL
+│   ├── gita-api/             # REST API 路由 + 鉴权 + DTO + OpenAPI 规格
+│   ├── gita-http/            # Smart HTTP Git 协议端点（/git/*）
+│   ├── gita-ssh/             # 内嵌 SSH 服务器（Git over SSH）
+│   ├── gita-events/          # 事件总线（发布/订阅，驱动 AI 任务）
+│   ├── gita-pipeline/        # .gita-ci.yml 解析 + stages DAG 展开
+│   ├── gita-push/            # push 之后的统一处理：发事件 + 入队 CI
+│   ├── gita-runner/          # CI runner（独立二进制）
+│   ├── gita-web/             # 静态资源 + Web UI 服务
+│   └── gita-server/          # 入口：axum app 组装、配置、启动
 ├── web/
 │   ├── src/
 │   ├── package.json
 │   └── vite.config.ts
+├── integration/api/tests/    # REST API 集成测试
 ├── data/                     # 运行时数据（.gitignore）
 │   └── repos/
 ├── config/
 │   └── config.example.toml   # 配置示例
 ├── docs/
-│   ├── architecture.md
-│   ├── api.md
-│   └── mcp.md
-├── tests/                    # 集成测试
+│   ├── design-review-2026-10-22.md   # 实现设计文档（架构 + 问题清单 + 修复进度）
+│   ├── api.md                        # REST 端点参考（由 OpenAPI 规格生成）
+│   ├── gita-ci-writing-guide.md      # .gita-ci.yml 编写指南
+│   └── runner-design-notes.md        # CI runner 设计笔记
+├── scripts/
 └── goal.md
 ```
 
@@ -306,7 +322,7 @@ gita/
 - [ ] 增量索引（push 触发）
 
 ### Phase 5：PR 工作流（2-3 周）
-- [x] PR 模型、创建/合并/冲突检测（创建/合并/关闭已实现；冲突检测未做——合并仅支持 fast-forward）
+- [x] PR 模型、创建/合并/**冲突检测**（创建/合并/关闭、冲突检测、fast-forward 与双父 merge commit 均已实现）
 - [x] PR UI
 
 ### Phase 6：MCP + Agent（后续规划）
@@ -350,18 +366,22 @@ gita 自带一个轻量级 in-repo CI，借鉴主流 SaaS CI 平台的形态，�
 
 ### 10.1 设计要点
 
-- **DSL：`.gita-ci.yml`**，贴近主流 CI YAML 风格。Phase 1 仅支持 `stages`、`script`、`needs` 三种 key，其他字段（`image`、`artifacts`、`only/except`、`when`、`cache`）会被 serde 严格拒绝并在 UI 上报错。
+- **DSL：`.gita-ci.yml`**，贴近主流 CI YAML 风格。Phase 1 支持 `stages` / `jobs` / `stage` /
+  `script` / `needs`（仅数组形式）/ `only` / `except`（顶层，作用于整条流水线）。
+  其他字段（`image`、`artifacts`、`cache`、`when`、顶层 `services` 等）会被严格拒绝并
+  在 UI 上报错；**顶层的未知 key 也会按名字报错**，不会再被误当成一个 job。
 - **Pipeline 定义 in-repo**，由仓库自己管理；没有 server-side 管理面板。
 - **Runner 是独立二进制** `gita-runner`，与 `gita-server` 解耦，跨进程通过 PostgreSQL 共享状态（`pipeline_runs` 表 + `FOR UPDATE SKIP LOCKED` 抢单），独立 worker 模型。
 - **Phase 1 runtime 仅 shell**（`sh -c "<joined script>"`）；Docker / Podman 推迟到 Phase 3。
-- 触发器：push（Phase 1）；PR 状态检查、SSE 日志流、定时触发推迟到 Phase 2。
+- 触发器：push（Phase 1）；PR 状态检查、定时触发推迟到 Phase 2。
+  （SSE 日志流与 cancel 已经提前做掉了，见下。）
 
 ### 10.2 三阶段路线
 
 | Phase | 内容 | 收尾标准 |
 |-------|------|----------|
 | **1（本阶段）** | push 触发 → `.gita-ci.yml` 解析 → shell 跑 job → 写 logs → UI 上看 run + 日志 | 推一个有 `.gita-ci.yml` 的仓，能在 SPA Pipelines 标签看到 run 列表和 job stdout |
-| **2** | stages DAG + artifacts + cache + `only/except` + SSE 日志流 + cancel / re-run + PR status check | 一个完整 stage graph 跑起来，PR 合并前能等 CI pass |
+| **2** | artifacts + cache + re-run + PR status check（**stages DAG、`only/except`、SSE 日志流、cancel 已提前完成**） | PR 合并前能等 CI pass |
 | **3** | Docker 运行时（`image:`/`services:`）+ secrets 加密存储 + worker 注册 API + pipeline YAML Monaco 编辑器 | 类似主流 SaaS CI 基本可用 |
 
 ### 10.3 已完成（Phase 1）
@@ -369,10 +389,10 @@ gita 自带一个轻量级 in-repo CI，借鉴主流 SaaS CI 平台的形态，�
 - DB migration `20261020000000_pipelines.sql`：`pipelines` / `pipeline_runs` / `jobs` / `logs` 四张表 + 抢单用的 partial index。
 - `crates/gita-pipeline/` —— `.gita-ci.yml` 解析 + stages DAG 展开。
 - `crates/gita-runner/` —— 独立二进制。`FOR UPDATE SKIP LOCKED` 抢单、`git clone --depth 1`、`sh -c` 执行、stdout/stderr 行级写入 `logs`。
-- `gita worker register --name <n> --user <u>` CLI 子命令，铸 PAT 给 runner 用作 clone 时的 Basic-auth 密码。
-- `crates/gita-http/`：push 事件 payload 升级到 `{ref, old_sha, new_sha, pusher_id}`（顺手修了 `actor_id: None` 那个旧 bug）；enqueue 路径检测新 commit 上的 `.gita-ci.yml`、upsert pipeline、insert run、发 `PipelineRequested` 事件。
-- `crates/gita-api/`：5 个 REST 端点（list pipelines / list runs / get run / cancel / logs）。
-- SPA `web/`：Tab 多了 `pipelines`，Sidebar 加 RocketIcon 入口，`<PipelinesPanel>` 列出 run、点击展开 job 日志（2s 轮询）。
+- `gita-server worker register --name <n> --user <u>` CLI 子命令，铸 PAT 给 runner 用作 clone 时的 Basic-auth 密码。（二进制名是 `gita-server`，不是 `gita`。）
+- `crates/gita-http/`：push 事件 payload 升级到 `{ref, old_sha, new_sha, pusher_id}`（顺手修了 `actor_id: None` 那个旧 bug）；enqueue 路径检测新 commit 上的 `.gita-ci.yml`、upsert pipeline、insert run、发 `PipelineRequested` 事件。SSH push 走同一条路径（`crates/gita-push/`）。
+- `crates/gita-api/`：**7 个** REST 端点（list pipelines / list runs / create run / get run / cancel / logs / logs stream）。
+- SPA `web/`：Tab 多了 `pipelines`，Sidebar 加 RocketIcon 入口，`<PipelinesPanel>` 列出 run、点击展开 job 日志（**SSE 实时流**，不是轮询）。
 
 ### 10.4 取消的旧条目
 
@@ -380,7 +400,7 @@ gita 自带一个轻量级 in-repo CI，借鉴主流 SaaS CI 平台的形态，�
 
 ---
 
-## 10. 验收标准（Definition of Done）
+## 11. 验收标准（Definition of Done）
 
 **MVP 完成标准**：
 - [x] `git clone https://localhost/git/owner/repo` 可克隆
