@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import { api, type User } from '../lib/api'
+import { translateError } from './errors'
 import { translate } from './translate'
 import type { Locale } from './types'
 
@@ -88,53 +89,12 @@ async function setLocale(locale: Locale): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // Error message mapping: backend English messages -> i18n keys.
+//
+// The mapping itself lives in ./errors.ts so it can be unit-tested without
+// React; this module only re-exports it.
 // ---------------------------------------------------------------------------
 
-const ERROR_MAP: Record<string, string> = {
-  'username already taken': 'error.usernameTaken',
-  'email already registered': 'error.emailRegistered',
-  'invalid credentials': 'error.invalidCredentials',
-  'user not found': 'error.userNotFound',
-  'username must be at least 2 characters': 'error.usernameTooShort',
-  'invalid email': 'error.invalidEmail',
-  'password must be at least 6 characters': 'error.passwordTooShort',
-  'invalid locale': 'error.invalidLocale',
-  'missing Authorization header': 'error.missingAuth',
-  'expected Bearer token': 'error.expectedBearer',
-  'user no longer exists': 'error.userNoLongerExists',
-  'repository not found': 'error.repoNotFound',
-  'file not found': 'error.fileNotFound',
-  'group not found': 'error.groupNotFound',
-  'issue not found': 'error.issueNotFound',
-  'pull request not found': 'error.prNotFound',
-  'repository already exists': 'error.repoAlreadyExists',
-  'group already exists': 'error.groupAlreadyExists',
-  'issue already closed': 'error.issueAlreadyClosed',
-  'pull request is not open': 'error.prNotOpen',
-  'title is required': 'error.titleRequired',
-  'invalid status': 'error.invalidStatus',
-  "missing 'path' query": 'error.missingPath',
-  "repository name may only contain letters, numbers, '-', '_', '.'": 'error.repoNameInvalid',
-  "group name may only contain letters, numbers, '-', '_', '.'": 'error.groupNameInvalid',
-  'only the owner can delete this repo': 'error.repoOwnerOnly',
-  'only the group owner can create repositories': 'error.groupOwnerOnly',
-  'source branch not found': 'error.sourceBranchNotFound',
-  'target branch not found': 'error.targetBranchNotFound',
-  'repo must be in owner/name format': 'error.repoFormat',
-  'invalid pages path: expected "/" or "/docs"': 'error.invalidPagesPath',
-  'branch not found: no such branch in this repository': 'error.pagesBranchNotFound',
-  'only the repository owner can configure pages': 'error.pagesOwnerOnly',
-  'pages disabled': 'error.pagesDisabled',
-}
-
-export function translateError(message: string, locale: Locale): string {
-  // Try the raw message first, then a common pattern: the backend
-  // prefixes errors with their HTTP status word ("unauthorized: invalid
-  // credentials"), so strip a leading "word: " and try again.
-  const key = ERROR_MAP[message] ?? ERROR_MAP[message.replace(/^\w+:\s*/, '')]
-  if (key) return translate(locale, key)
-  return message
-}
+export { translateError }
 
 // ---------------------------------------------------------------------------
 // React context / hooks

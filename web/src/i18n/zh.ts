@@ -257,6 +257,15 @@ export const messages = {
     pagesBranchNotFound: '该分支不存在',
     pagesOwnerOnly: '只有仓库所有者可以配置 Pages',
     pagesDisabled: 'Pages 已停用',
+    // The error *categories*. The backend prefixes every message with one
+    // of these ("not found: …"), so they are what an unknown message
+    // falls back to.
+    badRequest: '请求无效',
+    unauthorized: '未认证',
+    forbidden: '无权访问',
+    notFound: '未找到',
+    conflict: '冲突',
+    rateLimited: '请求过于频繁',
   },
 }
 

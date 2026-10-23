@@ -257,6 +257,15 @@ export const messages = {
     pagesBranchNotFound: 'That branch does not exist',
     pagesOwnerOnly: 'Only the repository owner can configure Pages',
     pagesDisabled: 'Pages disabled',
+    // The error *categories*. The backend prefixes every message with one
+    // of these ("not found: …"), so they are what an unknown message
+    // falls back to.
+    badRequest: 'Bad request',
+    unauthorized: 'Unauthorized',
+    forbidden: 'Forbidden',
+    notFound: 'Not found',
+    conflict: 'Conflict',
+    rateLimited: 'Rate limited',
   },
 }
 

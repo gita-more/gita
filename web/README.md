@@ -1,32 +1,40 @@
-# React + TypeScript + Vite
+# Gita web
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The React + TypeScript single-page app for Gita. It talks to the server
+over the same REST API any other client uses (`/api/*`), and is served by
+`gita-web` from `web/dist`.
 
-Currently, two official plugins are available:
+## Layout
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```
+src/
+├── main.tsx          # entry point
+├── App.tsx           # routes
+├── components/       # one component per screen (Repos, RepoDetail, Issues, …)
+├── hooks/            # useAuth, useI18n, …
+├── i18n/             # zh / en dictionaries and the translation helpers
+└── lib/api.ts        # the typed REST client
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Commands
+
+```bash
+npm install
+npm run dev      # Vite dev server, proxying /api and /git to the backend
+npm run build    # type-check (tsc -b) and build into dist/
+npm test         # vitest unit tests
+npm run lint     # oxlint
+```
+
+`npm run build` writes `web/dist`, which the backend serves. A release
+build of the server expects that directory next to the binary (or in the
+working directory) — see `crates/gita-web`.
+
+## Adding a screen
+
+1. Add the component under `src/components/`.
+2. Add the endpoint to `src/lib/api.ts`; every call goes through `api`,
+   which attaches the bearer token and throws on a non-2xx response.
+3. Register the route in `src/App.tsx`.
+4. Add the strings to **both** `src/i18n/zh.ts` and `src/i18n/en.ts` —
+   a unit test fails when the two dictionaries disagree.
