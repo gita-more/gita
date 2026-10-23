@@ -51,19 +51,10 @@ async fn get_pages(
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<PagesResponse>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
     // A private repo's configured branch is itself information worth
-    // protecting; only the owner may read it. Public repos are readable by
-    // any authenticated user.
-    if repository.is_private && repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can view pages for a private repository".into(),
-        ));
-    }
+    // protecting; the shared read rule answers who may see it.
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
     Ok(Json(response_for(&state, &repository).await))
 }
 
@@ -74,16 +65,8 @@ async fn put_pages(
     Path((owner, repo)): Path<(String, String)>,
     Json(req): Json<PutPagesRequest>,
 ) -> ApiResult<Json<PagesResponse>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can configure pages".into(),
-        ));
-    }
+    let repository =
+        crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
 
     let branch = req.branch.unwrap_or_else(|| repository.default_branch.clone());
     let path = req.path.unwrap_or_else(|| "/".to_string());
@@ -111,16 +94,8 @@ async fn delete_pages(
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can configure pages".into(),
-        ));
-    }
+    let repository =
+        crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
     state.db.delete_pages(repository.id).await?;
     Ok(crate::error::message("pages disabled"))
 }
@@ -132,16 +107,8 @@ async fn get_pages_status(
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.is_private && repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can view pages for a private repository".into(),
-        ));
-    }
+    let repository =
+        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
     let row = state.db.get_pages(repository.id).await?;
     Ok(Json(serde_json::json!({
         "configured": row.is_some(),

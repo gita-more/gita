@@ -9,6 +9,7 @@
 //! URLs. The server accepts only `exec` channels (no shell, no PTY).
 
 use anyhow::{Context, Result};
+use gita_core::access::Access;
 use gita_db::Db;
 use getrandom::rand_core::UnwrapErr;
 use russh::keys::ssh_key;
@@ -255,11 +256,10 @@ impl russh::server::Handler for GitaHandler {
             }
         };
 
-        // Load the repository record and enforce the same access rules as
-        // the HTTP layer:
-        //   - writes (receive-pack) require the repository owner
-        //   - reads of private repositories require the owner; public repos
-        //     are readable by any authenticated user
+        // Load the repository record and apply the shared access rule
+        // (`gita_core::access`): a push needs push rights, a clone needs
+        // read rights. Only the report differs — SSH has no status
+        // codes, so a refusal is a message over the channel.
         let repo = match self.db.get_repository_by_name(&owner, &repo_name).await {
             Ok(Some(r)) => r,
             _ => {
@@ -268,20 +268,25 @@ impl russh::server::Handler for GitaHandler {
                 return Ok(());
             }
         };
-        let is_owner = self.authed_user == Some(repo.owner_id);
-        if verb == "receive-pack" && !is_owner {
-            let _ = session.data(
-                channel,
-                bytes::Bytes::from_static(b"permission denied: only the repository owner can push\n"),
-            );
-            let _ = session.close(channel);
-            return Ok(());
-        }
-        if verb == "upload-pack" && repo.is_private && !is_owner {
-            let _ = session.data(
-                channel,
-                bytes::Bytes::from_static(b"permission denied: this repository is private\n"),
-            );
+        let action = if verb == "receive-pack" {
+            Access::Push
+        } else {
+            Access::Read
+        };
+        let allowed = match self.db.can_access(&repo, self.authed_user, action).await {
+            Ok(allowed) => allowed,
+            Err(e) => {
+                tracing::error!("db error: {e}");
+                false
+            }
+        };
+        if !allowed {
+            let message: &'static [u8] = if verb == "receive-pack" {
+                b"permission denied: only the repository owner can push\n"
+            } else {
+                b"permission denied: this repository is private\n"
+            };
+            let _ = session.data(channel, bytes::Bytes::from_static(message));
             let _ = session.close(channel);
             return Ok(());
         }

@@ -118,14 +118,16 @@ async fn get_group(
         .get_group_by_name(&group)
         .await?
         .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
-    let repos = state.db.list_group_repositories(g.id).await?;
+    let repos = state
+        .db
+        .filter_readable(state.db.list_group_repositories(g.id).await?, user.0.as_ref().map(|u| u.id))
+        .await?;
     Ok(Json(serde_json::json!({
         "group": GroupResponse::from(g),
         // A group may own private repositories; do not disclose them to a
         // caller who cannot read them.
         "repos": repos
             .into_iter()
-            .filter(|r| crate::routes::visibility::can_read(r, user.0.as_ref()))
             .map(|r| {
                 serde_json::json!({
                     "id": r.id,
@@ -179,18 +181,20 @@ async fn create_group_repo(
         return Err(ApiError::Conflict("repository already exists".into()));
     }
 
+    // The group namespace is written as part of the insert, so the
+    // repository is never observable without it.
     let repo = state
         .db
-        .create_repository(g.owner_id, &g.name, &name, &description, is_private, &default_branch)
+        .create_repository(
+            g.owner_id,
+            &g.name,
+            &name,
+            &description,
+            is_private,
+            &default_branch,
+            Some(g.id),
+        )
         .await?;
-
-    // Attach the repo to the group namespace.
-    sqlx::query("UPDATE repositories SET group_id = $1 WHERE id = $2")
-        .bind(g.id)
-        .bind(repo.id)
-        .execute(state.db.pool())
-        .await
-        .map_err(ApiError::from)?;
 
     state
         .git

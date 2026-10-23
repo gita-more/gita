@@ -74,14 +74,24 @@ async fn list_global_issues(
     };
     let limit = q.limit.unwrap_or(50).min(200);
     let items = state.db.list_all_issues(status, limit).await?;
+    // Skip issues belonging to private repositories the caller cannot see;
+    // the list spans every repository. The caller's group memberships are
+    // resolved once rather than per issue.
+    let repos: Vec<gita_core::Repository> = items.iter().map(|(_, r)| r.clone()).collect();
+    let readable_ids: std::collections::HashSet<i64> = state
+        .db
+        .filter_readable(repos, user.0.as_ref().map(|u| u.id))
+        .await?
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    let items: Vec<_> = items
+        .into_iter()
+        .filter(|(_, repo)| readable_ids.contains(&repo.id))
+        .collect();
     Ok(Json(serde_json::json!({
         "issues": items
             .into_iter()
-            // Skip issues belonging to private repositories the caller
-            // cannot see; the list spans every repository.
-            .filter(|(_, repo)| {
-                crate::routes::visibility::can_read(repo, user.0.as_ref())
-            })
             .map(|(issue, repo)| serde_json::json!({
                 "id": issue.id,
                 "number": issue.number,

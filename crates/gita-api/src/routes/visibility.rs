@@ -1,18 +1,25 @@
 //! Repository visibility checks for the REST API.
 //!
-//! The git-over-HTTP and SSH paths already enforce "public repositories are
-//! anonymously readable, private ones are owner-only". The REST API did not:
-//! its repo-scoped read handlers took no auth extractor and never looked at
-//! `is_private`, so an anonymous caller could read the files, commits, pull
-//! requests and issues of a private repository — while the README advertised
-//! the opposite.
+//! The rule lives in [`gita_core::access`] and is shared with the
+//! git-over-HTTP and git-over-SSH paths. This module is the REST
+//! adapter around it: it loads the repository, applies the rule, and
+//! turns a refusal into the response the REST API uses.
 //!
-//! This module centralises the rule so every read path applies the same
-//! check instead of each handler re-deriving it (and forgetting).
+//! The REST API answers **404** for both "no such repository" and "not
+//! yours". Telling an anonymous caller that a repository exists but is
+//! hidden is itself a disclosure. The git transports answer 401
+//! instead, because a git client needs the challenge to be prompted for
+//! credentials — but the decision behind the refusal is the same one.
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
+use gita_core::access::Access;
 use gita_core::Repository;
+
+/// The id of an authenticated caller.
+fn user_id(user: Option<&crate::extract::AuthUserExtractor>) -> Option<i64> {
+    user.map(|u| u.id)
+}
 
 /// Load a repository and enforce that the caller may read it.
 ///
@@ -31,36 +38,26 @@ pub async fn load_readable_repo(
         .get_repository_by_name(owner, name)
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    ensure_readable(&repo, user)?;
+    ensure_readable(&state, &repo, user).await?;
     Ok(repo)
 }
 
 /// Reject a read of a repository the caller may not see.
 ///
-/// A private repository is visible only to its owner. Note this returns 404
-/// rather than 403 for a non-owner: telling an anonymous caller "this
-/// exists but you cannot see it" is itself a disclosure, and 404 is what the
-/// git-over-HTTP path effectively communicates.
-pub fn ensure_readable(
+/// A private repository is visible only to its owner (or, for a
+/// repository in a group namespace, to the group's members). Note this
+/// returns 404 rather than 403 for a non-owner: telling an anonymous
+/// caller "this exists but you cannot see it" is itself a disclosure.
+pub async fn ensure_readable(
+    state: &AppState,
     repo: &Repository,
     user: Option<&crate::extract::AuthUserExtractor>,
 ) -> ApiResult<()> {
-    if !repo.is_private {
-        return Ok(());
+    if allowed(state, repo, user_id(user), Access::Read).await? {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound("repository not found".into()))
     }
-    match user {
-        Some(u) if u.id == repo.owner_id => Ok(()),
-        _ => Err(ApiError::NotFound("repository not found".into())),
-    }
-}
-
-/// Whether the caller may read this repository. Used by listing endpoints to
-/// filter rather than to reject.
-pub fn can_read(repo: &Repository, user: Option<&crate::extract::AuthUserExtractor>) -> bool {
-    if !repo.is_private {
-        return true;
-    }
-    matches!(user, Some(u) if u.id == repo.owner_id)
 }
 
 /// Load a repository and enforce that the caller may **write** to it.
@@ -68,11 +65,9 @@ pub fn can_read(repo: &Repository, user: Option<&crate::extract::AuthUserExtract
 /// Writing means creating or mutating content that belongs to the
 /// repository: pull requests, issues, comments, stars, forks, CI runs.
 ///
-/// The rule is the same one the git protocol enforces (`gita-http` and
-/// `gita-ssh` both allow a write only for `owner_id`): a private
-/// repository is writable only by its owner, and a public repository is
-/// writable only by its owner as well — being able to *see* a public
-/// repository does not make it yours to modify.
+/// For a personal repository this means being its owner — being able to
+/// *see* a public repository does not make it yours to modify. For a
+/// repository in a group namespace, any member of the group may write.
 ///
 /// A non-owner gets 404 rather than 403 for the same reason as the read
 /// path: "this exists but you cannot see it" is itself a disclosure.
@@ -87,17 +82,91 @@ pub async fn load_writable_repo(
         .get_repository_by_name(owner, name)
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    ensure_writable(&repo, user)?;
+    ensure_writable(&state, &repo, user).await?;
     Ok(repo)
 }
 
 /// Reject a write to a repository the caller does not own.
-pub fn ensure_writable(
+pub async fn ensure_writable(
+    state: &AppState,
     repo: &Repository,
     user: &crate::extract::AuthUserExtractor,
 ) -> ApiResult<()> {
-    if user.id == repo.owner_id {
-        return Ok(());
+    if allowed(state, repo, Some(user.id), Access::Write).await? {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound("repository not found".into()))
     }
-    Err(ApiError::NotFound("repository not found".into()))
+}
+
+/// Load a repository and enforce that the caller may change its history or
+/// refs — creating or deleting a branch or a tag, or pushing to it.
+pub async fn load_pushable_repo(
+    state: &AppState,
+    owner: &str,
+    name: &str,
+    user: &crate::extract::AuthUserExtractor,
+) -> ApiResult<Repository> {
+    let repo = state
+        .db
+        .get_repository_by_name(owner, name)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    ensure_pushable(&state, &repo, user).await?;
+    Ok(repo)
+}
+
+/// Reject a change to a repository's refs by someone without push rights.
+pub async fn ensure_pushable(
+    state: &AppState,
+    repo: &Repository,
+    user: &crate::extract::AuthUserExtractor,
+) -> ApiResult<()> {
+    if allowed(state, repo, Some(user.id), Access::Push).await? {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound("repository not found".into()))
+    }
+}
+
+/// Load a repository and enforce that the caller may administer it —
+/// renaming it, transferring it, changing its visibility, deleting it,
+/// or managing its webhooks.
+pub async fn load_adminable_repo(
+    state: &AppState,
+    owner: &str,
+    name: &str,
+    user: &crate::extract::AuthUserExtractor,
+) -> ApiResult<Repository> {
+    let repo = state
+        .db
+        .get_repository_by_name(owner, name)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
+    ensure_adminable(&state, &repo, user).await?;
+    Ok(repo)
+}
+
+/// Reject an administrative change by someone who is not the repository's
+/// owner (for a group repository, the group's owner).
+pub async fn ensure_adminable(
+    state: &AppState,
+    repo: &Repository,
+    user: &crate::extract::AuthUserExtractor,
+) -> ApiResult<()> {
+    if allowed(state, repo, Some(user.id), Access::Admin).await? {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound("repository not found".into()))
+    }
+}
+
+/// Apply the shared access rule.
+async fn allowed(
+    state: &AppState,
+    repo: &Repository,
+    user_id: Option<i64>,
+    action: Access,
+) -> ApiResult<bool> {
+    Ok(state.db.can_access(repo, user_id, action).await?)
 }

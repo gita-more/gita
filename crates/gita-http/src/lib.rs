@@ -12,6 +12,7 @@ use axum::routing::get;
 use axum::{body::to_bytes, Router};
 use base64::Engine as _;
 use gita_api::auth::Auth;
+use gita_core::access::Access;
 use gita_core::EventType;
 use gita_db::Db;
 use gita_events::EventBus;
@@ -564,9 +565,11 @@ fn is_read_request(path_info: &str, query_string: &Option<String>) -> bool {
 
 /// Authorize a git-over-HTTP request.
 ///
-/// Writes (push) require the repository owner. Reads of a private
-/// repository require the owner; public repositories are readable
-/// anonymously.
+/// The rule is the shared one in `gita_core::access`: a push needs
+/// [`Access::Push`], everything else needs [`Access::Read`]. Only the
+/// *report* of a refusal is specific to this transport — git clients
+/// need a `WWW-Authenticate` challenge to be prompted for credentials,
+/// so a private repository answers 401 rather than 404.
 async fn authorize_git_request(
     state: &GitHttpState,
     owner: &str,
@@ -588,7 +591,11 @@ async fn authorize_git_request(
         .await
         .map_err(|e| {
             tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string()).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_string(),
+            )
+                .into_response()
         })?
         .ok_or_else(|| {
             (
@@ -603,25 +610,40 @@ async fn authorize_git_request(
     // the remote URL embeds credentials, while the REST API uses Bearer.
     // Accept both: for Basic, the password component is the token (PAT or JWT).
     let authed = resolve_authed_user(state, headers).await;
-    let is_owner = authed
-        .as_ref()
-        .map(|u| u.id == repo.owner_id)
-        .unwrap_or(false);
+    let user_id = authed.as_ref().map(|u| u.id);
 
-    // Writes (push) require the owner.
-    if is_write {
-        if !is_owner {
+    // Writes (push) need push rights; everything else needs read rights.
+    let action = if is_write {
+        Access::Push
+    } else if is_read {
+        Access::Read
+    } else {
+        // Unreachable in practice: `is_read` is the negation of
+        // `is_write`. Treat it as a read rather than a hole.
+        Access::Read
+    };
+
+    let allowed = state
+        .db
+        .can_access(&repo, user_id, action)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error".to_string(),
+            )
+                .into_response()
+        })?;
+
+    if !allowed {
+        if is_write {
             // Return a Basic auth challenge so git clients know to send
             // credentials (from the remote URL or credential helper).
             return Err(unauthorized_with_challenge(
                 "authentication required to push (repository owner only)",
             ));
         }
-        return Ok(());
-    }
-
-    // Reads: private repos require the owner; public repos are anonymous-readable.
-    if is_read && repo.is_private && !is_owner {
         return Err(unauthorized_with_challenge("this repository is private"));
     }
 
@@ -645,6 +667,11 @@ fn unauthorized_with_challenge(message: &str) -> Response<Body> {
 /// `Authorization: Basic base64(username:token)` (git smart HTTP style).
 /// For Basic auth, the password component is treated as the access token
 /// (PAT or JWT), which mirrors how the server issues tokens to clients.
+///
+/// The username in a Basic credential is not decoration: it must name
+/// the user the token belongs to. Ignoring it would let anyone holding
+/// a token present themselves as its owner under any username, and it
+/// would make a wrong username look like it had worked.
 async fn resolve_authed_user(state: &GitHttpState, headers: &HeaderMap) -> Option<gita_core::User> {
     let auth_header = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
 
@@ -659,8 +686,13 @@ async fn resolve_authed_user(state: &GitHttpState, headers: &HeaderMap) -> Optio
             .decode(encoded.trim())
             .ok()?;
         let text = String::from_utf8(decoded).ok()?;
-        let (_, password) = text.split_once(':')?;
-        return state.auth.resolve_bearer(&state.db, password).await.ok();
+        let (username, password) = text.split_once(':')?;
+        let user = state.auth.resolve_bearer(&state.db, password).await.ok()?;
+        // The token must belong to the named user.
+        if !user.username.eq_ignore_ascii_case(username) {
+            return None;
+        }
+        return Some(user);
     }
 
     None
@@ -710,11 +742,11 @@ mod tests {
             .await
             .unwrap();
         let public_repo = db
-            .create_repository(user.id, "carol", "pub", "public", false, "main")
+            .create_repository(user.id, "carol", "pub", "public", false, "main", None)
             .await
             .unwrap();
         let private_repo = db
-            .create_repository(user.id, "carol", "priv", "private", true, "main")
+            .create_repository(user.id, "carol", "priv", "private", true, "main", None)
             .await
             .unwrap();
 
@@ -830,6 +862,86 @@ mod tests {
         assert_eq!(res.unwrap_err().status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// The username in a Basic credential must name the user the token
+    /// belongs to. A token presented under somebody else's name is not a
+    /// valid credential.
+    #[tokio::test]
+    async fn basic_auth_requires_the_username_to_match_the_token() {
+        let state = test_state().await;
+        let db = &state.db;
+        let user = db
+            .create_user("carol", "carol@example.com", "h")
+            .await
+            .unwrap();
+        let other = db
+            .create_user("dave", "dave@example.com", "h")
+            .await
+            .unwrap();
+        let private_repo = db
+            .create_repository(user.id, "carol", "priv", "private", true, "main", None)
+            .await
+            .unwrap();
+        let token = state.auth.sign_jwt(&user).unwrap();
+        let no_query = &None;
+
+        let basic = |username: &str| {
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{token}"));
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Basic {encoded}").parse().unwrap(),
+            );
+            headers
+        };
+
+        // The owner naming themselves works.
+        let res = authorize_git_request(
+            &state,
+            "carol",
+            &private_repo.name,
+            "/carol/priv.git/info/refs",
+            no_query,
+            &basic("carol"),
+        )
+        .await;
+        assert!(
+            res.is_ok(),
+            "the owner must be able to read over Basic auth"
+        );
+
+        // The same token under a different name does not.
+        let res = authorize_git_request(
+            &state,
+            "carol",
+            &private_repo.name,
+            "/carol/priv.git/info/refs",
+            no_query,
+            &basic("dave"),
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "a token presented under another user's name must be rejected"
+        );
+        assert_eq!(res.unwrap_err().status(), StatusCode::UNAUTHORIZED);
+
+        // ... and neither does a name that belongs to nobody.
+        let res = authorize_git_request(
+            &state,
+            "carol",
+            &private_repo.name,
+            "/carol/priv.git/info/refs",
+            no_query,
+            &basic("nobody"),
+        )
+        .await;
+        assert!(res.is_err(), "an unknown username must be rejected");
+
+        // Sanity: the other real user is not the token's owner either.
+        assert_ne!(other.id, user.id);
+    }
+
     #[tokio::test]
     async fn authorize_via_query_string_service_flag() {
         // `git-receive-pack` may be specified in either path_info or
@@ -843,7 +955,7 @@ mod tests {
             .unwrap();
         state
             .db
-            .create_repository(user.id, "dsvc", "qrepo", "qs test", false, "main")
+            .create_repository(user.id, "dsvc", "qrepo", "qs test", false, "main", None)
             .await
             .unwrap();
 
@@ -939,7 +1051,7 @@ mod tests {
             .unwrap();
         state
             .db
-            .create_repository(user.id, "dumbowner", "secret", "d", true, "main")
+            .create_repository(user.id, "dumbowner", "secret", "d", true, "main", None)
             .await
             .unwrap();
         let empty_headers = HeaderMap::new();
@@ -980,7 +1092,7 @@ mod tests {
             .unwrap();
         state
             .db
-            .create_repository(user.id, "dumbpub", "open", "d", false, "main")
+            .create_repository(user.id, "dumbpub", "open", "d", false, "main", None)
             .await
             .unwrap();
         let empty_headers = HeaderMap::new();
@@ -1077,7 +1189,7 @@ mod tests {
             .unwrap();
         state
             .db
-            .create_repository(user.id, "ppusher", "r1", "d", false, "main")
+            .create_repository(user.id, "ppusher", "r1", "d", false, "main", None)
             .await
             .unwrap();
 

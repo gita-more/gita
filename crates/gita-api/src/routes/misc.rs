@@ -49,10 +49,9 @@ async fn list_events(
     if repo_id.is_none() {
         let visible = state
             .db
-            .list_repositories(None, 5000)
+            .filter_readable(state.db.list_repositories(None, 5000).await?, Some(user.id))
             .await?
             .into_iter()
-            .filter(|r| crate::routes::visibility::can_read(r, Some(&user)))
             .map(|r| r.id)
             .collect::<std::collections::HashSet<i64>>();
         events.retain(|e| match e.repo_id {

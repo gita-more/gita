@@ -225,23 +225,14 @@ async fn get_run(
 }
 
 /// Manually trigger a new pipeline run from the current `.gita-ci.yml`
-/// on the pipeline's stored ref + SHA. Auth required; only the
-/// repository owner may re-run.
+/// on the pipeline's stored ref + SHA. Auth required; a run executes the
+/// repository's own code, so it needs the same rights as pushing to it.
 async fn trigger_run(
     State(state): State<AppState>,
     user: AuthUserExtractor,
     Path((owner, repo, path)): Path<(String, String, String)>,
 ) -> ApiResult<Json<RunTriggerResponse>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repo.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner may trigger a run".into(),
-        ));
-    }
+    let repo = crate::routes::visibility::load_pushable_repo(&state, &owner, &repo, &user).await?;
     let pipeline = state
         .db
         .get_pipeline_by_path(repo.id, &path)
@@ -318,11 +309,9 @@ async fn cancel_run(
     if run.repo_id != repository.id {
         return Err(ApiError::NotFound("run not found".into()));
     }
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can cancel a run".into(),
-        ));
-    }
+    // A run executes the repository's code, so cancelling one takes the
+    // same rights as pushing to the repository.
+    crate::routes::visibility::ensure_pushable(&state, &repository, &user).await?;
     if !matches!(run.status.as_str(), "queued" | "running") {
         return Err(ApiError::Conflict(format!(
             "run is in terminal state '{}' and cannot be canceled",

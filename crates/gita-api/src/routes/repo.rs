@@ -172,6 +172,7 @@ async fn create_repo(
             &description,
             is_private,
             &default_branch,
+            None,
         )
         .await?;
 
@@ -208,9 +209,11 @@ async fn list_repos(
     // Filter out private repositories the caller cannot see. The list is
     // not owner-scoped, so without this an anonymous caller learns that a
     // private repository exists.
-    let visible: Vec<RepoResponse> = repos
+    let visible: Vec<RepoResponse> = state
+        .db
+        .filter_readable(repos, user.0.as_ref().map(|u| u.id))
+        .await?
         .into_iter()
-        .filter(|r| crate::routes::visibility::can_read(r, user.0.as_ref()))
         .map(RepoResponse::from)
         .collect();
     Ok(Json(visible))
@@ -232,16 +235,7 @@ async fn delete_repo(
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
-    let repo = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repo.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the owner can delete this repo".into(),
-        ));
-    }
+    let repo = crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
     state.db.delete_repository(repo.id).await?;
     state.git.delete_repo(&owner, &repo.name)?;
     state.bus.publish(
@@ -261,16 +255,8 @@ async fn update_repo(
     Path((owner, repo)): Path<(String, String)>,
     Json(req): Json<UpdateRepoRequest>,
 ) -> ApiResult<Json<RepoResponse>> {
-    let mut repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can update this repo".into(),
-        ));
-    }
+    let mut repository =
+        crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
 
     // Visibility change.
     if let Some(is_private) = req.is_private {
@@ -634,6 +620,7 @@ async fn post_fork(
             // whole history to the world.
             source.is_private,
             &source.default_branch,
+            None,
         )
         .await?;
 
@@ -658,16 +645,7 @@ async fn create_branch(
     Path((owner, repo)): Path<(String, String)>,
     Json(req): Json<CreateBranchRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can manage branches".into(),
-        ));
-    }
+    crate::routes::visibility::load_pushable_repo(&state, &owner, &repo, &user).await?;
     let branch = req.name.trim().to_string();
     if branch.is_empty() {
         return Err(ApiError::BadRequest("branch name is required".into()));
@@ -693,16 +671,7 @@ async fn delete_branch(
     user: AuthUserExtractor,
     Path((owner, repo, branch)): Path<(String, String, String)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can manage branches".into(),
-        ));
-    }
+    crate::routes::visibility::load_pushable_repo(&state, &owner, &repo, &user).await?;
     state
         .git
         .delete_branch(&owner, &repo, &branch)
@@ -733,16 +702,7 @@ async fn create_tag(
     Path((owner, repo)): Path<(String, String)>,
     Json(req): Json<CreateTagRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can manage tags".into(),
-        ));
-    }
+    crate::routes::visibility::load_pushable_repo(&state, &owner, &repo, &user).await?;
     let tag = req.name.trim().to_string();
     if tag.is_empty() {
         return Err(ApiError::BadRequest("tag name is required".into()));
@@ -768,16 +728,7 @@ async fn delete_tag(
     user: AuthUserExtractor,
     Path((owner, repo, tag)): Path<(String, String, String)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can manage tags".into(),
-        ));
-    }
+    crate::routes::visibility::load_pushable_repo(&state, &owner, &repo, &user).await?;
     state
         .git
         .delete_tag(&owner, &repo, &tag)
@@ -827,16 +778,8 @@ async fn create_hook(
     Path((owner, repo)): Path<(String, String)>,
     Json(req): Json<CreateHookRequest>,
 ) -> ApiResult<Json<HookResponse>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can manage webhooks".into(),
-        ));
-    }
+    let repository =
+        crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
     let url = req.url.trim().to_string();
     if url.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(ApiError::BadRequest(
@@ -867,16 +810,8 @@ async fn list_hooks(
     user: AuthUserExtractor,
     Path((owner, repo)): Path<(String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can view webhooks".into(),
-        ));
-    }
+    let repository =
+        crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
     let hooks = state.db.list_webhooks(repository.id).await?;
     Ok(Json(serde_json::json!({
         "hooks": hooks.into_iter().map(HookResponse::from).collect::<Vec<_>>(),
@@ -888,16 +823,8 @@ async fn delete_hook(
     user: AuthUserExtractor,
     Path((owner, repo, id)): Path<(String, String, i64)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
-    let repository = state
-        .db
-        .get_repository_by_name(&owner, &repo)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if repository.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the repository owner can manage webhooks".into(),
-        ));
-    }
+    let repository =
+        crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
     let deleted = state.db.delete_webhook(id, repository.id).await?;
     if !deleted {
         return Err(ApiError::NotFound("webhook not found".into()));

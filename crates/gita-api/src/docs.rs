@@ -281,8 +281,7 @@ pub const OPENAPI_JSON: &str = r##"{
         ],
         "responses": {
           "200": { "description": "Deleted" },
-          "403": { "description": "Forbidden" },
-          "404": { "description": "Not found" }
+          "404": { "description": "Not found, or not the repository's owner" }
         }
       }
     },
@@ -616,7 +615,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "responses": {
           "200": { "description": "Hook created" },
           "400": { "description": "Invalid URL or events" },
-          "403": { "description": "Not the owner" }
+          "404": { "description": "Repository not found, or not the repository's owner" }
         }
       }
     },
@@ -638,7 +637,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "security": [{ "bearerAuth": [] }],
         "responses": {
           "200": { "description": "Pages configuration (defaults when unset)" },
-          "403": { "description": "Private repository, not the owner" }
+          "404": { "description": "Repository not found, or not readable by the caller" }
         }
       },
       "put": {
@@ -663,8 +662,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "responses": {
           "200": { "description": "Pages configuration saved" },
           "400": { "description": "Invalid branch or path" },
-          "403": { "description": "Not the owner" },
-          "404": { "description": "Repository not found" }
+          "404": { "description": "Repository not found, or not the repository's owner" }
         }
       },
       "delete": {
@@ -673,7 +671,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "security": [{ "bearerAuth": [] }],
         "responses": {
           "200": { "description": "Pages disabled" },
-          "403": { "description": "Not the owner" }
+          "404": { "description": "Repository not found, or not the repository's owner" }
         }
       }
     },
@@ -1126,7 +1124,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "security": [{ "bearerAuth": [] }],
         "responses": {
           "200": { "description": "Branch deleted" },
-          "403": { "description": "Not the owner" }
+          "404": { "description": "Repository not found, or not allowed to push to it" }
         }
       }
     },
@@ -1137,7 +1135,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "security": [{ "bearerAuth": [] }],
         "responses": {
           "200": { "description": "Tag deleted" },
-          "403": { "description": "Not the owner" }
+          "404": { "description": "Repository not found, or not allowed to push to it" }
         }
       }
     },

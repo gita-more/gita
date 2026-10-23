@@ -185,16 +185,22 @@ async fn delete_comment(
         .await?
         .ok_or_else(|| ApiError::NotFound("comment not found".into()))?;
 
-    // Only the author or the repository owner may delete a comment.
+    // Only the author or someone who may administer the repository may
+    // delete a comment. The repository's own access rule decides the
+    // second half of that.
     let repo = state
         .db
         .get_repository(comment.repo_id)
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    if comment.author_id != user.id && repo.owner_id != user.id {
-        return Err(ApiError::Forbidden(
-            "only the comment author or repository owner can delete".into(),
-        ));
+    if comment.author_id != user.id {
+        let may_administer = state
+            .db
+            .can_access(&repo, Some(user.id), gita_core::access::Access::Admin)
+            .await?;
+        if !may_administer {
+            return Err(ApiError::NotFound("comment not found".into()));
+        }
     }
 
     state.db.delete_comment(id).await?;

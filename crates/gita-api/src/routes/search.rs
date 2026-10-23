@@ -66,11 +66,17 @@ async fn readable_repos(
 ) -> std::collections::HashSet<(String, String)> {
     state
         .db
-        .list_repositories(None, 5000)
+        .filter_readable(
+            state
+                .db
+                .list_repositories(None, 5000)
+                .await
+                .unwrap_or_default(),
+            user.map(|u| u.id),
+        )
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter(|r| crate::routes::visibility::can_read(r, user))
         .map(|r| (r.owner_name, r.name))
         .collect()
 }
