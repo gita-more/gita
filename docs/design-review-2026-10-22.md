@@ -826,8 +826,22 @@ path+method 组合，其中两个正是最敏感的：
 后果：同一个仓库，走 HTTP push 会跑 CI，走 SSH push 不会。
 用户会以为"CI 没触发"是配置问题，实际上是传输方式的差异。
 
-**修法**：SSH 侧在 `receive-pack` 子进程退出后解析 `report-status`，
-复用 HTTP 侧的事件发布逻辑（把这段抽成共享函数，别复制第二份）。
+**已修（第三批之后）**。事件发布与 CI 触发抽到新 crate `gita-push`，
+两个传输层都调它。SSH 侧的做法与 HTTP 侧**完全一致**：解析客户端发来的
+ref-update 命令（SSH 的 stdin 与 HTTP 的请求体是同一种 pkt-line 格式），
+再逐个核对 ref 是否真的更新了。
+
+**为什么不用服务端返回的 `report-status`**（原修法建议的做法）：
+git 客户端在 SSH 下会请求 `side-band-64k` 能力，服务端一旦接受，
+它写的 stdout 就被包进 side-band 帧，不再是裸的 pkt-line 流。
+按 report-status 解析会读到帧头而不是内容。（实测确认。）
+
+**顺带修掉的静默失败**：CI 触发那几步原本用 `.ok()` 吞掉所有错误——
+`.gita-ci.yml` 写错（比如把 `script:` 写成 `steps:`，解析器不认）
+会导致 CI 静默不跑，没有任何日志。现在每一步都记录错误。
+
+新增 2 个 SSH 集成测试：push 产生事件并入队 CI run；被拒绝的 push
+不产生任何事件。
 
 ---
 
@@ -1238,9 +1252,37 @@ have a fallback`）。所以 API 的 404 走**显式通配路由**而不是 fall
 
 - **P1-5** 无优雅关闭（SIGTERM 直接杀进程，事件行/webhook 可能丢）
 - **P1-15** OpenAPI 规格漂移（只比对 path 不比对 method；3 个搜索端点标了 auth 但实际匿名）
-- **P1-19** SSH push 不产生事件、不触发 CI
 - **P2-\*** 大部分 P2 项
 - **CI runner 仍无真正的沙箱**（bubblewrap / 容器）
+
+### 第四批（2026-10-23）：SSH push 也产生事件、也触发 CI
+
+**P1-19**。事件发布与 CI 触发原本是 HTTP 传输层的私有逻辑；SSH 传输层
+跑同一个 `git receive-pack`、更新同一批 ref，然后什么都不做。同一个仓库
+走 HTTP push 会跑 CI，走 SSH push 不会，用户只会以为是配置问题。
+
+新 crate **`gita-push`** 承接这段逻辑，两个传输层都调它：
+
+- `publish_push()`：发 push 事件、按 `.gita-ci.yml` 入队 CI run
+- `parse_receive_pack_commands()`：解析客户端发来的 ref-update 命令
+- `ref_update_applied()`：核对某个声称的更新是否真的落地了
+
+**两个传输层用的是同一套判定**：都解析客户端的命令（SSH 的 stdin 与
+HTTP 的请求体是同一种 pkt-line 格式），再逐个核对 ref 是否真的更新了。
+所以被拒绝的 push 在两边都只发布零个事件、触发零个 CI。
+
+**没有采用服务端返回的 `report-status`**（原修法建议的做法）：git 客户端
+在 SSH 下会请求 `side-band-64k`，服务端一旦接受，它写的 stdout 就被包进
+side-band 帧，不再是裸 pkt-line 流——按 report-status 解析会读到帧头。
+这是实测确认的，不是推测。
+
+**顺带修掉一个静默失败**：CI 触发那几步原本用 `.ok()` 吞掉所有错误。
+`.gita-ci.yml` 写错了格式（例如把 `script:` 写成 `steps:`）会导致 CI
+静默不跑，日志里一个字都没有。现在每一步都记录错误。
+
+新增测试：2 个 SSH 集成测试（push 产生事件并入队 CI run；被拒绝的 push
+不产生事件），4 个 `gita-push` 单测（命令解析、能力段剥离、删除识别、
+垃圾输入不 panic）。
 
 ### 第三批（2026-10-23）：访问控制收敛成一个规则
 

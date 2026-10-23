@@ -52,6 +52,93 @@ impl RefUpdate {
     }
 }
 
+/// Parse the ref-update commands a client sent to `git receive-pack`.
+///
+/// The commands are a sequence of pkt-lines (a four-byte ASCII-hex length
+/// that includes the length bytes, then the payload), each of the form
+///
+/// ```text
+/// <old-sha> SP <new-sha> SP <ref-name> NUL <capabilities> LF
+/// ```
+///
+/// and terminated by a flush packet. The capabilities section only
+/// appears on the first command.
+///
+/// This is the *client's* claim about what it is pushing, not a record of
+/// what happened: the server may refuse. Use [`ref_update_applied`] to
+/// find out which of the claims actually took effect.
+pub fn parse_receive_pack_commands(body: &[u8]) -> Vec<RefUpdate> {
+    let mut out = Vec::new();
+    if body.is_empty() {
+        return out;
+    }
+
+    // Skip the initial flush packet (`0000`) if present.
+    let mut pos = 0usize;
+    if body.len() >= 4 && &body[..4] == b"0000" {
+        pos = 4;
+    }
+
+    while pos + 4 <= body.len() {
+        let len_hex = &body[pos..pos + 4];
+        let Ok(len_str) = std::str::from_utf8(len_hex) else {
+            break;
+        };
+        let Ok(len) = usize::from_str_radix(len_str, 16) else {
+            break;
+        };
+        if len == 0 {
+            // Flush packet — end of the command section.
+            break;
+        }
+        if len < 4 || pos + len > body.len() {
+            break;
+        }
+        let line = &body[pos + 4..pos + len];
+        pos += len;
+
+        // Trim trailing LF.
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+
+        // First line may have a NUL-separated capabilities section.
+        let (ref_part, _caps) = match line.iter().position(|&b| b == 0) {
+            Some(idx) => (&line[..idx], &line[idx + 1..]),
+            None => (line, &[][..]),
+        };
+
+        let fields: Vec<&[u8]> = ref_part.split(|&b| b == b' ').collect();
+        if fields.len() < 3 {
+            continue;
+        }
+        out.push(RefUpdate {
+            old_sha: String::from_utf8_lossy(fields[0]).to_string(),
+            new_sha: String::from_utf8_lossy(fields[1]).to_string(),
+            ref_name: String::from_utf8_lossy(fields[2]).to_string(),
+        });
+    }
+
+    out
+}
+
+/// Whether a claimed ref update actually took effect.
+///
+/// The client says which refs it is updating; the repository may refuse.
+/// A claim counts as applied only if the ref now points at the new sha —
+/// for a deletion, only if the ref is gone. Otherwise a rejected push
+/// would publish an event for a commit that was never written and would
+/// trigger CI for it.
+pub fn ref_update_applied(git: &GitManager, owner: &str, repo_name: &str, upd: &RefUpdate) -> bool {
+    // A branch deletion is reported by the ref simply being gone.
+    if upd.is_deletion() {
+        return !git.ref_exists(owner, repo_name, &upd.ref_name);
+    }
+    match git.resolve_branch(owner, repo_name, &upd.ref_name) {
+        Ok(current) => current == upd.new_sha,
+        Err(_) => false,
+    }
+}
+
 /// Publish the `push` events for the applied ref updates and enqueue the
 /// CI runs they trigger.
 ///
@@ -108,12 +195,13 @@ pub async fn publish_push(
         if upd.is_deletion() {
             continue; // branch deletion — skip
         }
-        let Some(file) = git
-            .read_file(owner, repo_name, &upd.new_sha, ".gita-ci.yml")
-            .ok()
-            .flatten()
-        else {
-            continue; // no CI config at this commit
+        let file = match git.read_file(owner, repo_name, &upd.new_sha, ".gita-ci.yml") {
+            Ok(Some(file)) => file,
+            Ok(None) => continue, // no CI config at this commit
+            Err(e) => {
+                warn!("could not read .gita-ci.yml of {owner}/{repo_name}: {e}");
+                continue;
+            }
         };
 
         // Parse + apply only/except filter before enqueueing. The changed
@@ -123,7 +211,7 @@ pub async fn publish_push(
         // `except: paths: [...]` rule could never fire.
         let changed_paths = changed_paths_for_push(git, owner, repo_name, upd).await;
         let changed_refs: Vec<&str> = changed_paths.iter().map(|p| p.as_str()).collect();
-        let pipeline_id = db
+        let pipeline_id = match db
             .upsert_pipeline(
                 repo_id,
                 ".gita-ci.yml",
@@ -132,8 +220,13 @@ pub async fn publish_push(
                 &file.content,
             )
             .await
-            .ok();
-        let Some(pid) = pipeline_id else { continue };
+        {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("could not record the pipeline for {owner}/{repo_name}: {e}");
+                continue;
+            }
+        };
 
         // Apply the only/except trigger filters from the .gita-ci.yml we
         // just parsed. The branch is matched by its short name (`main`),
@@ -165,16 +258,28 @@ pub async fn publish_push(
             }
         }
 
-        let run_id = db
-            .insert_pipeline_run(pid, repo_id, &upd.ref_name, &upd.new_sha, pusher_id, None)
+        let run_id = match db
+            .insert_pipeline_run(
+                pipeline_id,
+                repo_id,
+                &upd.ref_name,
+                &upd.new_sha,
+                pusher_id,
+                None,
+            )
             .await
-            .ok();
-        let Some(run_id) = run_id else { continue };
+        {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("could not enqueue a run for {owner}/{repo_name}: {e}");
+                continue;
+            }
+        };
         let req_payload = serde_json::json!({
             "owner": owner,
             "repo": repo_name,
             "run_id": run_id,
-            "pipeline_id": pid,
+            "pipeline_id": pipeline_id,
             "ref": upd.ref_name,
             "head_sha": upd.new_sha,
         });
@@ -244,107 +349,6 @@ async fn changed_paths_for_push(
     }
 }
 
-/// Parse the ref updates out of a `git receive-pack` `report-status`
-/// section.
-///
-/// The section is a sequence of pkt-lines (a four-byte ASCII-hex length
-/// that includes the length bytes, then the payload). It looks like:
-///
-/// ```text
-/// 000eunpack ok
-/// 003f<old-sha> <new-sha> refs/heads/main
-/// 000aok <message>
-/// 0000
-/// ```
-///
-/// Only updates the server *accepted* are returned: a line followed by
-/// `ng <reason>` reports a refusal, and a ref whose status is missing or
-/// unparseable is skipped rather than guessed at.
-pub fn parse_report_status(output: &[u8]) -> Vec<RefUpdate> {
-    let mut updates = Vec::new();
-    let mut pos = 0usize;
-
-    // The first line of the section is "unpack ok" / "unpack <error>".
-    // Skip it.
-    let Some((_, pos)) = next_pkt_line(output, pos) else {
-        return updates;
-    };
-    let mut pos = pos;
-
-    loop {
-        // A flush packet ends the section.
-        if output.len() >= pos + 4 && &output[pos..pos + 4] == b"0000" {
-            break;
-        }
-        let Some((line, next)) = next_pkt_line(output, pos) else {
-            break;
-        };
-        pos = next;
-
-        let text = String::from_utf8_lossy(line);
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        // The status line ("ok" / "ng <reason>") belongs to the update
-        // line before it.
-        if text.starts_with("ok") || text.starts_with("ng") {
-            // A status with no preceding update: nothing to attach it to.
-            continue;
-        }
-
-        let mut fields = text.split_whitespace();
-        let (Some(old_sha), Some(new_sha), Some(ref_name)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        // The status of *this* update is the next line. Peek at it.
-        let status = if output.len() >= pos + 4 && &output[pos..pos + 4] == b"0000" {
-            // A flush where the status should be: treat as unconfirmed.
-            None
-        } else {
-            next_pkt_line(output, pos).and_then(|(line, _)| {
-                let s = String::from_utf8_lossy(line);
-                let s = s.trim().to_string();
-                pos += 4 + s.len() + 1; // pkt-line length + payload + LF
-                Some(s)
-            })
-        };
-
-        match status {
-            Some(s) if s.starts_with("ok") => {
-                updates.push(RefUpdate {
-                    old_sha: old_sha.to_string(),
-                    new_sha: new_sha.to_string(),
-                    ref_name: ref_name.to_string(),
-                });
-            }
-            // `ng <reason>` — the server refused this ref. Skip it.
-            _ => continue,
-        }
-    }
-    updates
-}
-
-/// Read one pkt-line at `pos`, returning its payload and the position
-/// just after it.
-fn next_pkt_line(buf: &[u8], pos: usize) -> Option<(&[u8], usize)> {
-    if pos + 4 > buf.len() {
-        return None;
-    }
-    let len_str = std::str::from_utf8(&buf[pos..pos + 4]).ok()?;
-    let len = usize::from_str_radix(len_str, 16).ok()?;
-    if len == 0 {
-        // Flush packet.
-        return Some((&buf[pos..pos + 4], pos + 4));
-    }
-    if len < 4 || pos + len > buf.len() {
-        return None;
-    }
-    Some((&buf[pos + 4..pos + len], pos + len))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,20 +363,17 @@ mod tests {
     }
 
     #[test]
-    fn report_status_yields_the_accepted_updates() {
-        let mut buf = pkt_line("unpack ok");
-        buf.extend(pkt_line(
+    fn commands_are_parsed_into_ref_updates() {
+        let mut buf = pkt_line(
             "1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/heads/main",
-        ));
-        buf.extend(pkt_line("ok branch updated"));
+        );
         buf.extend(pkt_line(
             "3333333333333333333333333333333333333333 4444444444444444444444444444444444444444 refs/heads/other",
         ));
-        buf.extend(pkt_line("ng branch is currently checked out"));
-        buf.extend(pkt_line("0000"));
+        buf.extend(b"0000");
 
-        let updates = parse_report_status(&buf);
-        assert_eq!(updates.len(), 1, "only the accepted ref counts: {updates:?}");
+        let updates = parse_receive_pack_commands(&buf);
+        assert_eq!(updates.len(), 2, "got {updates:?}");
         assert_eq!(updates[0].ref_name, "refs/heads/main");
         assert_eq!(
             updates[0].old_sha,
@@ -382,18 +383,24 @@ mod tests {
             updates[0].new_sha,
             "2222222222222222222222222222222222222222"
         );
+        assert_eq!(updates[1].ref_name, "refs/heads/other");
     }
 
     #[test]
-    fn report_status_of_a_refused_push_is_empty() {
-        let mut buf = pkt_line("unpack ok");
-        buf.extend(pkt_line(
-            "1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/heads/main",
-        ));
-        buf.extend(pkt_line("ng permission denied"));
-        buf.extend(pkt_line("0000"));
+    fn a_capabilities_section_is_stripped() {
+        // The first command carries the client's capabilities after a NUL.
+        let mut line =
+            b"1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/heads/main".to_vec();
+        line.push(0);
+        line.extend_from_slice(b"report-status report-status-v2 side-band-64k");
+        line.push(b'\n');
+        let mut buf = format!("{:04x}", line.len() + 4).into_bytes();
+        buf.extend_from_slice(&line);
+        buf.extend(b"0000");
 
-        assert!(parse_report_status(&buf).is_empty());
+        let updates = parse_receive_pack_commands(&buf);
+        assert_eq!(updates.len(), 1, "got {updates:?}");
+        assert_eq!(updates[0].ref_name, "refs/heads/main");
     }
 
     #[test]
@@ -416,8 +423,8 @@ mod tests {
 
     #[test]
     fn garbage_does_not_panic() {
-        assert!(parse_report_status(b"").is_empty());
-        assert!(parse_report_status(b"not a pkt line at all").is_empty());
-        assert!(parse_report_status(&[0xff, 0xfe, 0xfd]).is_empty());
+        assert!(parse_receive_pack_commands(b"").is_empty());
+        assert!(parse_receive_pack_commands(b"not a pkt line at all").is_empty());
+        assert!(parse_receive_pack_commands(&[0xff, 0xfe, 0xfd]).is_empty());
     }
 }

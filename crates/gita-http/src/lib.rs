@@ -115,7 +115,7 @@ async fn handle_git_request(
     // chunks and hard to recover synchronously. We keep the parsed updates
     // in scope for the post-CGI publish below.
     let received_updates = if path_info.contains("git-receive-pack") {
-        parse_receive_pack_ref_updates(&body)
+        gita_push::parse_receive_pack_commands(&body)
     } else {
         Vec::new()
     };
@@ -159,7 +159,7 @@ async fn handle_git_request(
             // commit that does not exist.
             let applied_updates: Vec<gita_push::RefUpdate> = received_updates
                 .iter()
-                .filter(|upd| ref_update_applied(&state, owner, repo_name, upd))
+                .filter(|upd| gita_push::ref_update_applied(&state.git, owner, repo_name, upd))
                 .cloned()
                 .collect();
             gita_push::publish_push(
@@ -174,7 +174,6 @@ async fn handle_git_request(
             .await;
         }
     }
-
 
     // Build the axum response from CGI output.
     let mut builder =
@@ -215,22 +214,6 @@ async fn handle_git_request(
 /// A ref update is applied when the ref now points at the new sha. This
 /// distinguishes a successful push from one the server rejected (a
 /// non-fast-forward, a failing hook, a lock conflict): `git http-backend`
-/// reports both with HTTP 200, so the status code cannot be used.
-fn ref_update_applied(
-    state: &GitHttpState,
-    owner: &str,
-    repo_name: &str,
-    upd: &gita_push::RefUpdate,
-) -> bool {
-    // A branch deletion is reported by the ref simply being gone.
-    if upd.new_sha.chars().all(|c| c == '0') {
-        return !state.git.ref_exists(owner, repo_name, &upd.ref_name);
-    }
-    match state.git.resolve_branch(owner, repo_name, &upd.ref_name) {
-        Ok(current) => current == upd.new_sha,
-        Err(_) => false,
-    }
-}
 
 /// Parse `owner/name.git/...` from a path like `/owner/name.git/info/refs`.
 fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<String>) {
@@ -243,78 +226,6 @@ fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<String>) {
         .next()
         .map(|s| s.strip_suffix(".git").unwrap_or(s).to_string());
     (owner, repo)
-}
-
-/// Parse the ref-update lines from the body of a `POST .../git-receive-pack`
-/// request.
-///
-/// The body is a sequence of pkt-lines. Each pkt-line is prefixed with a
-/// 4-byte ASCII-hex length (the length includes the 4 length bytes).
-/// `0000` is a flush packet that ends the command list.
-///
-/// Each ref line has the shape:
-///
-/// ```text
-/// <old_sha> SP <new_sha> SP <ref> NUL <capabilities> LF
-/// ```
-///
-/// Capabilities only appear on the first ref line. We return the parsed
-/// updates without capabilities.
-fn parse_receive_pack_ref_updates(body: &[u8]) -> Vec<gita_push::RefUpdate> {
-    let mut out = Vec::new();
-    if body.is_empty() {
-        return out;
-    }
-
-    // Skip the initial flush packet (`0000`) if present.
-    let mut pos = 0usize;
-    if body.len() >= 4 && &body[..4] == b"0000" {
-        pos = 4;
-    }
-
-    while pos + 4 <= body.len() {
-        let len_hex = &body[pos..pos + 4];
-        let Ok(len_str) = std::str::from_utf8(len_hex) else {
-            break;
-        };
-        let Ok(len) = usize::from_str_radix(len_str, 16) else {
-            break;
-        };
-        if len == 0 {
-            // Flush packet — end of the ref-update section.
-            break;
-        }
-        if len < 4 || pos + len > body.len() {
-            break;
-        }
-        let line = &body[pos + 4..pos + len];
-        pos += len;
-
-        // Trim trailing LF.
-        let line = line.strip_suffix(b"\n").unwrap_or(line);
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-
-        // First line may have a NUL-separated capabilities section.
-        let (ref_part, _caps) = match line.iter().position(|&b| b == 0) {
-            Some(idx) => (&line[..idx], &line[idx + 1..]),
-            None => (line, &[][..]),
-        };
-
-        let fields: Vec<&[u8]> = ref_part.split(|&b| b == b' ').collect();
-        if fields.len() < 3 {
-            continue;
-        }
-        let old_sha = String::from_utf8_lossy(fields[0]).to_string();
-        let new_sha = String::from_utf8_lossy(fields[1]).to_string();
-        let ref_name = String::from_utf8_lossy(fields[2]).to_string();
-        out.push(gita_push::RefUpdate {
-            old_sha,
-            new_sha,
-            ref_name,
-        });
-    }
-
-    out
 }
 
 /// Authorize a Git HTTP request (clone/fetch = read, push = write).
@@ -809,41 +720,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_receive_pack_ref_updates_parses_basic_lines() {
-        // One flush packet + two ref-update pkt-lines.
-        // Line lengths: "old new ref\0caps\n" — we'll compute hex lengths.
-        fn pkt_line(s: &str) -> Vec<u8> {
-            let mut line = s.as_bytes().to_vec();
-            line.push(b'\n');
-            let len = line.len() + 4;
-            let mut out = format!("{len:04x}").into_bytes();
-            out.extend_from_slice(&line);
-            out
-        }
-
-        let mut body = Vec::new();
-        body.extend_from_slice(b"0000");
-        body.extend_from_slice(&pkt_line(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/main\0report-status-v2 side-band-64k",
-        ));
-        body.extend_from_slice(&pkt_line(
-            "cccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddd refs/heads/dev",
-        ));
-
-        let updates = parse_receive_pack_ref_updates(&body);
-        assert_eq!(updates.len(), 2);
-        assert_eq!(updates[0].old_sha, "a".repeat(40));
-        assert_eq!(updates[0].new_sha, "b".repeat(40));
-        assert_eq!(updates[0].ref_name, "refs/heads/main");
-        assert_eq!(updates[1].old_sha, "c".repeat(40));
-        assert_eq!(updates[1].new_sha, "d".repeat(40));
-        assert_eq!(updates[1].ref_name, "refs/heads/dev");
-    }
-
-    #[test]
     fn parse_receive_pack_ref_updates_handles_flush_only() {
         let body = b"0000".to_vec();
-        let updates = parse_receive_pack_ref_updates(&body);
+        let updates = gita_push::parse_receive_pack_commands(&body);
         assert!(updates.is_empty());
     }
 

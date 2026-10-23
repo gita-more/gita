@@ -41,7 +41,9 @@ async fn start_ssh(app: &gita_server::App) -> u16 {
         host_key,
         repos_root: app.data_dir.join("repos"),
     };
-    let handle = gita_ssh::start(cfg, app.db.clone()).await.unwrap();
+    let handle = gita_ssh::start(cfg, app.db.clone(), app.bus.clone(), app.git.clone())
+        .await
+        .unwrap();
     handle.addr().port()
 }
 
@@ -142,7 +144,10 @@ async fn ssh_clone_and_push_public_repo() {
     .await;
     assert_eq!(status, axum::http::StatusCode::OK, "commits: {body}");
     let commits = body["commits"].as_array().expect("commits array");
-    assert!(!commits.is_empty(), "expected at least one commit after push");
+    assert!(
+        !commits.is_empty(),
+        "expected at least one commit after push"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -231,7 +236,10 @@ async fn ssh_private_repo_requires_owner() {
             &format!("ssh://git@127.0.0.1:{port}/alice/secret.git"),
         ])
         .arg(bob_work.to_str().unwrap())
-        .env("GIT_SSH_COMMAND", ssh_env(&bob_dir.path().join("id_ed25519")))
+        .env(
+            "GIT_SSH_COMMAND",
+            ssh_env(&bob_dir.path().join("id_ed25519")),
+        )
         .output()
         .unwrap();
     assert!(
@@ -488,5 +496,258 @@ async fn ssh_group_developer_can_push_to_a_group_repository() {
         push.status.success(),
         "a developer should be able to push to the group's repository (stderr: {})",
         String::from_utf8_lossy(&push.stderr)
+    );
+}
+
+/// SSH push publishes a push event and triggers CI — the same side
+/// effects HTTP push gets, so choosing SSH over HTTP does not change
+/// what a repository does.
+#[tokio::test(flavor = "multi_thread")]
+async fn ssh_push_publishes_events_and_triggers_ci() {
+    let (app, _guard) = common::test_app().await;
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let user = register_user(&app, "eventalice").await;
+    let (key_path, pub_line) = generate_client_key(dir.path());
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/keys",
+        Some(serde_json::json!({
+            "title": "event-laptop",
+            "public_key": pub_line,
+        })),
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "add key: {body}");
+
+    let _ = common::create_repo_with(
+        &app,
+        &user.token,
+        "eventrepo",
+        Some(serde_json::json!({"is_private": false})),
+    )
+    .await;
+
+    let port = start_ssh(&app).await;
+    let repo_url = format!("ssh://git@127.0.0.1:{port}/eventalice/eventrepo.git");
+
+    let work = dir.path().join("work");
+    let clone = Command::new("git")
+        .args(["clone", &repo_url])
+        .arg(work.to_str().unwrap())
+        .env("GIT_SSH_COMMAND", format!(
+            "ssh -p {port} -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
+            key_path.display()
+        ))
+        .output()
+        .expect("git clone must run");
+    assert!(
+        clone.status.success(),
+        "clone failed: {}",
+        String::from_utf8_lossy(&clone.stderr)
+    );
+
+    // Commit a CI configuration along with a file.
+    std::fs::write(
+        work.join(".gita-ci.yml"),
+        "stages: [build]\njobs:\n  build:\n    stage: build\n    script: [echo hello]\n",
+    )
+    .unwrap();
+    std::fs::write(work.join("README.md"), "# eventrepo\n").unwrap();
+    let add = Command::new("git")
+        .current_dir(&work)
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    let commit = Command::new("git")
+        .current_dir(&work)
+        .args([
+            "-c",
+            "user.name=Event Alice",
+            "-c",
+            "user.email=alice@example.com",
+            "commit",
+            "-m",
+            "add ci config",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let push = Command::new("git")
+        .current_dir(&work)
+        .args(["push", "origin", "HEAD:main"])
+        .env("GIT_SSH_COMMAND", format!(
+            "ssh -p {port} -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
+            key_path.display()
+        ))
+        .output()
+        .expect("git push must run");
+    assert!(
+        push.status.success(),
+        "push failed: {}",
+        String::from_utf8_lossy(&push.stderr)
+    );
+
+    // The push event is published. The push's side effects happen in a
+    // background task, so give them a moment rather than racing them.
+    let mut events: Vec<serde_json::Value> = Vec::new();
+    for _ in 0..40 {
+        let (status, body) = request(
+            &app,
+            axum::http::Method::GET,
+            "/api/events",
+            None,
+            Some(&user.token),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "events: {body}");
+        events = body["events"].as_array().cloned().unwrap_or_default();
+        if events.iter().any(|e| e["event_type"] == "push") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        events.iter().any(|e| e["event_type"] == "push"),
+        "expected a push event to be published, got {events:?}"
+    );
+
+    // The CI run was enqueued. The push's side effects happen in a
+    // background task, so give them a moment rather than racing them.
+    let mut runs: Vec<serde_json::Value> = Vec::new();
+    for _ in 0..40 {
+        let (status, body) = request(
+            &app,
+            axum::http::Method::GET,
+            "/api/repos/eventalice/eventrepo/pipelines/.gita-ci.yml/runs",
+            None,
+            Some(&user.token),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "runs: {body}");
+        runs = body["runs"].as_array().cloned().unwrap_or_default();
+        if !runs.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !runs.is_empty(),
+        "expected at least one CI run to be enqueued"
+    );
+    assert!(
+        runs.iter()
+            .any(|r| r["status"] == "queued" || r["status"] == "running"),
+        "expected a running or queued run, got {runs:?}"
+    );
+}
+
+/// A rejected push publishes nothing and triggers no CI, over SSH too.
+#[tokio::test(flavor = "multi_thread")]
+async fn ssh_rejected_push_publishes_nothing() {
+    let (app, _guard) = common::test_app().await;
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let owner = register_user(&app, "owner-alice").await;
+    let intruder = register_user(&app, "intruder-bob").await;
+    let (bob_key, pub_line) = generate_client_key(dir.path());
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/keys",
+        Some(serde_json::json!({
+            "title": "intruder-key",
+            "public_key": pub_line,
+        })),
+        Some(&intruder.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    // A public repository of the owner — the intruder may read it but
+    // not push to it.
+    let _ = common::create_repo(&app, &owner.token, "public").await;
+
+    let port = start_ssh(&app).await;
+    let ssh_env = format!(
+        "ssh -p {port} -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
+        bob_key.display()
+    );
+
+    let work = dir.path().join("intruder-work");
+    let clone = Command::new("git")
+        .args([
+            "clone",
+            &format!("ssh://git@127.0.0.1:{port}/owner-alice/public.git"),
+        ])
+        .arg(work.to_str().unwrap())
+        .env("GIT_SSH_COMMAND", &ssh_env)
+        .output()
+        .unwrap();
+    assert!(
+        clone.status.success(),
+        "clone failed: {}",
+        String::from_utf8_lossy(&clone.stderr)
+    );
+
+    std::fs::write(work.join("bad.txt"), "nope\n").unwrap();
+    let add = Command::new("git")
+        .current_dir(&work)
+        .args(["add", "bad.txt"])
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    let commit = Command::new("git")
+        .current_dir(&work)
+        .args([
+            "-c",
+            "user.name=Intruder",
+            "-c",
+            "user.email=i@example.com",
+            "commit",
+            "-m",
+            "bad",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let push = Command::new("git")
+        .current_dir(&work)
+        .args(["push", "origin", "HEAD:main"])
+        .env("GIT_SSH_COMMAND", &ssh_env)
+        .output()
+        .unwrap();
+    assert!(
+        !push.status.success(),
+        "intruder push must be rejected: {}",
+        String::from_utf8_lossy(&push.stderr)
+    );
+
+    // No push event should have been published. The side effects of a
+    // push happen in a background task, so wait long enough for them to
+    // have happened — otherwise this would pass for the wrong reason.
+    let mut events: Vec<serde_json::Value> = Vec::new();
+    for _ in 0..10 {
+        let (status, body) = request(
+            &app,
+            axum::http::Method::GET,
+            "/api/events",
+            None,
+            Some(&owner.token),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "events: {body}");
+        events = body["events"].as_array().cloned().unwrap_or_default();
+        if events.iter().any(|e| e["event_type"] == "push") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        events.iter().all(|e| e["event_type"] != "push"),
+        "a rejected push must not publish an event, got {events:?}"
     );
 }

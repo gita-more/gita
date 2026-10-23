@@ -156,13 +156,38 @@ pub async fn register_user(app: &gita_server::App, username: &str) -> AuthedUser
 }
 
 /// Create a repository for an authenticated user and return its `owner/name`.
+///
+/// Optional parameters: `description`, `default_branch`, `is_private`.
 pub async fn create_repo(app: &gita_server::App, token: &str, name: &str) -> String {
+    create_repo_with(app, token, name, None).await
+}
+
+/// Create a repository with explicit options, returning its `owner/name`.
+///
+/// The options may carry `description`, `default_branch` and `is_private`.
+pub async fn create_repo_with(
+    app: &gita_server::App,
+    token: &str,
+    name: &str,
+    opts: Option<serde_json::Value>,
+) -> String {
     use tower::ServiceExt;
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "name": name,
         "description": "integration test repo",
         "default_branch": "main",
     });
+    if let Some(opts) = opts {
+        if let Some(desc) = opts.get("description") {
+            body["description"] = desc.clone();
+        }
+        if let Some(branch) = opts.get("default_branch") {
+            body["default_branch"] = branch.clone();
+        }
+        if let Some(private) = opts.get("is_private") {
+            body["is_private"] = private.clone();
+        }
+    }
     let req = axum::http::Request::builder()
         .method(axum::http::Method::POST)
         .uri("/api/repos")
@@ -420,8 +445,39 @@ pub async fn set_pages(
     .await
 }
 
-/// Convenience: require that a path exists on disk (used to confirm the
-/// git CLI created the expected work directory).
-pub fn ensure_exists(p: &Path) {
-    assert!(p.exists(), "expected path {} to exist", p.display());
+/// Generate an ed25519 client key pair into `dir` and return the path to
+/// the private key and the public key line.
+pub fn generate_client_key(dir: &Path) -> (std::path::PathBuf, String) {
+    let key_path = dir.join("id_ed25519");
+    let out = Command::new("ssh-keygen")
+        .args([
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-f",
+            key_path.to_str().unwrap(),
+            "-q",
+        ])
+        .output()
+        .expect("ssh-keygen must run");
+    assert!(out.status.success(), "ssh-keygen failed: {:?}", out);
+    let pub_path = dir.join("id_ed25519.pub");
+    let pub_line = std::fs::read_to_string(&pub_path).expect("public key file");
+    (key_path, pub_line.trim().to_string())
+}
+
+/// Start the embedded SSH server for an App and return its port.
+pub async fn start_ssh(app: &gita_server::App) -> u16 {
+    let host_key_path = app.data_dir.join("ssh_host_ed25519_key");
+    let host_key = gita_ssh::load_or_create_host_key(&host_key_path).unwrap();
+    let cfg = gita_ssh::SshServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        host_key,
+        repos_root: app.data_dir.join("repos"),
+    };
+    let handle = gita_ssh::start(cfg, app.db.clone(), app.bus.clone(), app.git.clone())
+        .await
+        .unwrap();
+    handle.addr().port()
 }

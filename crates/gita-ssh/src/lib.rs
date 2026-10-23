@@ -24,11 +24,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// Default file name (inside the data dir) for the SSH host key.
 pub const DEFAULT_HOST_KEY_NAME: &str = "ssh_host_ed25519_key";
 
-/// A pushed ref advertisement can be large for big repositories; keep the
-/// capture bounded so a misbehaving server cannot grow memory without
-/// bound. The refs themselves are at the start, so even a capped capture
-/// covers them.
-pub const MAX_CAPTURED_STDOUT: usize = 4 * 1024 * 1024;
+/// How much of the client's request to keep for the ref-update parser.
+///
+/// The commands arrive first and are followed by the pack data, so the
+/// buffer is capped: the parser stops at the flush packet that ends the
+/// command list, and the pack data behind it is not needed.
+pub const MAX_CAPTURED_COMMANDS: usize = 64 * 1024;
 
 /// Load an existing OpenSSH-format host key or generate a fresh Ed25519
 /// key and persist it (mode 0600) so subsequent restarts keep the same
@@ -147,6 +148,13 @@ struct GitaHandler {
     handle: Option<russh::server::Handle>,
     /// Shared child stdin (channel data -> git receive-pack).
     child_stdin: Option<Arc<tokio::sync::Mutex<Option<tokio::process::ChildStdin>>>>,
+    /// A copy of what the client sent to the git child.
+    ///
+    /// The client's ref-update commands arrive here, in the same pkt-line
+    /// format the HTTP transport's request body uses. They are the
+    /// client's *claim* about what it is pushing; which of them actually
+    /// took effect is decided afterwards by looking at the repository.
+    client_commands: Arc<tokio::sync::Mutex<Vec<u8>>>,
 }
 
 impl GitaHandler {
@@ -164,6 +172,7 @@ impl GitaHandler {
             git,
             handle: None,
             child_stdin: None,
+            client_commands: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         }
     }
 }
@@ -377,14 +386,9 @@ impl russh::server::Handler for GitaHandler {
             }
         });
 
-        // Pump stdout -> channel data in a background task, keeping a copy
-        // of what the git child wrote. The copy is what the `report-status`
-        // parser reads once the child exits: the section that says which
-        // refs were actually updated lives at the end of stdout.
+        // Pump stdout -> channel data in a background task.
         let h = handle.clone();
         let channel_id = channel;
-        let capture = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let waiter_capture = capture.clone();
         tokio::spawn(async move {
             let mut out_buf = vec![0u8; 8192];
             let mut stdout_reader = child_stdout;
@@ -395,17 +399,6 @@ impl russh::server::Handler for GitaHandler {
                         break;
                     }
                     Ok(n) => {
-                        // Keep a copy for the report-status parser. The
-                        // advertisement the client needs is small, but a
-                        // cap keeps a misbehaving server from growing the
-                        // buffer without bound.
-                        {
-                            let mut buf = capture.lock().await;
-                            if buf.len() < MAX_CAPTURED_STDOUT {
-                                let room = MAX_CAPTURED_STDOUT - buf.len();
-                                buf.extend_from_slice(&out_buf[..n.min(room)]);
-                            }
-                        }
                         let chunk = bytes::Bytes::copy_from_slice(&out_buf[..n]);
                         if h.data(channel_id, chunk).await.is_err() {
                             break;
@@ -425,20 +418,32 @@ impl russh::server::Handler for GitaHandler {
         let push_owner = owner.clone();
         let push_repo = repo_name.clone();
         let is_push = verb == "receive-pack";
+        let commands = self.client_commands.clone();
         tokio::spawn(async move {
             let status = child.wait().await;
             stderr_task.abort();
             if is_push {
-                // The git child has exited, so its stdout is complete and
-                // the report-status section can be read. A push that landed
-                // publishes an event and may trigger CI — the same things
-                // the HTTP transport does, which is the point: choosing
-                // SSH over HTTP must not change what the repository does.
-                let output = {
-                    let mut buf = waiter_capture.lock().await;
+                // The git child has exited, so the refs it was given are
+                // settled. A push that landed publishes an event and may
+                // trigger CI — the same things the HTTP transport does,
+                // which is the point: choosing SSH over HTTP must not
+                // change what the repository does.
+                //
+                // The client's commands say what it *asked* for; the
+                // repository says what actually happened. Only the refs
+                // that really moved are reported, so a refused push
+                // publishes nothing.
+                let claimed = {
+                    let mut buf = commands.lock().await;
                     std::mem::take(&mut *buf)
                 };
-                let updates = gita_push::parse_report_status(&output);
+                let updates: Vec<gita_push::RefUpdate> =
+                    gita_push::parse_receive_pack_commands(&claimed)
+                        .into_iter()
+                        .filter(|upd| {
+                            gita_push::ref_update_applied(&git, &push_owner, &push_repo, upd)
+                        })
+                        .collect();
                 if !updates.is_empty() {
                     gita_push::publish_push(
                         &db,
@@ -488,6 +493,17 @@ impl russh::server::Handler for GitaHandler {
         data: &[u8],
         _session: &mut russh::server::Session,
     ) -> Result<(), Self::Error> {
+        // Keep a copy of what the client sent. The ref-update commands
+        // come first, followed by the pack data; the parser stops at the
+        // flush packet that ends the command list, so the pack data
+        // behind it does not matter.
+        {
+            let mut buf = self.client_commands.lock().await;
+            if buf.len() < MAX_CAPTURED_COMMANDS {
+                let room = MAX_CAPTURED_COMMANDS - buf.len();
+                buf.extend_from_slice(&data[..data.len().min(room)]);
+            }
+        }
         if let Some(arc) = self.child_stdin.as_ref() {
             let mut guard = arc.lock().await;
             if let Some(stdin) = guard.as_mut() {
