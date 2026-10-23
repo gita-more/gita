@@ -28,18 +28,40 @@ pub struct TestAppGuard {
 
 impl Drop for TestAppGuard {
     fn drop(&mut self) {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let base_url = self.base_url.clone();
-            let schema = self.schema.clone();
-            handle.spawn(async move {
-                if let Ok(pool) = sqlx::PgPool::connect(&base_url).await {
-                    let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
-                        .execute(&pool)
-                        .await;
-                    pool.close().await;
-                }
+        // The cleanup used to be `handle.spawn(...)` on the test's own
+        // runtime. That runtime is dropped as soon as the test function
+        // returns, so the spawned task was cancelled before it ever ran
+        // and **every test leaked its schema** — the dev database
+        // accumulated thousands of `gita_it_*` schemas.
+        //
+        // A throwaway runtime on a separate thread is not affected by the
+        // test runtime's shutdown. The thread is joined so the schema is
+        // really gone by the time the test finishes, and the cleanup is
+        // given a timeout so an unreachable database cannot hang the
+        // suite.
+        let base_url = self.base_url.clone();
+        let schema = self.schema.clone();
+        let worker = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async move {
+                let cleanup = async {
+                    if let Ok(pool) = sqlx::PgPool::connect(&base_url).await {
+                        let _ = sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+                            .execute(&pool)
+                            .await;
+                        pool.close().await;
+                    }
+                };
+                // A database that does not answer must not hang the suite.
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(10), cleanup).await;
             });
-        }
+        });
+        let _ = worker.join();
     }
 }
 
