@@ -31,7 +31,7 @@ services:
       # the SSH listener is disabled unless GITA_SSH_ENABLED=true, so there is
       # nothing to connect to. To expose SSH, set GITA_SSH_ENABLED=true in
       # .env AND uncomment the line below (optionally override GITA_SSH_PORT):
-      # - "${GITA_SSH_PORT:-2222}:2222"
+      # - "${GITA_SSH_PORT:-2222}:${GITA_SSH_PORT:-2222}"
     environment:
       # Server
       - GITA_SERVER_HOST=0.0.0.0
@@ -45,7 +45,7 @@ services:
       # Embedded SSH server (Git over SSH). Disabled by default.
       - GITA_SERVER_SSH_ENABLED=${GITA_SSH_ENABLED:-false}
       - GITA_SERVER_SSH_HOST=0.0.0.0
-      - GITA_SERVER_SSH_PORT=2222
+      - GITA_SERVER_SSH_PORT=${GITA_SSH_PORT:-2222}
       # Pages: GitHub-style static sites at /<owner>/<repo>/. Enabled by
       # default; set GITA_PAGES_ENABLED=false to turn the feature off.
       - GITA_SERVER_PAGES_ENABLED=${GITA_PAGES_ENABLED:-true}

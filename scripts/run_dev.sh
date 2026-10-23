@@ -221,7 +221,11 @@ cmd_start() {
 
   # 若镜像不存在，或明确要求 --build，则先构建
   local image_missing=0
-  if ! compose_cmd images -q gita_gita >/dev/null 2>&1; then
+  # `images -q <service>` takes the *service* name from the compose file
+  # (gita), not the built image name (docker_gita / docker-gita — it
+  # depends on the compose flavour, which is exactly why asking for the
+  # service is the portable spelling).
+  if ! compose_cmd images -q gita >/dev/null 2>&1; then
     image_missing=1
   fi
   if [[ "${build}" == "1" || "${image_missing}" == "1" ]]; then
