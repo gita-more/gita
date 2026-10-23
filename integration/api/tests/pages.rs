@@ -259,10 +259,11 @@ async fn config_endpoints_require_owner() {
     let (status, _) = request(&app, Method::GET, "/api/repos/pagesown/site/pages", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    // Non-owner PUT -> 403.
+    // Non-owner PUT -> 404. The refusal does not say whether the
+    // repository exists.
     let other = register_user(&app, "pagesother").await;
     let (status, _) = set_pages(&app, &other.token, "pagesown", "site", true, "main", "/").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Owner PUT -> 200 and GET reflects it.
     let (status, body) = set_pages(&app, &owner.token, "pagesown", "site", true, "main", "/docs").await;

@@ -370,7 +370,7 @@ async fn delete_repo_uses_id_ownership_not_username_strings() {
     .await;
     assert_eq!(
         status,
-        StatusCode::FORBIDDEN,
+        StatusCode::NOT_FOUND,
         "non-owner must not delete the repo"
     );
 

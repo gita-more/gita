@@ -345,3 +345,148 @@ async fn ssh_non_owner_cannot_push() {
         String::from_utf8_lossy(&push.stderr)
     );
 }
+/// A group member with the `developer` role may push to the group's
+/// repository over SSH.
+///
+/// The SSH path used to require `user.id == repository.owner_id`, which
+/// for a group repository is the id of the user who created the *group*.
+/// A developer added to the group could not push, even though the same
+/// rule lets them push over HTTP.
+#[tokio::test(flavor = "multi_thread")]
+async fn ssh_group_developer_can_push_to_a_group_repository() {
+    let (app, _guard) = common::test_app().await;
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Alice creates the group and the repository inside it.
+    let alice = register_user(&app, "galice").await;
+    let (alice_key, alice_pub) = generate_client_key(dir.path());
+    let (status, _) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/keys",
+        Some(serde_json::json!({
+            "title": "alice-laptop",
+            "public_key": alice_pub,
+        })),
+        Some(&alice.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/groups",
+        Some(serde_json::json!({"name": "gteam", "description": ""})),
+        Some(&alice.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create group: {body}");
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/groups/gteam/repos",
+        Some(serde_json::json!({
+            "name": "shared",
+            "description": "",
+            "default_branch": "main",
+            "is_private": false,
+        })),
+        Some(&alice.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "create repo: {body}");
+
+    // Bob joins the group as a developer and registers his key.
+    let bob = register_user(&app, "gbob").await;
+    let bob_dir = tempfile::TempDir::new().unwrap();
+    let (bob_key, bob_pub) = generate_client_key(bob_dir.path());
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/keys",
+        Some(serde_json::json!({
+            "title": "bob-laptop",
+            "public_key": bob_pub,
+        })),
+        Some(&bob.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "register key: {body}");
+
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/groups/gteam/members",
+        Some(serde_json::json!({"username": "gbob", "role": "developer"})),
+        Some(&alice.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "add member: {body}");
+
+    let port = start_ssh(&app).await;
+
+    // Bob clones the group's repository.
+    let bob_work = bob_dir.path().join("bob-work");
+    let clone = Command::new("git")
+        .args([
+            "clone",
+            &format!("ssh://git@127.0.0.1:{port}/gteam/shared.git"),
+        ])
+        .arg(bob_work.to_str().unwrap())
+        .env(
+            "GIT_SSH_COMMAND",
+            format!(
+                "ssh -p {port} -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
+                bob_key.display()
+            ),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        clone.status.success(),
+        "developer clone failed: {}",
+        String::from_utf8_lossy(&clone.stderr)
+    );
+
+    // And pushes to it.
+    std::fs::write(bob_work.join("feature.txt"), "from a developer\n").unwrap();
+    let add = Command::new("git")
+        .current_dir(&bob_work)
+        .args(["add", "feature.txt"])
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+    let commit = Command::new("git")
+        .current_dir(&bob_work)
+        .args([
+            "-c",
+            "user.name=Bob Developer",
+            "-c",
+            "user.email=bob@example.com",
+            "commit",
+            "-m",
+            "feature",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success());
+    let push = Command::new("git")
+        .current_dir(&bob_work)
+        .args(["push", "origin", "HEAD:main"])
+        .env(
+            "GIT_SSH_COMMAND",
+            format!(
+                "ssh -p {port} -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
+                bob_key.display()
+            ),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        push.status.success(),
+        "a developer should be able to push to the group's repository (stderr: {})",
+        String::from_utf8_lossy(&push.stderr)
+    );
+}

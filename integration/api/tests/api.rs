@@ -242,7 +242,9 @@ async fn delete_repo_requires_ownership() {
         Some(&intruder.token),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+    // 404, not 403: a refusal must not tell the caller that the
+    // repository exists.
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 
     // owner can delete (HTTP delete without body)
     let (status, _) = request(
@@ -845,7 +847,7 @@ async fn issue_comments_lifecycle() {
         Some(&intruder.token),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 
     // Author can delete.
     let (status, _) = request(
@@ -1148,7 +1150,7 @@ async fn branch_and_tag_management() {
         Some(&intruder.token),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 
     // Owner deletes tag.
     let (status, _) = request(
@@ -1783,7 +1785,7 @@ async fn webhooks_crud_and_fanout() {
         Some(&intruder.token),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 
     // Owner creates a hook.
     let (status, body) = request(
@@ -2950,7 +2952,7 @@ async fn update_repo_settings_rename_transfer_visibility() {
         Some(&owner.token),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 
     // New owner can now patch.
     let (status, body) = request(

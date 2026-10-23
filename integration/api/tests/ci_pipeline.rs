@@ -842,7 +842,8 @@ jobs:
         "newly-triggered run {triggered_run_id} should appear in list; got {listed:?}"
     );
 
-    // Non-owner is forbidden (403).
+    // A non-owner is refused. The answer is 404, not 403: a refusal must
+    // not tell the caller that the repository exists.
     let (status, _) = common::request(
         &app,
         Method::POST,
@@ -851,7 +852,7 @@ jobs:
         Some(&other_user.token),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 
     // Missing pipeline -> 404.
     let (status, _) = common::request(
