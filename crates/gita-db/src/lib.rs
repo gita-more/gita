@@ -2,6 +2,8 @@
 //!
 //! PostgreSQL-only. Schema is created idempotently at startup.
 
+pub mod access;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use gita_core::*;
@@ -349,6 +351,12 @@ fn row_to_user(row: &PgRow) -> Result<User> {
 // ---------------------------------------------------------------------------
 
 impl Db {
+    /// Create a repository.
+    ///
+    /// `group_id` is `None` for a personal repository and `Some(..)` for
+    /// one in a group namespace. The group is written as part of the
+    /// insert rather than patched afterwards, so the row is never
+    /// observable without it.
     pub async fn create_repository(
         &self,
         owner_id: i64,
@@ -357,11 +365,12 @@ impl Db {
         description: &str,
         is_private: bool,
         default_branch: &str,
+        group_id: Option<i64>,
     ) -> Result<Repository> {
         let created_at = Utc::now().to_rfc3339();
         let row = sqlx::query(
-            "INSERT INTO repositories (owner_id, owner_name, name, description, is_private, default_branch, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "INSERT INTO repositories (owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              RETURNING id",
         )
         .bind(owner_id)
@@ -371,6 +380,7 @@ impl Db {
         .bind(is_private as i64)
         .bind(default_branch)
         .bind(&created_at)
+        .bind(group_id)
         .fetch_one(&self.pool)
         .await?;
         let id: i64 = row.try_get("id").unwrap_or(0);
@@ -385,12 +395,13 @@ impl Db {
             created_at: DateTime::parse_from_rfc3339(&created_at)
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
+            group_id,
         })
     }
 
     pub async fn get_repository(&self, id: i64) -> Result<Option<Repository>> {
         let rows = sqlx::query(
-            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id
              FROM repositories WHERE id = $1",
         )
         .bind(id)
@@ -408,7 +419,7 @@ impl Db {
         name: &str,
     ) -> Result<Option<Repository>> {
         let rows = sqlx::query(
-            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id
              FROM repositories WHERE owner_name = $1 AND name = $2",
         )
         .bind(owner_name)
@@ -428,7 +439,7 @@ impl Db {
     ) -> Result<Vec<Repository>> {
         let rows = if let Some(owner) = owner_name {
             sqlx::query(
-                "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+                "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id
                  FROM repositories WHERE owner_name = $2 ORDER BY id DESC LIMIT $1",
             )
             .bind(limit as i64)
@@ -437,7 +448,7 @@ impl Db {
             .await?
         } else {
             sqlx::query(
-                "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+                "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id
                  FROM repositories ORDER BY id DESC LIMIT $1",
             )
             .bind(limit as i64)
@@ -462,7 +473,7 @@ impl Db {
     pub async fn search_repositories(&self, query: &str, limit: usize) -> Result<Vec<Repository>> {
         let pattern = format!("%{query}%");
         let rows = sqlx::query(
-            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id
              FROM repositories
              WHERE (name ILIKE $1 OR description ILIKE $1)
                AND is_private = 0
@@ -549,6 +560,7 @@ fn row_to_repo(row: &PgRow) -> Result<Repository> {
         created_at: DateTime::parse_from_rfc3339(&created_at)
             .map(|d| d.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
+        group_id: row.try_get::<Option<i64>, _>("group_id")?,
     })
 }
 
@@ -1934,7 +1946,7 @@ impl Db {
     /// List repositories that belong to a group.
     pub async fn list_group_repositories(&self, group_id: i64) -> Result<Vec<Repository>> {
         let rows = sqlx::query(
-            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at
+            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id
              FROM repositories WHERE group_id = $1 ORDER BY name",
         )
         .bind(group_id)
@@ -1956,7 +1968,7 @@ impl Db {
                         i.author_id, i.author_name, i.created_at AS issue_created_at,
                         i.updated_at AS issue_updated_at, i.closed_at,
                         r.id AS repo_id, r.owner_id, r.owner_name, r.name, r.description,
-                        r.is_private, r.default_branch, r.created_at AS repo_created_at
+                        r.is_private, r.default_branch, r.created_at AS repo_created_at, r.group_id
                  FROM issues i
                  JOIN repositories r ON r.id = i.repo_id
                  WHERE i.status = $2
@@ -1972,7 +1984,7 @@ impl Db {
                         i.author_id, i.author_name, i.created_at AS issue_created_at,
                         i.updated_at AS issue_updated_at, i.closed_at,
                         r.id AS repo_id, r.owner_id, r.owner_name, r.name, r.description,
-                        r.is_private, r.default_branch, r.created_at AS repo_created_at
+                        r.is_private, r.default_branch, r.created_at AS repo_created_at, r.group_id
                  FROM issues i
                  JOIN repositories r ON r.id = i.repo_id
                  ORDER BY i.id DESC LIMIT $1",
@@ -2040,6 +2052,7 @@ fn row_to_repo_alias(row: &PgRow) -> Result<Repository> {
         created_at: DateTime::parse_from_rfc3339(&created_at)
             .map(|d| d.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
+        group_id: row.try_get::<Option<i64>, _>("group_id")?,
     })
 }
 
@@ -2645,7 +2658,7 @@ mod tests {
         let db = fresh_db().await;
         let u = db.create_user("bob", "bob@example.com", "h").await.unwrap();
         let r = db
-            .create_repository(u.id, "bob", "hello", "desc", false, "main")
+            .create_repository(u.id, "bob", "hello", "desc", false, "main", None)
             .await
             .unwrap();
         assert!(r.id > 0);
@@ -2792,7 +2805,15 @@ mod tests {
 
         // Create a repo inside the group namespace, then list it.
         let repo = db
-            .create_repository(owner.id, "acme", "widgets", "widget repo", false, "main")
+            .create_repository(
+                owner.id,
+                "acme",
+                "widgets",
+                "widget repo",
+                false,
+                "main",
+                None,
+            )
             .await
             .unwrap();
         let group_repos = db.list_group_repositories(g.id).await.unwrap();
@@ -2820,7 +2841,15 @@ mod tests {
             .await
             .unwrap();
         let repo = db
-            .create_repository(owner.id, "issueowner", "issues-repo", "desc", false, "main")
+            .create_repository(
+                owner.id,
+                "issueowner",
+                "issues-repo",
+                "desc",
+                false,
+                "main",
+                None,
+            )
             .await
             .unwrap();
         let _issue = db
@@ -2885,7 +2914,7 @@ mod tests {
             .await
             .unwrap();
         let repo = db
-            .create_repository(owner.id, "commenter", "c-repo", "desc", false, "main")
+            .create_repository(owner.id, "commenter", "c-repo", "desc", false, "main", None)
             .await
             .unwrap();
 
@@ -3053,13 +3082,13 @@ mod tests {
             .create_user("bob2", "bob2@example.com", "h")
             .await
             .unwrap();
-        db.create_repository(alice.id, "alice2", "alpha", "", false, "main")
+        db.create_repository(alice.id, "alice2", "alpha", "", false, "main", None)
             .await
             .unwrap();
-        db.create_repository(bob.id, "bob2", "beta", "", false, "main")
+        db.create_repository(bob.id, "bob2", "beta", "", false, "main", None)
             .await
             .unwrap();
-        db.create_repository(alice.id, "alice2", "gamma", "", false, "main")
+        db.create_repository(alice.id, "alice2", "gamma", "", false, "main", None)
             .await
             .unwrap();
 
@@ -3079,7 +3108,7 @@ mod tests {
         let db = fresh_db().await;
         let user = db.create_user("cici", "cici@e.io", "h").await.unwrap();
         let repo = db
-            .create_repository(user.id, "cici", "cirepo", "d", false, "main")
+            .create_repository(user.id, "cici", "cirepo", "d", false, "main", None)
             .await
             .unwrap();
 
@@ -3180,7 +3209,7 @@ mod tests {
             .await
             .unwrap();
         let repo = db
-            .create_repository(user.id, "pagesowner", "site", "desc", false, "main")
+            .create_repository(user.id, "pagesowner", "site", "desc", false, "main", None)
             .await
             .unwrap();
 
@@ -3236,7 +3265,7 @@ mod tests {
             .await
             .unwrap();
         let repo = db
-            .create_repository(user.id, "pagescascade", "gone", "desc", false, "main")
+            .create_repository(user.id, "pagescascade", "gone", "desc", false, "main", None)
             .await
             .unwrap();
         db.upsert_pages(repo.id, true, "main", "/").await.unwrap();

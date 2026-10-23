@@ -3,6 +3,10 @@
 //! These types are shared across all crates. They describe the
 //! fundamental entities of an AI-native git server: users, repositories,
 //! commits, pull requests, issues and events.
+//!
+//! The repository access-control rule lives in [`access`].
+
+pub mod access;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -45,6 +49,10 @@ pub struct GroupMember {
 pub struct Repository {
     pub id: i64,
     /// Owner user id.
+    ///
+    /// For a repository in a group namespace this is the id of the user
+    /// who created the group — see [`crate::access`] for how that affects
+    /// who may access the repository.
     pub owner_id: i64,
     /// Owner username, denormalized for convenient display.
     pub owner_name: String,
@@ -53,6 +61,9 @@ pub struct Repository {
     pub is_private: bool,
     pub default_branch: String,
     pub created_at: DateTime<Utc>,
+    /// The group this repository belongs to, or `None` for a personal
+    /// repository.
+    pub group_id: Option<i64>,
 }
 
 impl Repository {
@@ -326,6 +337,7 @@ mod tests {
             is_private: false,
             default_branch: "main".to_string(),
             created_at: Utc::now(),
+            group_id: None,
         };
         assert_eq!(repo.full_name(), "alice/hello");
     }
