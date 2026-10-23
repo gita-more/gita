@@ -13,7 +13,8 @@ pub async fn claim_one_run(
     lease: Duration,
 ) -> anyhow::Result<Option<gita_db::PipelineRunRow>> {
     let now = chrono::Utc::now().to_rfc3339();
-    let lease_until = (chrono::Utc::now() + chrono::Duration::from_std(lease).unwrap()).to_rfc3339();
+    let lease_until =
+        (chrono::Utc::now() + chrono::Duration::from_std(lease).unwrap()).to_rfc3339();
 
     let rows = sqlx::query(
         r#"

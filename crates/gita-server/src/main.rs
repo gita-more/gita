@@ -1,15 +1,13 @@
 use clap::Parser;
-use gita_server::{Args, Command, Config, WorkerCommand, run, worker_register};
+use gita_server::{run, worker_register, Args, Command, Config, WorkerCommand};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing.
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,gita=debug"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .init();
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,gita=debug"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let args = Args::parse();
     match args.command.unwrap_or(Command::Serve) {

@@ -302,7 +302,10 @@ async fn repo_content_endpoints_see_committed_file() {
     .await;
     assert_eq!(status, axum::http::StatusCode::OK, "tree: {body}");
     let entries = body["entries"].as_array().unwrap();
-    let names: Vec<&str> = entries.iter().map(|e| e["name"].as_str().unwrap_or("")).collect();
+    let names: Vec<&str> = entries
+        .iter()
+        .map(|e| e["name"].as_str().unwrap_or(""))
+        .collect();
     assert!(names.contains(&"README.md"));
     assert!(names.contains(&"hello.txt"));
 
@@ -548,8 +551,7 @@ async fn issue_full_lifecycle() {
 #[tokio::test]
 async fn health_reports_ok() {
     let (app, _guard) = common::test_app().await;
-    let (status, body) =
-        request(&app, axum::http::Method::GET, "/api/health", None, None).await;
+    let (status, body) = request(&app, axum::http::Method::GET, "/api/health", None, None).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(body["status"], "ok");
     assert_eq!(body["db"], "ok");
@@ -613,8 +615,7 @@ async fn unauthenticated_endpoints_return_401() {
     let (app, _guard) = common::test_app().await;
 
     // /api/auth/me requires a token; no header -> 401
-    let (status, _) =
-        request(&app, axum::http::Method::GET, "/api/auth/me", None, None).await;
+    let (status, _) = request(&app, axum::http::Method::GET, "/api/auth/me", None, None).await;
     assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
 
     // /api/repos POST with no token is currently accepted by the route
@@ -676,14 +677,7 @@ async fn list_repos_with_owner_filter_returns_only_match() {
 #[tokio::test]
 async fn mcp_tools_endpoint_lists_seven_tools() {
     let (app, _guard) = common::test_app().await;
-    let (status, body) = request(
-        &app,
-        axum::http::Method::GET,
-        "/api/mcp/tools",
-        None,
-        None,
-    )
-    .await;
+    let (status, body) = request(&app, axum::http::Method::GET, "/api/mcp/tools", None, None).await;
     assert_eq!(status, axum::http::StatusCode::OK);
     let tools = body["tools"].as_array().unwrap();
     let names: Vec<&str> = tools
@@ -748,7 +742,14 @@ async fn pull_request_comments_lifecycle() {
     let uri_comments = format!("/api/repos/{owner}/{name}/prs/{pr_number}/comments");
 
     // Initially empty.
-    let (status, body) = request(&app, axum::http::Method::GET, &uri_comments, None, Some(&user.token)).await;
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &uri_comments,
+        None,
+        Some(&user.token),
+    )
+    .await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(body["comments"].as_array().unwrap().len(), 0);
 
@@ -767,7 +768,14 @@ async fn pull_request_comments_lifecycle() {
     assert_eq!(body["body"], "looks good");
 
     // Now list -> 1.
-    let (status, body) = request(&app, axum::http::Method::GET, &uri_comments, None, Some(&user.token)).await;
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &uri_comments,
+        None,
+        Some(&user.token),
+    )
+    .await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(body["comments"].as_array().unwrap().len(), 1);
 
@@ -794,7 +802,14 @@ async fn pull_request_comments_lifecycle() {
     assert_eq!(status, axum::http::StatusCode::OK, "delete comment");
 
     // List -> 0 again.
-    let (status, body) = request(&app, axum::http::Method::GET, &uri_comments, None, Some(&user.token)).await;
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &uri_comments,
+        None,
+        Some(&user.token),
+    )
+    .await;
     assert_eq!(status, axum::http::StatusCode::OK);
     assert_eq!(body["comments"].as_array().unwrap().len(), 0);
 }
@@ -831,7 +846,14 @@ async fn issue_comments_lifecycle() {
     assert_eq!(status, axum::http::StatusCode::OK, "create comment: {body}");
     let comment_id = body["id"].as_i64().unwrap();
 
-    let (status, body) = request(&app, axum::http::Method::GET, &uri_comments, None, Some(&user.token)).await;
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        &uri_comments,
+        None,
+        Some(&user.token),
+    )
+    .await;
     assert_eq!(status, axum::http::StatusCode::OK);
     let comments = body["comments"].as_array().unwrap();
     assert_eq!(comments.len(), 1);
@@ -869,7 +891,11 @@ async fn pull_request_merge_conflict_detected_and_rejected() {
     let (owner, name) = full.split_once('/').unwrap();
     common::push_initial_commit(&app, owner, name);
 
-    let bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join(owner)
+        .join(format!("{name}.git"));
     let bare_url = format!("file://{}", bare.display());
 
     // Helper to run git in a temp worktree.
@@ -955,7 +981,11 @@ async fn pull_request_merge_conflict_detected_and_rejected() {
         Some(&user.token),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::CONFLICT, "merge should conflict");
+    assert_eq!(
+        status,
+        axum::http::StatusCode::CONFLICT,
+        "merge should conflict"
+    );
 
     let _ = std::fs::remove_dir_all(&work_parent);
 }
@@ -968,7 +998,11 @@ async fn pull_request_non_ff_merge_creates_merge_commit() {
     let (owner, name) = full.split_once('/').unwrap();
     common::push_initial_commit(&app, owner, name);
 
-    let bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join(owner)
+        .join(format!("{name}.git"));
     let bare_url = format!("file://{}", bare.display());
 
     fn git_in(work: &std::path::Path, args: &[&str]) {
@@ -1054,13 +1088,21 @@ async fn pull_request_non_ff_merge_creates_merge_commit() {
 
     let feature_sha = {
         let out = std::process::Command::new("git")
-            .args(["--git-dir", bare.to_str().unwrap(), "rev-parse", "refs/heads/feature"])
+            .args([
+                "--git-dir",
+                bare.to_str().unwrap(),
+                "rev-parse",
+                "refs/heads/feature",
+            ])
             .output()
             .unwrap();
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     // A real merge commit should differ from the feature head.
-    assert_ne!(merge_sha, feature_sha, "merge commit should differ from feature head");
+    assert_ne!(
+        merge_sha, feature_sha,
+        "merge commit should differ from feature head"
+    );
 
     let _ = std::fs::remove_dir_all(&work_parent);
 }
@@ -1535,8 +1577,7 @@ async fn password_reset_rate_limit_returns_429() {
             .uri("/api/auth/password-reset/request")
             .header("content-type", "application/json")
             .body(axum::body::Body::from(
-                serde_json::to_vec(&serde_json::json!({"identifier": "someone"}))
-                    .unwrap(),
+                serde_json::to_vec(&serde_json::json!({"identifier": "someone"})).unwrap(),
             ))
             .unwrap();
         router.oneshot(req).await.unwrap().status()
@@ -1713,7 +1754,9 @@ async fn avatar_upload_and_fetch() {
         .unwrap();
     let resp = app.router().oneshot(req).await.unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
     assert_eq!(status, axum::http::StatusCode::OK, "upload: {v}");
 
@@ -1725,7 +1768,9 @@ async fn avatar_upload_and_fetch() {
         .unwrap();
     let resp = app.router().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), axum::http::StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     assert_eq!(bytes.len(), png.len());
 }
 
@@ -1736,7 +1781,11 @@ async fn webhooks_crud_and_fanout() {
     let full = common::create_repo(&app, &user.token, "hook-repo").await;
     let (owner, name) = full.split_once('/').unwrap();
     common::push_initial_commit(&app, owner, name);
-    let _bare = app.data_dir.join("repos").join(owner).join(format!("{name}.git"));
+    let _bare = app
+        .data_dir
+        .join("repos")
+        .join(owner)
+        .join(format!("{name}.git"));
     let repository_id = {
         let (_, body) = request(
             &app,
@@ -1758,14 +1807,19 @@ async fn webhooks_crud_and_fanout() {
     tokio::spawn(async move {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
             let received_inner = received_clone.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 4096];
                 let _ = socket.read(&mut buf).await;
-                received_inner.lock().unwrap().push(serde_json::Value::String(
-                    String::from_utf8_lossy(&buf).to_string(),
-                ));
+                received_inner
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::Value::String(
+                        String::from_utf8_lossy(&buf).to_string(),
+                    ));
                 let _ = socket
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                     .await;
@@ -2904,7 +2958,11 @@ async fn update_repo_settings_rename_transfer_visibility() {
     assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
 
     // Push still works on the new path.
-    let bare = app.data_dir.join("repos").join(owner_name).join("after.git");
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join(owner_name)
+        .join("after.git");
     let work = app.data_dir.join("work-rename");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).unwrap();
@@ -2920,7 +2978,11 @@ async fn update_repo_settings_rename_transfer_visibility() {
             .output()
             .expect("git");
         if !out.status.success() {
-            panic!("git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+            panic!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
     };
     run(&["clone", "-q", &url, "."]);
@@ -2963,7 +3025,11 @@ async fn update_repo_settings_rename_transfer_visibility() {
         Some(&target.token),
     )
     .await;
-    assert_eq!(status, axum::http::StatusCode::OK, "new owner patch: {body}");
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "new owner patch: {body}"
+    );
     assert_eq!(body["is_private"], false);
 }
 

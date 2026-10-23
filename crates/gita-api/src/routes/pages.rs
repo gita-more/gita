@@ -43,7 +43,10 @@ pub fn pages_routes() -> Router<AppState> {
             "/api/repos/{owner}/{repo}/pages",
             get(get_pages).put(put_pages).delete(delete_pages),
         )
-        .route("/api/repos/{owner}/{repo}/pages/status", get(get_pages_status))
+        .route(
+            "/api/repos/{owner}/{repo}/pages/status",
+            get(get_pages_status),
+        )
 }
 
 async fn get_pages(
@@ -68,7 +71,9 @@ async fn put_pages(
     let repository =
         crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
 
-    let branch = req.branch.unwrap_or_else(|| repository.default_branch.clone());
+    let branch = req
+        .branch
+        .unwrap_or_else(|| repository.default_branch.clone());
     let path = req.path.unwrap_or_else(|| "/".to_string());
 
     validate_pages_path(&path)?;
@@ -128,14 +133,21 @@ async fn response_for(state: &AppState, repository: &gita_core::Repository) -> P
     let url = if path == "/" {
         format!("/{}/{}/", repository.owner_name, repository.name)
     } else {
-        format!("/{}/{}/{}", repository.owner_name, repository.name, path.trim_matches('/'))
+        format!(
+            "/{}/{}/{}",
+            repository.owner_name,
+            repository.name,
+            path.trim_matches('/')
+        )
     };
     PagesResponse {
         enabled,
         branch: branch.clone(),
         path,
         url,
-        available: state.git.ref_exists(&repository.owner_name, &repository.name, &branch),
+        available: state
+            .git
+            .ref_exists(&repository.owner_name, &repository.name, &branch),
     }
 }
 
@@ -213,24 +225,27 @@ mod tests {
         }
         // Invalid names, each rejected.
         for bad in [
-            "-lead",        // starts with hyphen
-            "a..b",         // consecutive dots
-            "a b",          // space
-            "a~b",          // tilde
-            "a^b",          // caret
-            "a:b",          // colon
-            "a?b",          // question mark
-            "a*b",          // asterisk
-            "a[b",          // bracket
-            "a\\b",         // backslash
-            "a@{b",         // at-brace
-            "trailing/",    // ends with slash
-            "x.lock",       // ends with .lock
-            "@",            // the single at
-            "refs/heads/x", // full ref, not a branch name
+            "-lead",         // starts with hyphen
+            "a..b",          // consecutive dots
+            "a b",           // space
+            "a~b",           // tilde
+            "a^b",           // caret
+            "a:b",           // colon
+            "a?b",           // question mark
+            "a*b",           // asterisk
+            "a[b",           // bracket
+            "a\\b",          // backslash
+            "a@{b",          // at-brace
+            "trailing/",     // ends with slash
+            "x.lock",        // ends with .lock
+            "@",             // the single at
+            "refs/heads/x",  // full ref, not a branch name
             &"a".repeat(40), // a branch that is also a full SHA
         ] {
-            assert!(validate_branch_name(bad).is_err(), "{bad:?} should be invalid");
+            assert!(
+                validate_branch_name(bad).is_err(),
+                "{bad:?} should be invalid"
+            );
         }
     }
 }

@@ -80,10 +80,7 @@ async fn binary_asset_is_served_byte_exact() {
         headers.get("content-type").and_then(|v| v.to_str().ok()),
         Some("image/png")
     );
-    assert_eq!(
-        body, TINY_PNG,
-        "binary asset must be served byte-exact"
-    );
+    assert_eq!(body, TINY_PNG, "binary asset must be served byte-exact");
 }
 
 /// The site root must serve index.html. This guards the two-route design
@@ -226,7 +223,14 @@ async fn disabled_pages_falls_through() {
 
     // Enable then disable: same behavior.
     enable_pages(&app, &user.token, "pagesoff", "site", "main", "/").await;
-    let (status, _) = request(&app, Method::DELETE, "/api/repos/pagesoff/site/pages", None, Some(&user.token)).await;
+    let (status, _) = request(
+        &app,
+        Method::DELETE,
+        "/api/repos/pagesoff/site/pages",
+        None,
+        Some(&user.token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let (_, _, body) = request_bytes(&app, Method::GET, "/pagesoff/site/", None).await;
     assert_not_pages_content(&body, "/pagesoff/site/");
@@ -256,7 +260,14 @@ async fn config_endpoints_require_owner() {
     push_site(&app, "pagesown", "site");
 
     // Anonymous GET -> 401.
-    let (status, _) = request(&app, Method::GET, "/api/repos/pagesown/site/pages", None, None).await;
+    let (status, _) = request(
+        &app,
+        Method::GET,
+        "/api/repos/pagesown/site/pages",
+        None,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // Non-owner PUT -> 404. The refusal does not say whether the
@@ -266,12 +277,28 @@ async fn config_endpoints_require_owner() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Owner PUT -> 200 and GET reflects it.
-    let (status, body) = set_pages(&app, &owner.token, "pagesown", "site", true, "main", "/docs").await;
+    let (status, body) = set_pages(
+        &app,
+        &owner.token,
+        "pagesown",
+        "site",
+        true,
+        "main",
+        "/docs",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["enabled"], true);
     assert_eq!(body["branch"], "main");
     assert_eq!(body["path"], "/docs");
-    let (status, body) = request(&app, Method::GET, "/api/repos/pagesown/site/pages", None, Some(&owner.token)).await;
+    let (status, body) = request(
+        &app,
+        Method::GET,
+        "/api/repos/pagesown/site/pages",
+        None,
+        Some(&owner.token),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["url"], "/pagesown/site/docs");
 }
@@ -288,7 +315,9 @@ async fn security_headers_present() {
 
     let (_, headers, _) = request_bytes(&app, Method::GET, "/pageshdr/site/", None).await;
     assert_eq!(
-        headers.get("x-content-type-options").and_then(|v| v.to_str().ok()),
+        headers
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
         Some("nosniff")
     );
     assert!(headers.get("content-security-policy").is_some());
@@ -306,12 +335,22 @@ async fn etag_revalidation_returns_304() {
     enable_pages(&app, &user.token, "pagesetag", "site", "main", "/").await;
 
     let (_, headers, _) = request_bytes(&app, Method::GET, "/pagesetag/site/", None).await;
-    let etag = headers.get("etag").and_then(|v| v.to_str().ok()).expect("etag present").to_string();
+    let etag = headers
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("etag present")
+        .to_string();
 
     use tower::ServiceExt;
-    let mut builder = axum::http::Request::builder().method(Method::GET).uri("/pagesetag/site/");
+    let mut builder = axum::http::Request::builder()
+        .method(Method::GET)
+        .uri("/pagesetag/site/");
     builder = builder.header("if-none-match", &etag);
-    let resp = app.router().oneshot(builder.body(axum::body::Body::empty()).unwrap()).await.unwrap();
+    let resp = app
+        .router()
+        .oneshot(builder.body(axum::body::Body::empty()).unwrap())
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
 }
 
@@ -325,7 +364,8 @@ async fn site_custom_404_page_served() {
     push_site(&app, "pages404", "site");
     enable_pages(&app, &user.token, "pages404", "site", "main", "/").await;
 
-    let (status, _, body) = request_bytes(&app, Method::GET, "/pages404/site/missing.html", None).await;
+    let (status, _, body) =
+        request_bytes(&app, Method::GET, "/pages404/site/missing.html", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(String::from_utf8_lossy(&body).contains("Custom 404"));
 }
@@ -475,7 +515,10 @@ async fn owner_can_read_their_private_repo() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["content"].as_str().unwrap_or("").contains("TOP SECRET"));
+    assert!(body["content"]
+        .as_str()
+        .unwrap_or("")
+        .contains("TOP SECRET"));
 }
 
 /// A public repository stays anonymously readable — the fix must not lock
@@ -503,8 +546,15 @@ async fn public_repo_stays_anonymously_readable() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "public repo should be readable: {body}");
-    assert!(body["content"].as_str().unwrap_or("").contains("public content"));
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "public repo should be readable: {body}"
+    );
+    assert!(body["content"]
+        .as_str()
+        .unwrap_or("")
+        .contains("public content"));
 }
 
 /// The repository list must not reveal private repositories to an anonymous
@@ -596,8 +646,14 @@ async fn comment_events_do_not_break_the_event_stream() {
     // The persist hook runs on a spawned task, so give it a moment.
     let mut body = serde_json::Value::Null;
     for _ in 0..50 {
-        let (status, res) =
-            request(&app, Method::GET, "/api/events?limit=50", None, Some(&owner.token)).await;
+        let (status, res) = request(
+            &app,
+            Method::GET,
+            "/api/events?limit=50",
+            None,
+            Some(&owner.token),
+        )
+        .await;
         assert_eq!(
             status,
             StatusCode::OK,

@@ -143,7 +143,8 @@ async fn serve_site_request(
     };
 
     // If the requested path is a directory or ends with '/', serve index.html.
-    let is_dir = full_path.ends_with('/') || looks_like_directory(state, owner, repo_name, &ref_sha, &full_path);
+    let is_dir = full_path.ends_with('/')
+        || looks_like_directory(state, owner, repo_name, &ref_sha, &full_path);
     let target_path = if is_dir {
         format!("{}/index.html", full_path.trim_end_matches('/'))
     } else {
@@ -156,7 +157,9 @@ async fn serve_site_request(
         .read_file_bytes(owner, repo_name, &ref_sha, &target_path)
     {
         Ok(Some(b)) => b,
-        Ok(None) => return serve_not_found_or_fallthrough(state, owner, repo_name, &ref_sha, base).await,
+        Ok(None) => {
+            return serve_not_found_or_fallthrough(state, owner, repo_name, &ref_sha, base).await
+        }
         Err(_) => return spa_fallthrough(),
     };
 
@@ -171,7 +174,10 @@ async fn serve_site_request(
         .header(header::ETAG, format!("\"{}\"", blob.sha));
 
     // ETag revalidation: an unchanged blob returns 304 with no body.
-    if let Some(if_none_match) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) {
+    if let Some(if_none_match) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+    {
         if if_none_match == format!("\"{}\"", blob.sha) {
             return builder
                 .status(StatusCode::NOT_MODIFIED)
@@ -229,7 +235,10 @@ async fn serve_not_found_or_fallthrough(
     } else {
         format!("{base}/404.html")
     };
-    if let Ok(Some(blob)) = state.git.read_file_bytes(owner, repo_name, ref_sha, &not_found_path) {
+    if let Ok(Some(blob)) = state
+        .git
+        .read_file_bytes(owner, repo_name, ref_sha, &not_found_path)
+    {
         Response::builder()
             .status(StatusCode::NOT_FOUND)
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -342,7 +351,10 @@ fn sanitize_site_path(raw: &str) -> Option<String> {
 /// Extension → Content-Type, lowercased. The default is application/octet-stream.
 fn content_type_for(path: &str) -> &'static str {
     let name = path.rsplit('/').next().unwrap_or(path);
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
     match ext.as_str() {
         "html" | "htm" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",
@@ -385,9 +397,11 @@ fn cache_control_for(path: &str) -> &'static str {
         return "no-cache";
     }
     let lower = path.to_ascii_lowercase();
-    let in_asset_dir = ["/assets/", "/static/", "/dist/", "assets/", "static/", "dist/"]
-        .iter()
-        .any(|d| lower.contains(d));
+    let in_asset_dir = [
+        "/assets/", "/static/", "/dist/", "assets/", "static/", "dist/",
+    ]
+    .iter()
+    .any(|d| lower.contains(d));
     if in_asset_dir {
         return "public, max-age=31536000, immutable";
     }
@@ -427,22 +441,33 @@ mod tests {
         assert_eq!(content_type_for("font.woff2"), "font/woff2");
         assert_eq!(content_type_for("data.json"), "application/json");
         assert_eq!(content_type_for("no-extension"), "application/octet-stream");
-        assert_eq!(content_type_for("file.unknownext"), "application/octet-stream");
+        assert_eq!(
+            content_type_for("file.unknownext"),
+            "application/octet-stream"
+        );
     }
 
     #[test]
     fn cache_control_mapping() {
         assert_eq!(cache_control_for("index.html"), "no-cache");
         assert_eq!(cache_control_for("docs/page.html"), "no-cache");
-        assert_eq!(cache_control_for("assets/app-a1b2c3d4e5f6.js"), "public, max-age=31536000, immutable");
-        assert_eq!(cache_control_for("static/style.css"), "public, max-age=31536000, immutable");
+        assert_eq!(
+            cache_control_for("assets/app-a1b2c3d4e5f6.js"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(
+            cache_control_for("static/style.css"),
+            "public, max-age=31536000, immutable"
+        );
         assert_eq!(cache_control_for("data.json"), "public, max-age=300");
         assert_eq!(cache_control_for("app.js"), "public, max-age=300");
     }
 
     #[test]
     fn reserved_segments_are_recognized() {
-        for seg in ["api", "git", "groups", "settings", "issues", "login", "assets"] {
+        for seg in [
+            "api", "git", "groups", "settings", "issues", "login", "assets",
+        ] {
             assert!(is_reserved_path_segment(seg), "{seg} should be reserved");
         }
         // Ordinary owner names must still be routable.
@@ -457,9 +482,18 @@ mod tests {
     #[test]
     fn sanitize_path_table() {
         // Safe paths pass through normalized.
-        assert_eq!(sanitize_site_path("index.html").as_deref(), Some("index.html"));
-        assert_eq!(sanitize_site_path("a/b/c.png").as_deref(), Some("a/b/c.png"));
-        assert_eq!(sanitize_site_path("/docs/index.html").as_deref(), Some("docs/index.html"));
+        assert_eq!(
+            sanitize_site_path("index.html").as_deref(),
+            Some("index.html")
+        );
+        assert_eq!(
+            sanitize_site_path("a/b/c.png").as_deref(),
+            Some("a/b/c.png")
+        );
+        assert_eq!(
+            sanitize_site_path("/docs/index.html").as_deref(),
+            Some("docs/index.html")
+        );
         assert_eq!(sanitize_site_path("").as_deref(), Some(""));
 
         // Hostile paths are rejected. Percent-encoding is decoded by axum before

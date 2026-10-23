@@ -21,10 +21,10 @@ pub mod state;
 use axum::response::IntoResponse;
 
 pub use auth::Auth;
-pub use error::{ApiError, ApiResult, MessageResponse, message};
+pub use error::{message, ApiError, ApiResult, MessageResponse};
 pub use extract::{AuthUserExtractor, OptionalAuthUser, OptionalConnectInfo};
-pub use middleware::{SharedLimiter, build_limiter, build_slow_refill_limiter, client_ip};
-pub use routes::pages_site::{PagesOptions, pages_site_routes};
+pub use middleware::{build_limiter, build_slow_refill_limiter, client_ip, SharedLimiter};
+pub use routes::pages_site::{pages_site_routes, PagesOptions};
 pub use state::AppState;
 
 /// Build the full API router.

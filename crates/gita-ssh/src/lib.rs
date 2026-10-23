@@ -9,11 +9,11 @@
 //! URLs. The server accepts only `exec` channels (no shell, no PTY).
 
 use anyhow::{Context, Result};
+use getrandom::rand_core::UnwrapErr;
 use gita_core::access::Access;
 use gita_db::Db;
 use gita_events::EventBus;
 use gita_git::GitManager;
-use getrandom::rand_core::UnwrapErr;
 use russh::keys::ssh_key;
 use russh::server::Server;
 use std::future::Future;
@@ -36,8 +36,8 @@ pub const MAX_CAPTURED_COMMANDS: usize = 64 * 1024;
 /// host identity.
 pub fn load_or_create_host_key(path: &std::path::Path) -> Result<ssh_key::PrivateKey> {
     if path.exists() {
-        let pem = std::fs::read(path)
-            .with_context(|| format!("read SSH host key {}", path.display()))?;
+        let pem =
+            std::fs::read(path).with_context(|| format!("read SSH host key {}", path.display()))?;
         return ssh_key::PrivateKey::from_openssh(pem)
             .with_context(|| format!("parse SSH host key {}", path.display()));
     }
@@ -89,7 +89,11 @@ impl ShutdownSignal {
     /// Wait until a shutdown is requested.
     async fn wait(&self) {
         loop {
-            if self.inner.requested.load(std::sync::atomic::Ordering::SeqCst) {
+            if self
+                .inner
+                .requested
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
                 return;
             }
             self.inner.notify.notified().await;
@@ -225,12 +229,7 @@ struct GitaHandler {
 }
 
 impl GitaHandler {
-    fn new(
-        db: Arc<Db>,
-        repos_root: PathBuf,
-        bus: EventBus,
-        git: Arc<GitManager>,
-    ) -> Self {
+    fn new(db: Arc<Db>, repos_root: PathBuf, bus: EventBus, git: Arc<GitManager>) -> Self {
         Self {
             db,
             repos_root,
@@ -321,7 +320,10 @@ impl russh::server::Handler for GitaHandler {
         let command = match std::str::from_utf8(data) {
             Ok(s) => s,
             Err(_) => {
-                let _ = session.data(channel, bytes::Bytes::from_static(b"invalid command encoding\n"));
+                let _ = session.data(
+                    channel,
+                    bytes::Bytes::from_static(b"invalid command encoding\n"),
+                );
                 let _ = session.close(channel);
                 return Ok(());
             }
@@ -345,14 +347,20 @@ impl russh::server::Handler for GitaHandler {
             Some(p) => p,
             None => {
                 tracing::debug!("ssh: rejected path rel={:?}", rel);
-                let _ = session.data(channel, bytes::Bytes::from_static(b"repository not found\n"));
+                let _ = session.data(
+                    channel,
+                    bytes::Bytes::from_static(b"repository not found\n"),
+                );
                 let _ = session.close(channel);
                 return Ok(());
             }
         };
         if !bare.exists() {
             tracing::debug!("ssh: repo not on disk: {}", bare.display());
-            let _ = session.data(channel, bytes::Bytes::from_static(b"repository not found\n"));
+            let _ = session.data(
+                channel,
+                bytes::Bytes::from_static(b"repository not found\n"),
+            );
             let _ = session.close(channel);
             return Ok(());
         }
@@ -366,7 +374,10 @@ impl russh::server::Handler for GitaHandler {
         {
             Some((o, r)) => (o.to_string(), r.to_string()),
             None => {
-                let _ = session.data(channel, bytes::Bytes::from_static(b"repository not found\n"));
+                let _ = session.data(
+                    channel,
+                    bytes::Bytes::from_static(b"repository not found\n"),
+                );
                 let _ = session.close(channel);
                 return Ok(());
             }
@@ -379,7 +390,10 @@ impl russh::server::Handler for GitaHandler {
         let repo = match self.db.get_repository_by_name(&owner, &repo_name).await {
             Ok(Some(r)) => r,
             _ => {
-                let _ = session.data(channel, bytes::Bytes::from_static(b"repository not found\n"));
+                let _ = session.data(
+                    channel,
+                    bytes::Bytes::from_static(b"repository not found\n"),
+                );
                 let _ = session.close(channel);
                 return Ok(());
             }
@@ -407,7 +421,11 @@ impl russh::server::Handler for GitaHandler {
             return Ok(());
         }
 
-        tracing::info!("ssh git: {verb} on {} by user {:?}", bare.display(), self.authed_user);
+        tracing::info!(
+            "ssh git: {verb} on {} by user {:?}",
+            bare.display(),
+            self.authed_user
+        );
 
         // Acknowledge the exec request so the client starts sending protocol
         // data, then hand off the git child process to two background tasks:
@@ -621,8 +639,13 @@ mod tests {
         // Reloading returns an identical key (same host identity).
         let reloaded = load_or_create_host_key(&path).unwrap();
         assert_eq!(
-            key.public_key().fingerprint(ssh_key::HashAlg::Sha256).to_string(),
-            reloaded.public_key().fingerprint(ssh_key::HashAlg::Sha256).to_string(),
+            key.public_key()
+                .fingerprint(ssh_key::HashAlg::Sha256)
+                .to_string(),
+            reloaded
+                .public_key()
+                .fingerprint(ssh_key::HashAlg::Sha256)
+                .to_string(),
         );
     }
 

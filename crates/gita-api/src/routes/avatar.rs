@@ -56,7 +56,9 @@ async fn upload_avatar(
         return Err(ApiError::BadRequest("file must be an image".into()));
     }
     if data.is_empty() || data.len() > 5 * 1024 * 1024 {
-        return Err(ApiError::BadRequest("image must be between 1 byte and 5 MiB".into()));
+        return Err(ApiError::BadRequest(
+            "image must be between 1 byte and 5 MiB".into(),
+        ));
     }
 
     std::fs::create_dir_all(&state.avatar_dir)

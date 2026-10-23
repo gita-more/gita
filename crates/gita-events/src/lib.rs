@@ -133,7 +133,10 @@ impl EventLogSubscriber {
         Self { log, _rx: rx }
     }
 
-    pub fn spawn_listener(bus: EventBus, log: Arc<InMemoryEventLog>) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_listener(
+        bus: EventBus,
+        log: Arc<InMemoryEventLog>,
+    ) -> tokio::task::JoinHandle<()> {
         // Subscribe synchronously *before* spawning the task so that events
         // published immediately after this call are not missed (broadcast
         // drops messages when no receiver is registered yet).
@@ -213,8 +216,12 @@ mod tests {
         })));
         let mut rx = bus.subscribe();
 
-        let mut event =
-            Event::new(EventType::PipelineRequested, Some(1), Some(2), serde_json::json!({}));
+        let mut event = Event::new(
+            EventType::PipelineRequested,
+            Some(1),
+            Some(2),
+            serde_json::json!({}),
+        );
         event.id = 42;
         let returned = bus.publish_persisted(event);
 
@@ -304,18 +311,16 @@ mod tests {
         // Publish way more than 1024 events so the buffer overwrites the
         // unread end while the subscriber isn't draining.
         for i in 0..2000 {
-            bus.publish(
-                EventType::Push,
-                Some(i),
-                None,
-                serde_json::json!({"i": i}),
-            );
+            bus.publish(EventType::Push, Some(i), None, serde_json::json!({"i": i}));
         }
 
         // async recv should immediately surface Lagged.
         let first = rx.recv().await;
         assert!(
-            matches!(first, Err(tokio::sync::broadcast::error::RecvError::Lagged(_))),
+            matches!(
+                first,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+            ),
             "expected Lagged, got {first:?}"
         );
 
@@ -354,7 +359,10 @@ mod tests {
         // async recv yields Closed once the channel is empty.
         let result = rx.recv().await;
         assert!(
-            matches!(result, Err(tokio::sync::broadcast::error::RecvError::Closed)),
+            matches!(
+                result,
+                Err(tokio::sync::broadcast::error::RecvError::Closed)
+            ),
             "expected Closed after bus drop, got {result:?}"
         );
     }

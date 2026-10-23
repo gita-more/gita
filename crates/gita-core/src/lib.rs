@@ -345,8 +345,14 @@ mod tests {
     #[test]
     fn pr_status_serde_roundtrip() {
         assert_eq!(serde_json::to_string(&PrStatus::Open).unwrap(), "\"open\"");
-        assert_eq!(serde_json::to_string(&PrStatus::Merged).unwrap(), "\"merged\"");
-        assert_eq!(serde_json::to_string(&PrStatus::Closed).unwrap(), "\"closed\"");
+        assert_eq!(
+            serde_json::to_string(&PrStatus::Merged).unwrap(),
+            "\"merged\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PrStatus::Closed).unwrap(),
+            "\"closed\""
+        );
         assert_eq!(
             serde_json::from_str::<PrStatus>("\"open\"").unwrap(),
             PrStatus::Open
@@ -356,8 +362,14 @@ mod tests {
 
     #[test]
     fn issue_status_serde_roundtrip() {
-        assert_eq!(serde_json::to_string(&IssueStatus::Open).unwrap(), "\"open\"");
-        assert_eq!(serde_json::to_string(&IssueStatus::Closed).unwrap(), "\"closed\"");
+        assert_eq!(
+            serde_json::to_string(&IssueStatus::Open).unwrap(),
+            "\"open\""
+        );
+        assert_eq!(
+            serde_json::to_string(&IssueStatus::Closed).unwrap(),
+            "\"closed\""
+        );
         assert_eq!(
             serde_json::from_str::<IssueStatus>("\"closed\"").unwrap(),
             IssueStatus::Closed
@@ -369,8 +381,14 @@ mod tests {
     fn event_type_display() {
         assert_eq!(EventType::RepoCreated.to_string(), "repo_created");
         assert_eq!(EventType::Push.to_string(), "push");
-        assert_eq!(EventType::PullRequestMerged.to_string(), "pull_request_merged");
-        assert_eq!(EventType::AgentRunCompleted.to_string(), "agent_run_completed");
+        assert_eq!(
+            EventType::PullRequestMerged.to_string(),
+            "pull_request_merged"
+        );
+        assert_eq!(
+            EventType::AgentRunCompleted.to_string(),
+            "agent_run_completed"
+        );
     }
 
     #[test]

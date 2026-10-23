@@ -4,7 +4,7 @@
 //! ��时直接使用 `gita_server` 库验证配置加载与应用初始化。
 
 use assert_cmd::Command;
-use gita_server::{Args, App, Config};
+use gita_server::{App, Args, Config};
 use predicates::prelude::*;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -65,9 +65,8 @@ fn missing_config_falls_back_to_defaults() {
 
 /// Database URL for integration tests. Override via `GITA_TEST_DATABASE_URL`.
 fn test_db_url() -> String {
-    std::env::var("GITA_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://gita:gita@127.0.0.1:55432/gita".to_string()
-    })
+    std::env::var("GITA_TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://gita:gita@127.0.0.1:55432/gita".to_string())
 }
 
 #[tokio::test]

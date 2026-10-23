@@ -35,14 +35,8 @@ impl From<gita_db::SshKeyRow> for SshKeyResponse {
 
 pub fn ssh_key_routes() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/auth/keys",
-            get(list_keys).post(add_key),
-        )
-        .route(
-            "/api/auth/keys/{id}",
-            axum::routing::delete(delete_key),
-        )
+        .route("/api/auth/keys", get(list_keys).post(add_key))
+        .route("/api/auth/keys/{id}", axum::routing::delete(delete_key))
 }
 
 async fn add_key(
@@ -54,16 +48,23 @@ async fn add_key(
     // Light sanity check: must look like an OpenSSH public key line.
     let mut parts = pk.split_whitespace();
     let alg = parts.next().unwrap_or("");
-    if !matches!(alg, "ssh-rsa" | "ssh-ed25519" | "ecdsa-sha2-nistp256" | "ssh-dss") {
+    if !matches!(
+        alg,
+        "ssh-rsa" | "ssh-ed25519" | "ecdsa-sha2-nistp256" | "ssh-dss"
+    ) {
         return Err(ApiError::BadRequest(
             "unsupported key algorithm (expected ssh-rsa / ssh-ed25519 / ecdsa...)".into(),
         ));
     }
     if parts.next().is_none() {
-        return Err(ApiError::BadRequest("public key missing base64 blob".into()));
+        return Err(ApiError::BadRequest(
+            "public key missing base64 blob".into(),
+        ));
     }
     if !gita_db::ssh_key_is_valid(&pk) {
-        return Err(ApiError::BadRequest("public key is not a valid base64 key blob".into()));
+        return Err(ApiError::BadRequest(
+            "public key is not a valid base64 key blob".into(),
+        ));
     }
     let title = req.title.unwrap_or_default();
     let key = state.db.add_ssh_key(user.id, &title, &pk).await?;

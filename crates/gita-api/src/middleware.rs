@@ -21,8 +21,7 @@ use governor::{Quota, RateLimiter};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-pub type SharedLimiter =
-    Arc<RateLimiter<String, DashMapStateStore<String>, DefaultClock>>;
+pub type SharedLimiter = Arc<RateLimiter<String, DashMapStateStore<String>, DefaultClock>>;
 
 /// Build a per-IP rate limiter with the given quota.
 pub fn build_limiter(per_second: u32, burst: u32) -> SharedLimiter {
@@ -119,9 +118,8 @@ pub async fn rate_limit_by_ip(
                 .into_response();
             response.headers_mut().insert(
                 RETRY_AFTER,
-                axum::http::HeaderValue::from_str(&secs.to_string()).unwrap_or_else(|_| {
-                    axum::http::HeaderValue::from_static("1")
-                }),
+                axum::http::HeaderValue::from_str(&secs.to_string())
+                    .unwrap_or_else(|_| axum::http::HeaderValue::from_static("1")),
             );
             response
         }

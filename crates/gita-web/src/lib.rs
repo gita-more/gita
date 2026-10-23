@@ -7,7 +7,7 @@
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
-use axum::{Router, routing::get_service};
+use axum::{routing::get_service, Router};
 use std::fs;
 use std::path::PathBuf;
 use tower_http::services::ServeDir;
@@ -71,19 +71,13 @@ pub fn web_router(dist_dir: Option<PathBuf>) -> Router {
                             .map(|p| !p.contains('.') || p.ends_with(".html"))
                             .unwrap_or(false);
                         if !looks_like_route {
-                            return (
-                                StatusCode::NOT_FOUND,
-                                "not found",
-                            )
-                                .into_response();
+                            return (StatusCode::NOT_FOUND, "not found").into_response();
                         }
                         match fs::read_to_string(&index_path) {
                             Ok(html) => Html(html).into_response(),
-                            Err(_) => (
-                                StatusCode::NOT_FOUND,
-                                "index.html not found",
-                            )
-                                .into_response(),
+                            Err(_) => {
+                                (StatusCode::NOT_FOUND, "index.html not found").into_response()
+                            }
                         }
                     }
                 }));
@@ -203,7 +197,12 @@ mod tests {
         // Attempt to escape the dist directory via path traversal.
         let res = app
             .clone()
-            .oneshot(Request::builder().uri("/../Cargo.toml").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/../Cargo.toml")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         // ServeDir normalizes/denies traversal; should not be a 200 that
@@ -215,7 +214,12 @@ mod tests {
         );
         // A well-formed deep request still works.
         let res = app
-            .oneshot(Request::builder().uri("/assets/app.js").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/app.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::OK);
@@ -231,7 +235,12 @@ mod tests {
         .unwrap();
         let app = web_router(Some(dir.path().to_path_buf()));
         let res = app
-            .oneshot(Request::builder().uri("/nope.png").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/nope.png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND);
@@ -251,7 +260,12 @@ mod tests {
         // /groups has no static file and no extension → SPA fallback.
         let res = app
             .clone()
-            .oneshot(Request::builder().uri("/groups").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::OK);
@@ -263,7 +277,12 @@ mod tests {
 
         // /owner/repo also works.
         let res = app
-            .oneshot(Request::builder().uri("/owner/repo").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/owner/repo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::OK);
@@ -298,20 +317,34 @@ mod tests {
         // The explicit route wins for Pages-shaped paths.
         let res = app
             .clone()
-            .oneshot(Request::builder().uri("/alice/docs/index.html").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/alice/docs/index.html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert_eq!(&bytes[..], b"PAGES_CONTENT");
 
         // Non-Pages paths still reach the SPA fallback.
         let res = app
-            .oneshot(Request::builder().uri("/groups").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
         assert!(String::from_utf8_lossy(&bytes).contains("SPA Index"));
     }
 }

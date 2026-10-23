@@ -1742,7 +1742,6 @@ pub fn hash_token(token: &str) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-
 impl Db {
     /// Create a personal access token.
     ///
@@ -3457,4 +3456,3 @@ mod tests {
         drop_test_db(&db).await;
     }
 }
-

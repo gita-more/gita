@@ -47,9 +47,15 @@ pub struct CreateGroupRepoRequest {
 
 pub fn group_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/groups", axum::routing::post(create_group).get(list_groups))
+        .route(
+            "/api/groups",
+            axum::routing::post(create_group).get(list_groups),
+        )
         .route("/api/groups/{group}", get(get_group))
-        .route("/api/groups/{group}/repos", axum::routing::post(create_group_repo))
+        .route(
+            "/api/groups/{group}/repos",
+            axum::routing::post(create_group_repo),
+        )
         .route(
             "/api/groups/{group}/members",
             get(list_group_members).post(add_group_member),
@@ -77,7 +83,11 @@ async fn create_group(
     Json(req): Json<CreateGroupRequest>,
 ) -> ApiResult<Json<GroupResponse>> {
     let name = req.name.trim().to_string();
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
         return Err(ApiError::BadRequest(
             "group name may only contain letters, numbers, '-', '_', '.'".into(),
         ));
@@ -120,7 +130,10 @@ async fn get_group(
         .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
     let repos = state
         .db
-        .filter_readable(state.db.list_group_repositories(g.id).await?, user.0.as_ref().map(|u| u.id))
+        .filter_readable(
+            state.db.list_group_repositories(g.id).await?,
+            user.0.as_ref().map(|u| u.id),
+        )
         .await?;
     Ok(Json(serde_json::json!({
         "group": GroupResponse::from(g),
@@ -158,11 +171,17 @@ async fn create_group_repo(
 
     // Only the group owner (or members) can create repos. MVP: owner.
     if g.owner_id != user.id {
-        return Err(ApiError::Forbidden("only the group owner can create repositories".into()));
+        return Err(ApiError::Forbidden(
+            "only the group owner can create repositories".into(),
+        ));
     }
 
     let name = req.name.trim().to_string();
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
         return Err(ApiError::BadRequest(
             "repository name may only contain letters, numbers, '-', '_', '.'".into(),
         ));
@@ -285,10 +304,7 @@ async fn add_group_member(
     let role = req.role.unwrap_or_else(|| "member".to_string());
     let role = normalize_role(&role)?;
 
-    state
-        .db
-        .upsert_group_member(g.id, target.id, &role)
-        .await?;
+    state.db.upsert_group_member(g.id, target.id, &role).await?;
 
     Ok(Json(serde_json::json!({
         "group": g.name,
@@ -314,12 +330,10 @@ async fn remove_group_member(
         .get_user_by_username(&username)
         .await?
         .ok_or_else(|| ApiError::NotFound("user not found".into()))?;
-    if !state
-        .db
-        .remove_group_member(g.id, target.id)
-        .await?
-    {
-        return Err(ApiError::NotFound("user is not a member of this group".into()));
+    if !state.db.remove_group_member(g.id, target.id).await? {
+        return Err(ApiError::NotFound(
+            "user is not a member of this group".into(),
+        ));
     }
     Ok(Json(crate::error::MessageResponse {
         message: "member removed".to_string(),
@@ -346,10 +360,7 @@ async fn update_group_member(
         .ok_or_else(|| ApiError::NotFound("user not found".into()))?;
     let role = normalize_role(&req.role)?;
 
-    state
-        .db
-        .upsert_group_member(g.id, target.id, &role)
-        .await?;
+    state.db.upsert_group_member(g.id, target.id, &role).await?;
 
     Ok(Json(serde_json::json!({
         "group": g.name,
