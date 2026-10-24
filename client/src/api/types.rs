@@ -314,6 +314,21 @@ pub struct StarResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct Hook {
+    pub id: i64,
+    pub url: String,
+    pub events: Vec<String>,
+    pub secret: String,
+    pub active: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct HooksResponse {
+    pub hooks: Vec<Hook>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ForkResponse {
     pub message: String,
 }

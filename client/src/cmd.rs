@@ -300,6 +300,61 @@ async fn repo(cmd: args::RepoCommand, client: &GitaClient, json: bool) -> Result
                 println!("{}", msg.message);
             }
         }
+        args::RepoCommand::Hooks { owner, repo } => {
+            let resp = client.list_hooks(&owner, &repo).await?;
+            if json {
+                output::print_json(&resp)?;
+            } else {
+                let mut table = output::Table::new(&["id", "url", "events", "active"]);
+                for h in &resp.hooks {
+                    table.add_row(vec![
+                        h.id.to_string(),
+                        h.url.clone(),
+                        h.events.join(","),
+                        h.active.to_string(),
+                    ]);
+                }
+                table.print();
+            }
+        }
+        args::RepoCommand::HookCreate {
+            owner,
+            repo,
+            webhook_url,
+            events,
+            secret,
+            inactive,
+        } => {
+            let events_vec = events.as_deref().map(|e| {
+                e.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            });
+            let h = client
+                .create_hook(
+                    &owner,
+                    &repo,
+                    &webhook_url,
+                    events_vec,
+                    secret.as_deref(),
+                    Some(!inactive),
+                )
+                .await?;
+            if json {
+                output::print_json(&h)?;
+            } else {
+                println!("Created hook #{} for {}", h.id, webhook_url);
+            }
+        }
+        args::RepoCommand::HookDelete { owner, repo, id } => {
+            let msg = client.delete_hook(&owner, &repo, id).await?;
+            if json {
+                output::print_json(&msg)?;
+            } else {
+                println!("{}", msg.message);
+            }
+        }
         args::RepoCommand::Fork { owner, repo, name } => {
             let r = client.fork_repo(&owner, &repo, name.as_deref()).await?;
             print_repo(&r, json);

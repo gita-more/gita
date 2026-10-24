@@ -1483,6 +1483,52 @@ async fn e2e_repo_pages() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: repo hooks list / create / delete
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_repo_hooks() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "hookuser");
+
+    // Create a repo.
+    gita_ok(port, &token, &["repo", "create", "hookdemo"]);
+
+    // Create a webhook.
+    let out = gita_ok(
+        port,
+        &token,
+        &[
+            "repo",
+            "hook-create",
+            "hookuser",
+            "hookdemo",
+            "http://example.com/hook",
+            "--events",
+            "push,issues",
+        ],
+    );
+    stdout_contains(&out, "Created hook #1");
+
+    // List hooks — should include the URL.
+    let out = gita_ok(port, &token, &["repo", "hooks", "hookuser", "hookdemo"]);
+    stdout_contains(&out, "http://example.com/hook");
+
+    // Delete the hook.
+    let out = gita_ok(port, &token, &["repo", "hook-delete", "hookuser", "hookdemo", "1"]);
+    stdout_contains(&out, "deleted");
+
+    // List hooks again — should be empty.
+    let out = gita_ok(port, &token, &["repo", "hooks", "hookuser", "hookdemo"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("example.com"),
+        "hook should be removed"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 

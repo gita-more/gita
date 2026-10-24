@@ -272,6 +272,25 @@ pub enum RepoCommand {
     },
     /// Disable Pages for a repository.
     PagesDisable { owner: String, repo: String },
+    /// List webhooks for a repository.
+    Hooks { owner: String, repo: String },
+    /// Create a webhook.
+    HookCreate {
+        owner: String,
+        repo: String,
+        /// Webhook target URL (http/https).
+        webhook_url: String,
+        /// Comma-separated event types (default push).
+        #[arg(long)]
+        events: Option<String>,
+        #[arg(long)]
+        secret: Option<String>,
+        /// Create the hook inactive (default: active).
+        #[arg(long)]
+        inactive: bool,
+    },
+    /// Delete a webhook.
+    HookDelete { owner: String, repo: String, id: i64 },
     /// Fork a repository under your namespace.
     Fork {
         owner: String,

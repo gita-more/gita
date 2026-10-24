@@ -366,6 +366,46 @@ impl GitaClient {
         .await
     }
 
+    pub async fn list_hooks(&self, owner: &str, repo: &str) -> Result<HooksResponse> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/api/repos/{owner}/{repo}/hooks"),
+            None,
+        )
+        .await
+    }
+
+    pub async fn create_hook(
+        &self,
+        owner: &str,
+        repo: &str,
+        url: &str,
+        events: Option<Vec<String>>,
+        secret: Option<&str>,
+        active: Option<bool>,
+    ) -> Result<Hook> {
+        self.request(
+            reqwest::Method::POST,
+            &format!("/api/repos/{owner}/{repo}/hooks"),
+            Some(&json!({
+                "url": url,
+                "events": events,
+                "secret": secret,
+                "active": active,
+            })),
+        )
+        .await
+    }
+
+    pub async fn delete_hook(&self, owner: &str, repo: &str, id: i64) -> Result<MessageResponse> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/api/repos/{owner}/{repo}/hooks/{id}"),
+            None::<&serde_json::Value>,
+        )
+        .await
+    }
+
     pub async fn fork_repo(
         &self,
         owner: &str,
