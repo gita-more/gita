@@ -67,6 +67,37 @@ async fn repo(cmd: args::RepoCommand, client: &GitaClient, json: bool) -> Result
                 .await?;
             print_repo(&r, json);
         }
+        args::RepoCommand::Edit {
+            owner,
+            repo,
+            description,
+            private,
+            public,
+            name,
+            new_owner,
+        } => {
+            if private && public {
+                bail!("cannot set both --private and --public");
+            }
+            let is_private = if private {
+                Some(true)
+            } else if public {
+                Some(false)
+            } else {
+                None
+            };
+            let r = client
+                .update_repo(
+                    &owner,
+                    &repo,
+                    description.as_deref(),
+                    is_private,
+                    name.as_deref(),
+                    new_owner.as_deref(),
+                )
+                .await?;
+            print_repo(&r, json);
+        }
         args::RepoCommand::Delete { owner, repo } => {
             let msg = client.delete_repo(&owner, &repo).await?;
             println!("{}", msg.message);

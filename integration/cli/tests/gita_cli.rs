@@ -1103,6 +1103,49 @@ async fn e2e_ssh_key() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: repo edit (description / visibility / rename)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_repo_edit() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "editor");
+
+    // Create a repo.
+    gita_ok(port, &token, &["repo", "create", "editme"]);
+
+    // Edit description.
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "edit", "editor", "editme", "--description", "Updated desc"],
+    );
+    stdout_contains(&out, "Updated desc");
+
+    // Make private.
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "edit", "editor", "editme", "--private"],
+    );
+    stdout_contains(&out, "private: true");
+
+    // Rename.
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "edit", "editor", "editme", "--name", "renamed-repo"],
+    );
+    stdout_contains(&out, "renamed-repo");
+
+    // Confirm the new name appears in the repo list.
+    let out = gita_ok(port, &token, &["repo", "list"]);
+    stdout_contains(&out, "renamed-repo");
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 

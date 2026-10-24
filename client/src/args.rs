@@ -143,6 +143,25 @@ pub enum RepoCommand {
         #[arg(long)]
         private: bool,
     },
+    /// Edit repository settings (description, visibility, rename, transfer).
+    Edit {
+        owner: String,
+        repo: String,
+        #[arg(long)]
+        description: Option<String>,
+        /// Make the repository private.
+        #[arg(long)]
+        private: bool,
+        /// Make the repository public.
+        #[arg(long)]
+        public: bool,
+        /// Rename the repository.
+        #[arg(long)]
+        name: Option<String>,
+        /// Transfer the repository to another owner.
+        #[arg(long)]
+        new_owner: Option<String>,
+    },
     /// Delete a repository (owner only).
     Delete { owner: String, repo: String },
     /// Clone a repository over git smart HTTP.
