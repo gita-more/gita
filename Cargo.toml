@@ -71,5 +71,9 @@ hmac = "0.12"
 sha2 = "0.10"
 
 # cli
-keyring = { version = "3", features = ["sync-secret-service"] }
+# `keyring` uses platform-specific backends (Linux Secret Service, macOS
+# Keychain, Windows Credential Manager). The workspace dep keeps
+# default-features off and no backend enabled; `client/Cargo.toml` selects
+# the backend per target so cross-compilation for release matrices works.
+keyring = { version = "3", default-features = false }
 url = "2.5"

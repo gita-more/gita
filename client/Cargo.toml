@@ -27,5 +27,16 @@ url = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
 
+# `keyring` needs a platform-specific backend. The workspace dep ships with
+# no backend enabled; select the right one per target so cross-compiled
+# release binaries work on each OS (Linux Secret Service, macOS Keychain,
+# Windows Credential Manager).
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { workspace = true, features = ["linux-native-sync-persistent"] }
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+
 [dev-dependencies]
 tempfile = "3"

@@ -151,3 +151,59 @@ jobs:
           files: |
             gita-${{ env.TAG }}.tar.gz
           generate_release_notes: true
+
+  # Build the `gita` CLI binary for multiple platforms/architectures on
+  # native runners and upload each as its own release asset. This keeps the
+  # CLI independently downloadable without unpacking the server tarball.
+  cli-build:
+    name: Build gita CLI (${{ matrix.target }})
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            asset: linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            asset: linux-aarch64
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            asset: macos-x86_64
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            asset: macos-aarch64
+          - target: x86_64-pc-windows-gnu
+            runner: windows-latest
+            asset: windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          cargo build --release -p gita-client --target "${{ matrix.target }}"
+          TAG="${GITHUB_REF_NAME#v}"
+          cp "target/${{ matrix.target }}/release/gita" "gita-${TAG}-${{ matrix.asset }}"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gita-${{ env.TAG }}-${{ matrix.asset }}
+          generate_release_notes: false
