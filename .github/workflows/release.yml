@@ -157,8 +157,12 @@ jobs:
   # CLI independently downloadable without unpacking the server tarball.
   cli-build:
     name: Build gita CLI (${{ matrix.target }})
-    needs: test
+    # Wait for the main release job to create the GitHub Release first so
+    # asset uploads do not race its creation.
+    needs: [test, release]
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
