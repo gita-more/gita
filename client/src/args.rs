@@ -60,6 +60,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: PipelineCommand,
     },
+    /// SSH public keys.
+    SshKey {
+        #[command(subcommand)]
+        cmd: SshKeyCommand,
+    },
     /// Server events.
     Event {
         #[command(subcommand)]
@@ -358,6 +363,25 @@ pub enum PipelineCommand {
         owner: String,
         repo: String,
         run: i64,
+    },
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum SshKeyCommand {
+    /// Add an SSH public key to your account.
+    Add {
+        #[arg(long)]
+        title: Option<String>,
+        /// Path to a public key file, or the key content.
+        #[arg(value_name = "KEY")]
+        key: String,
+    },
+    /// List your SSH public keys.
+    List,
+    /// Delete an SSH public key.
+    Delete {
+        #[arg(long)]
+        id: i64,
     },
 }
 

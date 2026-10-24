@@ -76,16 +76,17 @@ impl GitaClient {
         .await
     }
 
-    pub async fn list_ssh_keys(&self) -> Result<serde_json::Value> {
+    pub async fn list_ssh_keys(&self) -> Result<SshKeysResponse> {
         self.request(reqwest::Method::GET, "/api/auth/keys", None)
             .await
     }
 
-    pub async fn add_ssh_key(&self, key: &str, title: Option<&str>) -> Result<serde_json::Value> {
+    pub async fn add_ssh_key(&self, key: &str, title: Option<&str>) -> Result<SshKey> {
         self.request(
             reqwest::Method::POST,
             "/api/auth/keys",
-            Some(&json!({ "key": key, "title": title })),
+            // The server expects the OpenSSH line in the `public_key` field.
+            Some(&json!({ "public_key": key, "title": title })),
         )
         .await
     }

@@ -115,6 +115,19 @@ pub struct Token {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct SshKey {
+    pub id: i64,
+    pub title: String,
+    pub public_key: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SshKeysResponse {
+    pub keys: Vec<SshKey>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RepoSearchHit {
     pub id: i64,
     pub owner: String,

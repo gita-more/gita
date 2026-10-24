@@ -1042,6 +1042,67 @@ async fn e2e_search_code() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: ssh-key add / list / delete
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_ssh_key() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "sshuser");
+
+    // A syntactically valid OpenSSH public key line (server validates the
+    // algorithm prefix and base64 blob, not whether the key is real).
+    let pubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB32vUpOqxd60GVVNxMePF3cdub6Q0yRIXQlVxP4vTa7 gita-e2e";
+
+    // Add the key.
+    let out = gita_ok(
+        port,
+        &token,
+        &[
+            "ssh-key",
+            "add",
+            "--title",
+            "e2e-laptop",
+            pubkey,
+        ],
+    );
+    stdout_contains(&out, "e2e-laptop");
+
+    // List keys — should include the new one.
+    let out = gita_ok(port, &token, &["ssh-key", "list"]);
+    stdout_contains(&out, "e2e-laptop");
+
+    // Get the key id from JSON.
+    let keys: serde_json::Value = gita_json(port, &token, &["ssh-key", "list"]);
+    let empty = serde_json::Value::Array(vec![]);
+    let key_list = keys["keys"].as_array().unwrap_or(&empty.as_array().unwrap());
+    let key_id = key_list
+        .iter()
+        .find(|k| k.get("title").and_then(|t| t.as_str()) == Some("e2e-laptop"))
+        .expect("e2e-laptop key in list")
+        .get("id")
+        .and_then(|i| i.as_i64())
+        .expect("key id");
+
+    // Delete the key.
+    let out = gita_ok(
+        port,
+        &token,
+        &["ssh-key", "delete", "--id", &key_id.to_string()],
+    );
+    stdout_contains(&out, "deleted");
+
+    // Listing again should not include it.
+    let out = gita_ok(port, &token, &["ssh-key", "list"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("e2e-laptop"),
+        "e2e-laptop key should be removed"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 
