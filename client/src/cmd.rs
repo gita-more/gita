@@ -623,6 +623,43 @@ async fn group(cmd: args::GroupCommand, client: &GitaClient, json: bool) -> Resu
                 println!("{v}");
             }
         }
+        args::GroupCommand::MemberAdd {
+            group,
+            username,
+            role,
+        } => {
+            let v = client
+                .add_group_member(&group, &username, role.as_deref())
+                .await?;
+            if json {
+                output::print_json(&v)?;
+            } else {
+                println!(
+                    "Added {username} to {group} as {}",
+                    v["role"].as_str().unwrap_or("member")
+                );
+            }
+        }
+        args::GroupCommand::MemberRemove { group, username } => {
+            let msg = client.remove_group_member(&group, &username).await?;
+            if json {
+                output::print_json(&msg)?;
+            } else {
+                println!("{}", msg.message);
+            }
+        }
+        args::GroupCommand::MemberSetRole {
+            group,
+            username,
+            role,
+        } => {
+            let v = client.update_group_member(&group, &username, &role).await?;
+            if json {
+                output::print_json(&v)?;
+            } else {
+                println!("Set {username} role in {group} to {}", v["role"]);
+            }
+        }
         args::GroupCommand::Repo {
             group,
             name,

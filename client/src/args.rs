@@ -354,6 +354,22 @@ pub enum GroupCommand {
     View { name: String },
     /// List group members.
     Members { name: String },
+    /// Add a member to a group.
+    MemberAdd {
+        group: String,
+        username: String,
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// Remove a member from a group.
+    MemberRemove { group: String, username: String },
+    /// Set a group member's role.
+    MemberSetRole {
+        group: String,
+        username: String,
+        #[arg(long)]
+        role: String,
+    },
     /// Create a repository under a group.
     Repo {
         group: String,

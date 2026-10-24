@@ -632,6 +632,43 @@ impl GitaClient {
         .await
     }
 
+    pub async fn add_group_member(
+        &self,
+        group: &str,
+        username: &str,
+        role: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        self.request(
+            reqwest::Method::POST,
+            &format!("/api/groups/{group}/members"),
+            Some(&json!({ "username": username, "role": role })),
+        )
+        .await
+    }
+
+    pub async fn update_group_member(
+        &self,
+        group: &str,
+        username: &str,
+        role: &str,
+    ) -> Result<serde_json::Value> {
+        self.request(
+            reqwest::Method::PATCH,
+            &format!("/api/groups/{group}/members/{username}"),
+            Some(&json!({ "role": role })),
+        )
+        .await
+    }
+
+    pub async fn remove_group_member(&self, group: &str, username: &str) -> Result<MessageResponse> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/api/groups/{group}/members/{username}"),
+            None::<&serde_json::Value>,
+        )
+        .await
+    }
+
     // ------------------------------------------------------------------
     // search
     // ------------------------------------------------------------------

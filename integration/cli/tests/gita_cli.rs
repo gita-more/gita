@@ -1249,6 +1249,60 @@ async fn e2e_issue_global_list() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: group member add / set-role / remove
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_group_members() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let owner_token = register_via_binary(port, "grpowner");
+    let member_token = register_via_binary(port, "grpmember");
+
+    // Owner creates a group.
+    gita_ok(port, &owner_token, &["group", "create", "eng", "--description", "Eng group"]);
+
+    // Add the member.
+    let out = gita_ok(
+        port,
+        &owner_token,
+        &["group", "member-add", "eng", "grpmember", "--role", "maintainer"],
+    );
+    stdout_contains(&out, "grpmember");
+
+    // List members — should include them.
+    let out = gita_ok(port, &owner_token, &["group", "members", "eng"]);
+    stdout_contains(&out, "grpmember");
+
+    // Set role.
+    let out = gita_ok(
+        port,
+        &owner_token,
+        &["group", "member-set-role", "eng", "grpmember", "--role", "developer"],
+    );
+    stdout_contains(&out, "developer");
+
+    // Remove the member.
+    let out = gita_ok(
+        port,
+        &owner_token,
+        &["group", "member-remove", "eng", "grpmember"],
+    );
+    stdout_contains(&out, "member removed");
+
+    // Members list should no longer contain them.
+    let out = gita_ok(port, &owner_token, &["group", "members", "eng"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("grpmember"),
+        "grpmember should be removed from group"
+    );
+
+    // member_token can still authenticate (unused here).
+    let _ = member_token;
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 
