@@ -53,6 +53,7 @@ crates/
 ├── gita-runner  # CI runner (separate binary)
 ├── gita-web     # static frontend serving
 └── gita-server  # entrypoint: config, app assembly, startup
+client/           # `gita` CLI client (top-level, see below)
 ```
 
 ## Requirements
@@ -121,6 +122,56 @@ git clone http://127.0.0.1:3000/git/<you>/<repo>.git
 cd <repo>
 git push -u origin main
 ```
+
+## CLI (`gita`)
+
+Gita ships with [`client/`](client/) — a `gh`-like command-line client named
+`gita`, built as a separate workspace member (`gita-client`). It talks to the
+Gita REST API over `Authorization: Bearer <token>` and stores credentials in
+the OS keyring (never plaintext).
+
+Build it once:
+
+```bash
+cargo build -p gita-client
+```
+
+The binary lands at `target/debug/gita` (or `target/release/gita`).
+
+### Authentication
+
+```bash
+# Register a new account (prints a JWT token stored in the keyring)
+./target/debug/gita auth register --username alice --email alice@example.com \
+  --password hunter22
+
+# Log in
+./target/debug/gita auth login --username alice --password hunter22
+
+# Verify who you are
+./target/debug/gita auth whoami
+./target/debug/gita auth status
+```
+
+Token resolution order: `GITA_TOKEN` env > OS keyring (per server URL) > none.
+Server URL resolution: `GITA_URL` env > `~/.config/gita/config.toml` >
+`http://127.0.0.1:3000`.
+
+### Common commands
+
+```bash
+./target/debug/gita repo create --name demo
+./target/debug/gita repo list
+./target/debug/gita repo view alice demo
+./target/debug/gita pr list alice demo
+./target/debug/gita issue list alice demo
+./target/debug/gita search repos demo
+./target/debug/gita event list
+./target/debug/gita config show
+```
+
+Use `--json` for machine-readable output (scripting friendly). See
+[`client/README.md`](client/README.md) for the full command reference.
 
 ### Docker deployment (optional)
 

@@ -57,9 +57,10 @@ jobs:
           exit 1
 
       - name: Build binaries
-        # The CLI integration tests invoke the `gita-server` binary from
-        # `target/debug/gita-server`, which `cargo test` does not build.
-        run: cargo build -p gita-server
+        # The CLI integration tests invoke the `gita` client binary from
+        # `target/debug/gita`. `cargo test` only builds bins for its own
+        # harness under target/debug/deps/, so build them explicitly.
+        run: cargo build -p gita-server -p gita-client
 
       - name: Run workspace tests
         env:
@@ -92,7 +93,7 @@ jobs:
       - name: Build release binaries
         run: |
           cargo build --release
-          cargo build --release -p gita-runner
+          cargo build --release -p gita-runner -p gita-client
 
       - name: Build web frontend
         working-directory: web
@@ -114,6 +115,8 @@ jobs:
           cp -r web/dist "${DIST}/web"
           # Standalone CI runner binary.
           cp target/release/gita-runner "${DIST}/gita-runner"
+          # Client CLI binary.
+          cp target/release/gita "${DIST}/gita"
           # Deployment templates.
           cp config/config.example.toml "${DIST}/config.example.toml"
           cp docker/Dockerfile "${DIST}/Dockerfile"

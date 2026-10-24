@@ -60,10 +60,10 @@ jobs:
           exit 1
 
       - name: Build binaries
-        # The CLI integration tests invoke the `gita-server` binary from
-        # `target/debug/gita-server`. `cargo test` only builds the bin for
-        # its own harness under target/debug/deps/, so build it explicitly.
-        run: cargo build -p gita-server
+        # The CLI integration tests invoke the `gita` client binary from
+        # `target/debug/gita`. `cargo test` only builds bins for its own
+        # harness under target/debug/deps/, so build them explicitly.
+        run: cargo build -p gita-server -p gita-client
 
       - name: Run workspace tests
         env:

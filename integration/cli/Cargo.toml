@@ -16,3 +16,8 @@ clap = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 serde_json = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres"] }
+axum = { workspace = true }
+tower = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+keyring = { version = "3", features = ["sync-secret-service"] }
