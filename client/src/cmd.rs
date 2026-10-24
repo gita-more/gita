@@ -147,6 +147,27 @@ async fn repo(cmd: args::RepoCommand, client: &GitaClient, json: bool) -> Result
                 table.print();
             }
         }
+        args::RepoCommand::BranchCreate {
+            owner,
+            repo,
+            name,
+            r#ref,
+        } => {
+            let v = client.create_branch(&owner, &repo, &name, r#ref.as_deref()).await?;
+            if json {
+                output::print_json(&v)?;
+            } else {
+                println!("Created branch {}", v["branch"]);
+            }
+        }
+        args::RepoCommand::BranchDelete { owner, repo, branch } => {
+            let msg = client.delete_branch(&owner, &repo, &branch).await?;
+            if json {
+                output::print_json(&msg)?;
+            } else {
+                println!("{}", msg.message);
+            }
+        }
         args::RepoCommand::Tags { owner, repo } => {
             let tags = client.get_tags(&owner, &repo).await?;
             if json {
@@ -157,6 +178,27 @@ async fn repo(cmd: args::RepoCommand, client: &GitaClient, json: bool) -> Result
                     table.add_row(vec![t.clone()]);
                 }
                 table.print();
+            }
+        }
+        args::RepoCommand::TagCreate {
+            owner,
+            repo,
+            name,
+            r#ref,
+        } => {
+            let v = client.create_tag(&owner, &repo, &name, r#ref.as_deref()).await?;
+            if json {
+                output::print_json(&v)?;
+            } else {
+                println!("Created tag {}", v["tag"]);
+            }
+        }
+        args::RepoCommand::TagDelete { owner, repo, tag } => {
+            let msg = client.delete_tag(&owner, &repo, &tag).await?;
+            if json {
+                output::print_json(&msg)?;
+            } else {
+                println!("{}", msg.message);
             }
         }
         args::RepoCommand::Commit { owner, repo, sha } => {

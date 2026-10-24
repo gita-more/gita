@@ -1146,6 +1146,76 @@ async fn e2e_repo_edit() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: repo branch/tag create and delete
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_repo_branch_tag() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "brtag");
+
+    // Create a repo and push an initial commit so branches/tags have a base.
+    gita_ok(port, &token, &["repo", "create", "brdemo"]);
+    push_initial_commit(port, &token, "brtag", "brtag", "brdemo", "main");
+
+    // Create a branch.
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "branch-create", "brtag", "brdemo", "feature"],
+    );
+    stdout_contains(&out, "feature");
+
+    // List branches — should include it.
+    let out = gita_ok(port, &token, &["repo", "branches", "brtag", "brdemo"]);
+    stdout_contains(&out, "feature");
+
+    // Delete the branch.
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "branch-delete", "brtag", "brdemo", "feature"],
+    );
+    stdout_contains(&out, "deleted");
+
+    // Branches list should no longer contain it.
+    let out = gita_ok(port, &token, &["repo", "branches", "brtag", "brdemo"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("feature"),
+        "feature branch should be removed"
+    );
+
+    // Create a tag.
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "tag-create", "brtag", "brdemo", "v1.0"],
+    );
+    stdout_contains(&out, "v1.0");
+
+    // List tags — should include it.
+    let out = gita_ok(port, &token, &["repo", "tags", "brtag", "brdemo"]);
+    stdout_contains(&out, "v1.0");
+
+    // Delete the tag.
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "tag-delete", "brtag", "brdemo", "v1.0"],
+    );
+    stdout_contains(&out, "deleted");
+
+    // Tags list should no longer contain it.
+    let out = gita_ok(port, &token, &["repo", "tags", "brtag", "brdemo"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("v1.0"),
+        "v1.0 tag should be removed"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 

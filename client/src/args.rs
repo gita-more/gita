@@ -189,8 +189,30 @@ pub enum RepoCommand {
     },
     /// List branches.
     Branches { owner: String, repo: String },
+    /// Create a branch.
+    BranchCreate {
+        owner: String,
+        repo: String,
+        name: String,
+        /// Ref to branch from (defaults to the default branch).
+        #[arg(long)]
+        r#ref: Option<String>,
+    },
+    /// Delete a branch.
+    BranchDelete { owner: String, repo: String, branch: String },
     /// List tags.
     Tags { owner: String, repo: String },
+    /// Create a tag.
+    TagCreate {
+        owner: String,
+        repo: String,
+        name: String,
+        /// Ref to tag from (defaults to the default branch).
+        #[arg(long)]
+        r#ref: Option<String>,
+    },
+    /// Delete a tag.
+    TagDelete { owner: String, repo: String, tag: String },
     /// Get a single commit with its diff.
     Commit {
         owner: String,
