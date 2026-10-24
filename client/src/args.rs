@@ -453,6 +453,12 @@ pub enum EventCommand {
     List {
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        /// Filter to a repository (`owner/name`).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Filter by event type (e.g. push, pr_opened, issue_created).
+        #[arg(long)]
+        r#type: Option<String>,
     },
 }
 

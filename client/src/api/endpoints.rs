@@ -702,8 +702,25 @@ impl GitaClient {
     // events
     // ------------------------------------------------------------------
 
-    pub async fn list_events(&self, limit: usize) -> Result<EventsResponse> {
-        let path = format!("/api/events?limit={limit}");
+    pub async fn list_events(
+        &self,
+        limit: usize,
+        repo: Option<&str>,
+        event_type: Option<&str>,
+    ) -> Result<EventsResponse> {
+        let mut path = format!("/api/events?limit={limit}");
+        if let Some(r) = repo {
+            path.push_str(&format!(
+                "&repo={}",
+                form_urlencoded::byte_serialize(r.as_bytes()).collect::<String>()
+            ));
+        }
+        if let Some(t) = event_type {
+            path.push_str(&format!(
+                "&type={}",
+                form_urlencoded::byte_serialize(t.as_bytes()).collect::<String>()
+            ));
+        }
         self.request(reqwest::Method::GET, &path, None).await
     }
 

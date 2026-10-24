@@ -838,8 +838,8 @@ async fn ssh_key(cmd: args::SshKeyCommand, client: &GitaClient, json: bool) -> R
 
 async fn event(cmd: args::EventCommand, client: &GitaClient, json: bool) -> Result<()> {
     match cmd {
-        args::EventCommand::List { limit } => {
-            let events = client.list_events(limit).await?;
+        args::EventCommand::List { limit, repo, r#type } => {
+            let events = client.list_events(limit, repo.as_deref(), r#type.as_deref()).await?;
             if json {
                 output::print_json(&events)?;
             } else {

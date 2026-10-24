@@ -1332,6 +1332,45 @@ async fn e2e_repo_star_status() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: event list filtering by repo / type
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_event_filter() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "evuser");
+
+    // Create a repo and push, which emits a push event.
+    gita_ok(port, &token, &["repo", "create", "evdemo"]);
+    push_initial_commit(port, &token, "evuser", "evuser", "evdemo", "main");
+
+    // Poll until a push event for this repo shows up.
+    let mut found = false;
+    for _ in 0..30 {
+        let out = gita_ok(
+            port,
+            &token,
+            &["event", "list", "--repo", "evuser/evdemo", "--limit", "50"],
+        );
+        if String::from_utf8_lossy(&out.stdout).contains("push") {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert!(found, "expected a push event for evuser/evdemo");
+
+    // Type filter also works.
+    let out = gita_ok(port, &token, &["event", "list", "--type", "push", "--limit", "50"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("push"),
+        "event list --type push should contain push events"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 
