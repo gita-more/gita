@@ -70,6 +70,16 @@ pub enum Command {
         #[command(subcommand)]
         cmd: EventCommand,
     },
+    /// Make an authenticated request against the REST API.
+    Api {
+        path: String,
+        /// HTTP method (default GET).
+        #[arg(long, default_value = "GET")]
+        method: String,
+        /// JSON request body (for POST/PATCH/PUT).
+        #[arg(long)]
+        body: Option<String>,
+    },
     /// Client configuration.
     Config {
         #[command(subcommand)]

@@ -1398,6 +1398,53 @@ async fn e2e_auth_me_update() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: api raw REST call
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_api_call() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "apiuser");
+
+    // Create a repo so the list is non-empty.
+    gita_ok(port, &token, &["repo", "create", "apidemo"]);
+
+    // Raw GET with /api prefix.
+    let out = gita_ok(port, &token, &["api", "/api/repos"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("apidemo"),
+        "api /api/repos should list apidemo"
+    );
+
+    // Raw GET without /api prefix is normalised.
+    let out = gita_ok(port, &token, &["api", "repos"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("apidemo"),
+        "api repos should list apidemo"
+    );
+
+    // Raw POST with a JSON body (create a second repo).
+    let out = gita_ok(
+        port,
+        &token,
+        &[
+            "api",
+            "repos",
+            "--method",
+            "POST",
+            "--body",
+            r#"{"name":"apidemo2"}"#,
+        ],
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("apidemo2"),
+        "api POST repos should create apidemo2"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 

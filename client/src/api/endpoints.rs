@@ -12,6 +12,18 @@ use super::GitaClient;
 use crate::api::types::*;
 
 impl GitaClient {
+    /// Issue an arbitrary authenticated request and return the raw JSON body.
+    pub async fn api(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let method = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|_| anyhow::anyhow!("invalid HTTP method: {method}"))?;
+        self.request(method, path, body.as_ref()).await
+    }
+
     // ------------------------------------------------------------------
     // auth
     // ------------------------------------------------------------------
