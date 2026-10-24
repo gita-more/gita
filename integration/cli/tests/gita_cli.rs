@@ -1445,6 +1445,44 @@ async fn e2e_api_call() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: repo pages enable/status/show/disable
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_repo_pages() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "pagesuser");
+
+    // Create a repo and push so a branch exists for Pages.
+    gita_ok(port, &token, &["repo", "create", "sitedemo"]);
+    push_initial_commit(port, &token, "pagesuser", "pagesuser", "sitedemo", "main");
+
+    // Enable Pages.
+    let out = gita_ok(port, &token, &["repo", "pages-enable", "pagesuser", "sitedemo"]);
+    stdout_contains(&out, "enabled");
+
+    // Status should report enabled.
+    let out = gita_ok(port, &token, &["repo", "pages-status", "pagesuser", "sitedemo"]);
+    let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap_or_default()
+    });
+    assert_eq!(status["enabled"], true);
+
+    // Show config.
+    let out = gita_ok(port, &token, &["repo", "pages", "pagesuser", "sitedemo"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("enabled"),
+        "pages show should contain config"
+    );
+
+    // Disable Pages.
+    let out = gita_ok(port, &token, &["repo", "pages-disable", "pagesuser", "sitedemo"]);
+    stdout_contains(&out, "disabled");
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 

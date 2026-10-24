@@ -261,6 +261,45 @@ async fn repo(cmd: args::RepoCommand, client: &GitaClient, json: bool) -> Result
                 );
             }
         }
+        args::RepoCommand::PagesShow { owner, repo } => {
+            let v = client.get_pages(&owner, &repo).await?;
+            if json {
+                output::print_json(&v)?;
+            } else {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            }
+        }
+        args::RepoCommand::PagesStatus { owner, repo } => {
+            let v = client.get_pages_status(&owner, &repo).await?;
+            if json {
+                output::print_json(&v)?;
+            } else {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            }
+        }
+        args::RepoCommand::PagesEnable {
+            owner,
+            repo,
+            branch,
+            path,
+        } => {
+            let v = client
+                .put_pages(&owner, &repo, true, branch.as_deref(), &path)
+                .await?;
+            if json {
+                output::print_json(&v)?;
+            } else {
+                println!("Pages enabled: {}", serde_json::to_string_pretty(&v)?);
+            }
+        }
+        args::RepoCommand::PagesDisable { owner, repo } => {
+            let msg = client.delete_pages(&owner, &repo).await?;
+            if json {
+                output::print_json(&msg)?;
+            } else {
+                println!("{}", msg.message);
+            }
+        }
         args::RepoCommand::Fork { owner, repo, name } => {
             let r = client.fork_repo(&owner, &repo, name.as_deref()).await?;
             print_repo(&r, json);

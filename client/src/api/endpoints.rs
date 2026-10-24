@@ -851,7 +851,7 @@ impl GitaClient {
         owner: &str,
         repo: &str,
         enabled: bool,
-        branch: &str,
+        branch: Option<&str>,
         path: &str,
     ) -> Result<serde_json::Value> {
         self.request(

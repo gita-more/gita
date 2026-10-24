@@ -255,6 +255,23 @@ pub enum RepoCommand {
     Unstar { owner: String, repo: String },
     /// Show whether you have starred a repository.
     StarStatus { owner: String, repo: String },
+    /// Show Pages configuration for a repository.
+    #[command(name = "pages-show", alias = "pages")]
+    PagesShow { owner: String, repo: String },
+    /// Show whether Pages is configured/enabled for a repository.
+    PagesStatus { owner: String, repo: String },
+    /// Enable Pages for a repository.
+    PagesEnable {
+        owner: String,
+        repo: String,
+        #[arg(long)]
+        branch: Option<String>,
+        /// Site directory: "/" or "/docs".
+        #[arg(long, default_value = "/")]
+        path: String,
+    },
+    /// Disable Pages for a repository.
+    PagesDisable { owner: String, repo: String },
     /// Fork a repository under your namespace.
     Fork {
         owner: String,
