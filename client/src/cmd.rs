@@ -247,6 +247,17 @@ async fn repo(cmd: args::RepoCommand, client: &GitaClient, json: bool) -> Result
             let s = client.unstar_repo(&owner, &repo).await?;
             print_star(&s);
         }
+        args::RepoCommand::StarStatus { owner, repo } => {
+            let s = client.get_star(&owner, &repo).await?;
+            if json {
+                output::print_json(&s)?;
+            } else {
+                println!(
+                    "starred: {} (count: {})",
+                    s.starred, s.count
+                );
+            }
+        }
         args::RepoCommand::Fork { owner, repo, name } => {
             let r = client.fork_repo(&owner, &repo, name.as_deref()).await?;
             print_repo(&r, json);

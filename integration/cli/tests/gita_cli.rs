@@ -1303,6 +1303,35 @@ async fn e2e_group_members() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: repo star-status query
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_repo_star_status() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "starstatus");
+
+    // Create a repo.
+    gita_ok(port, &token, &["repo", "create", "ssdemo"]);
+
+    // Not starred initially.
+    let out = gita_ok(port, &token, &["repo", "star-status", "starstatus", "ssdemo"]);
+    stdout_contains(&out, "starred: false");
+
+    // Star it, then status should flip.
+    gita_ok(port, &token, &["repo", "star", "starstatus", "ssdemo"]);
+    let out = gita_ok(port, &token, &["repo", "star-status", "starstatus", "ssdemo"]);
+    stdout_contains(&out, "starred: true");
+
+    // Unstar, status flips back.
+    gita_ok(port, &token, &["repo", "unstar", "starstatus", "ssdemo"]);
+    let out = gita_ok(port, &token, &["repo", "star-status", "starstatus", "ssdemo"]);
+    stdout_contains(&out, "starred: false");
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 

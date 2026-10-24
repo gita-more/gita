@@ -325,6 +325,15 @@ impl GitaClient {
         .await
     }
 
+    pub async fn get_star(&self, owner: &str, repo: &str) -> Result<StarResponse> {
+        self.request(
+            reqwest::Method::GET,
+            &format!("/api/repos/{owner}/{repo}/star"),
+            None,
+        )
+        .await
+    }
+
     pub async fn fork_repo(
         &self,
         owner: &str,

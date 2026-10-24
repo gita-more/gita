@@ -232,6 +232,8 @@ pub enum RepoCommand {
     Star { owner: String, repo: String },
     /// Unstar a repository.
     Unstar { owner: String, repo: String },
+    /// Show whether you have starred a repository.
+    StarStatus { owner: String, repo: String },
     /// Fork a repository under your namespace.
     Fork {
         owner: String,
