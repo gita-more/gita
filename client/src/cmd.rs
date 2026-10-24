@@ -474,24 +474,50 @@ async fn issue(cmd: args::IssueCommand, client: &GitaClient, json: bool) -> Resu
         args::IssueCommand::List {
             owner,
             repo,
+            all,
             status,
         } => {
-            let v =
-                serde_json::to_value(client.list_issues(&owner, &repo, status.as_deref()).await?)?;
-            if json {
-                output::print_json(&v)?;
-            } else {
-                let issues = &v["issues"];
-                let mut table = output::Table::new(&["number", "title", "status", "author"]);
-                for i in issues.as_array().unwrap_or(&vec![]) {
-                    table.add_row(vec![
-                        i["number"].to_string(),
-                        i["title"].to_string(),
-                        i["status"].to_string(),
-                        i["author"].to_string(),
-                    ]);
+            if all {
+                let resp = client.list_all_issues(status.as_deref()).await?;
+                if json {
+                    output::print_json(&resp)?;
+                } else {
+                    let mut table =
+                        output::Table::new(&["repo", "number", "title", "status", "author"]);
+                    for i in &resp.issues {
+                        table.add_row(vec![
+                            i.full_name.clone(),
+                            i.number.to_string(),
+                            i.title.clone(),
+                            i.status.clone(),
+                            i.author.clone(),
+                        ]);
+                    }
+                    table.print();
                 }
-                table.print();
+            } else {
+                let owner = owner
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("owner is required unless --all is given"))?;
+                let repo = repo
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("repo is required unless --all is given"))?;
+                let v = serde_json::to_value(client.list_issues(owner, repo, status.as_deref()).await?)?;
+                if json {
+                    output::print_json(&v)?;
+                } else {
+                    let issues = &v["issues"];
+                    let mut table = output::Table::new(&["number", "title", "status", "author"]);
+                    for i in issues.as_array().unwrap_or(&vec![]) {
+                        table.add_row(vec![
+                            i["number"].to_string(),
+                            i["title"].to_string(),
+                            i["status"].to_string(),
+                            i["author"].to_string(),
+                        ]);
+                    }
+                    table.print();
+                }
             }
         }
         args::IssueCommand::View {

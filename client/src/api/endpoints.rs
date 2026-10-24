@@ -501,6 +501,17 @@ impl GitaClient {
         .await
     }
 
+    pub async fn list_all_issues(&self, status: Option<&str>) -> Result<GlobalIssuesResponse> {
+        let mut path = "/api/issues".to_string();
+        if let Some(s) = status {
+            path.push_str(&format!(
+                "?status={}",
+                form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>()
+            ));
+        }
+        self.request(reqwest::Method::GET, &path, None).await
+    }
+
     pub async fn create_issue(
         &self,
         owner: &str,

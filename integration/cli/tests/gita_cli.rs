@@ -1216,6 +1216,39 @@ async fn e2e_repo_branch_tag() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: issue list --all (global issues across repositories)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_issue_global_list() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "globissue");
+
+    // Create two repos and an issue in each.
+    gita_ok(port, &token, &["repo", "create", "repo-a"]);
+    gita_ok(port, &token, &["repo", "create", "repo-b"]);
+    gita_ok(
+        port,
+        &token,
+        &["issue", "create", "globissue", "repo-a", "--title", "Issue in A"],
+    );
+    gita_ok(
+        port,
+        &token,
+        &["issue", "create", "globissue", "repo-b", "--title", "Issue in B"],
+    );
+
+    // Global list should show both, with repo names.
+    let out = gita_ok(port, &token, &["issue", "list", "--all"]);
+    stdout_contains(&out, "Issue in A");
+    stdout_contains(&out, "Issue in B");
+    stdout_contains(&out, "globissue/repo-a");
+    stdout_contains(&out, "globissue/repo-b");
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 

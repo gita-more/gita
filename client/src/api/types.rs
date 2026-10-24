@@ -250,6 +250,11 @@ pub struct IssuesResponse {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct GlobalIssuesResponse {
+    pub issues: Vec<GlobalIssueItem>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CommentsResponse {
     pub comments: Vec<Comment>,
 }

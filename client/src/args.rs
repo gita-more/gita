@@ -299,10 +299,13 @@ pub enum PrCommand {
 
 #[derive(Debug, clap::Subcommand)]
 pub enum IssueCommand {
-    /// List issues.
+    /// List issues. Pass `--all` to list across every repository.
     List {
-        owner: String,
-        repo: String,
+        owner: Option<String>,
+        repo: Option<String>,
+        /// List issues across all repositories you can see.
+        #[arg(long)]
+        all: bool,
         #[arg(long)]
         status: Option<String>,
     },
