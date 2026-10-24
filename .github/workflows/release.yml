@@ -41,7 +41,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git ssh openssh-client postgresql-client
+          sudo apt-get install -y git ssh openssh-client postgresql-client libdbus-1-dev pkg-config
 
       - name: Wait for Postgres
         run: |
@@ -88,7 +88,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git ssh openssh-client
+          sudo apt-get install -y git ssh openssh-client libdbus-1-dev pkg-config
 
       - name: Build release binaries
         run: |

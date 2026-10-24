@@ -40,7 +40,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git ssh openssh-client postgresql-client
+          sudo apt-get install -y git ssh openssh-client postgresql-client libdbus-1-dev pkg-config
 
       - name: Wait for Postgres
         # Defensive: even with --health-cmd, the first test step may run before
