@@ -44,6 +44,26 @@ impl GitaClient {
             .await
     }
 
+    pub async fn update_me(
+        &self,
+        locale: Option<&str>,
+        email: Option<&str>,
+        current_password: Option<&str>,
+        new_password: Option<&str>,
+    ) -> Result<User> {
+        self.request(
+            reqwest::Method::PATCH,
+            "/api/auth/me",
+            Some(&json!({
+                "locale": locale,
+                "email": email,
+                "current_password": current_password,
+                "new_password": new_password,
+            })),
+        )
+        .await
+    }
+
     pub async fn logout(&self) -> Result<MessageResponse> {
         self.request(
             reqwest::Method::POST,

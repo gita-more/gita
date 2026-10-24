@@ -1371,6 +1371,33 @@ async fn e2e_event_filter() {
 }
 
 // ---------------------------------------------------------------------------
+// P2: auth me update profile (locale)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_auth_me_update() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    let token = register_via_binary(port, "meuser");
+
+    // Update locale.
+    let out = gita_ok(port, &token, &["auth", "me", "--locale", "zh"]);
+    stdout_contains(&out, "zh");
+
+    // whoami should reflect the change.
+    let out = gita_ok(port, &token, &["auth", "whoami"]);
+    stdout_contains(&out, "zh");
+
+    // No-op update should fail gracefully (non-zero exit) but not crash.
+    let out = gita(port, &token, &["auth", "me"]);
+    assert!(
+        !out.status.success(),
+        "auth me with nothing to update should fail"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // P2: keyring local test (skips gracefully when no Secret Service)
 // ---------------------------------------------------------------------------
 

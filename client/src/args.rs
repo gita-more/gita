@@ -99,6 +99,17 @@ pub enum AuthCommand {
     Status,
     /// Show the authenticated user.
     Whoami,
+    /// Update your profile (locale, email, password).
+    Me {
+        #[arg(long)]
+        locale: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
+        #[arg(long)]
+        current_password: Option<String>,
+        #[arg(long)]
+        new_password: Option<String>,
+    },
     /// Personal access token management.
     Token {
         #[command(subcommand)]

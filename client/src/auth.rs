@@ -4,7 +4,7 @@
 //! `None`. Commands below that need a token therefore work either from the
 //! env var or from a previously stored keyring secret.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::io::Write;
 
 use crate::api::GitaClient;
@@ -36,6 +36,22 @@ pub async fn dispatch(
         crate::args::AuthCommand::Logout => logout(client, json).await,
         crate::args::AuthCommand::Status => status(client, json).await,
         crate::args::AuthCommand::Whoami => whoami(client, json).await,
+        crate::args::AuthCommand::Me {
+            locale,
+            email,
+            current_password,
+            new_password,
+        } => {
+            me_update(
+                client,
+                locale.as_deref(),
+                email.as_deref(),
+                current_password.as_deref(),
+                new_password.as_deref(),
+                json,
+            )
+            .await
+        }
         crate::args::AuthCommand::Token { cmd } => match cmd {
             crate::args::TokenCommand::Create { name, store } => {
                 token_create(client, name.as_deref(), store, json).await
@@ -165,6 +181,38 @@ async fn whoami(client: &GitaClient, json: bool) -> Result<()> {
     if json {
         output::print_json(&user)?;
     } else {
+        println!("username: {}", user.username);
+        println!("email: {}", user.email);
+        println!("locale: {}", user.locale);
+    }
+    Ok(())
+}
+
+/// Update the authenticated user's profile (locale, email, password).
+async fn me_update(
+    client: &GitaClient,
+    locale: Option<&str>,
+    email: Option<&str>,
+    current_password: Option<&str>,
+    new_password: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    if locale.is_none()
+        && email.is_none()
+        && new_password.is_none()
+    {
+        bail!("nothing to update; pass --locale, --email and/or --new-password");
+    }
+    if new_password.is_some() && current_password.is_none() {
+        bail!("--current-password is required when changing the password");
+    }
+    let user = client
+        .update_me(locale, email, current_password, new_password)
+        .await?;
+    if json {
+        output::print_json(&user)?;
+    } else {
+        println!("Updated profile:");
         println!("username: {}", user.username);
         println!("email: {}", user.email);
         println!("locale: {}", user.locale);
