@@ -21,3 +21,5 @@ tower = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 keyring = { version = "3", features = ["sync-secret-service"] }
+[lints]
+workspace = true

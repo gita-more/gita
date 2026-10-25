@@ -19,3 +19,6 @@ gita-core = { path = "../gita-core" }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

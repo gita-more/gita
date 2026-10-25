@@ -11,6 +11,11 @@
 //!        e2e_repo_star_unstar, e2e_repo_fork
 //!   P2 — e2e_pipeline_suite, e2e_group_suite, e2e_search_code, e2e_keyring_local
 
+// Each test file compiles this module as its own crate, so helpers used only by
+// *other* test files would otherwise trip the workspace-wide
+// warnings-as-errors rule.
+#![allow(dead_code)]
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 

@@ -241,15 +241,6 @@ mod tests {
     #[test]
     fn a_token_without_a_jti_still_decodes_and_gets_a_stable_id() {
         let auth = Auth::new("test-secret".to_string());
-        let user = User {
-            id: 1,
-            username: "alice".to_string(),
-            email: "a@b.c".to_string(),
-            password_hash: "x".to_string(),
-            created_at: Utc::now(),
-            locale: "zh".to_string(),
-            is_admin: false,
-        };
         // Mint a token the old way: no `jti` in the claims.
         let legacy = Claims {
             sub: 1,

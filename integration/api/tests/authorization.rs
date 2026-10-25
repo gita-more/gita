@@ -21,7 +21,7 @@ use axum::http::StatusCode;
 use common::{create_repo, push_initial_commit, register_user, request, test_app};
 
 /// Create a private repository owned by `owner` and return its full name.
-async fn private_repo(app: &gita_server::App, owner: &str, token: &str, name: &str) -> String {
+async fn private_repo(app: &gita_server::App, _owner: &str, token: &str, name: &str) -> String {
     use tower::ServiceExt;
     let body = serde_json::json!({
         "name": name,
@@ -231,7 +231,7 @@ async fn code_search_does_not_leak_private_repositories() {
     let (app, _guard) = test_app().await;
     let owner = register_user(&app, "searchowner").await;
     let intruder = register_user(&app, "searchintruder").await;
-    let full = private_repo(&app, &owner.username, &owner.token, "codevault").await;
+    private_repo(&app, &owner.username, &owner.token, "codevault").await;
     push_initial_commit(&app, &owner.username, "codevault");
 
     // The canary is in the private repository's working tree.

@@ -8,13 +8,11 @@
 use anyhow::{Context, Result};
 use reqwest::{header, Client, Method};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 pub mod endpoints;
 pub mod types;
-pub use endpoints::*;
-pub use types::*;
 
 /// Error returned by the client, mirroring the server's error envelope.
 #[derive(Debug, thiserror::Error)]

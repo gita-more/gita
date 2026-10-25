@@ -256,7 +256,7 @@ async fn ssh_non_owner_cannot_push() {
 
     // Owner alice creates a public repo.
     let alice = register_user(&app, "alice").await;
-    let (alice_key, alice_pub) = generate_client_key(dir.path());
+    let (_alice_key, alice_pub) = generate_client_key(dir.path());
     let (status, _) = request(
         &app,
         axum::http::Method::POST,
@@ -367,7 +367,7 @@ async fn ssh_group_developer_can_push_to_a_group_repository() {
 
     // Alice creates the group and the repository inside it.
     let alice = register_user(&app, "galice").await;
-    let (alice_key, alice_pub) = generate_client_key(dir.path());
+    let (_alice_key, alice_pub) = generate_client_key(dir.path());
     let (status, _) = request(
         &app,
         axum::http::Method::POST,

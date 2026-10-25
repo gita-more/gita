@@ -21,7 +21,7 @@ use axum::http::{Method, StatusCode};
 use common::{register_user, request, test_app};
 
 /// Create a group owned by `owner` and return its name.
-async fn create_group(app: &gita_server::App, owner: &str, token: &str, name: &str) {
+async fn create_group(app: &gita_server::App, _owner: &str, token: &str, name: &str) {
     let (status, body) = request(
         app,
         Method::POST,

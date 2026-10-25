@@ -8,6 +8,11 @@
 //! real git commit so /api/repos/{owner}/{repo}/tree, /commits, the
 //! `head_sha` lookup used by PR creation, etc., all return real data.
 
+// Each test file compiles this module as its own crate, so helpers used only by
+// *other* test files would otherwise trip the workspace-wide
+// warnings-as-errors rule.
+#![allow(dead_code)]
+
 use std::path::Path;
 use std::process::Command;
 

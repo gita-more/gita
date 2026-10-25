@@ -803,7 +803,7 @@ async fn runner_clones_the_repository_using_a_full_ref() {
 
     // The run must succeed — the clone has to work.
     let finished = db.get_pipeline_run(run_id).await.unwrap().unwrap();
-    let all = db.list_pipeline_runs(pipeline_id, 50).await.unwrap();
+    let _all = db.list_pipeline_runs(pipeline_id, 50).await.unwrap();
     assert_eq!(
         finished.status, "success",
         "the runner's own clone should have succeeded"

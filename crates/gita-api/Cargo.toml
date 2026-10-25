@@ -33,3 +33,6 @@ gita-git = { path = "../gita-git" }
 gita-events = { path = "../gita-events" }
 gita-web = { path = "../gita-web" }
 governor = "0.7"
+
+[lints]
+workspace = true

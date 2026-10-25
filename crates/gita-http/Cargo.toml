@@ -23,3 +23,6 @@ gita-events = { path = "../gita-events" }
 gita-api = { path = "../gita-api" }
 gita-pipeline = { path = "../gita-pipeline" }
 gita-push = { path = "../gita-push" }
+
+[lints]
+workspace = true

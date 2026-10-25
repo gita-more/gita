@@ -13,3 +13,6 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 gita-core = { path = "../gita-core" }
+
+[lints]
+workspace = true

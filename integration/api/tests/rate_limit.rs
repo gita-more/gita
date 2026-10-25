@@ -1,6 +1,5 @@
 mod common;
 
-use common::{register_user, request};
 
 #[tokio::test]
 async fn login_rate_limit_returns_429() {

@@ -186,6 +186,7 @@ pub async fn execute_pipeline(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            tracing::warn!("read .gita-ci.yml failed: {e}; repo dir contains: {listing:?}");
             db.update_pipeline_run_status(run.id, "failed").await?;
             return Ok(());
         }
@@ -203,6 +204,7 @@ pub async fn execute_pipeline(
     let plans = match expand(&spec) {
         Ok(p) => p,
         Err(e) => {
+            tracing::warn!("expand pipeline failed: {e}");
             db.update_pipeline_run_status(run.id, "failed").await?;
             return Ok(());
         }
@@ -242,7 +244,6 @@ pub async fn execute_pipeline(
     let final_run_status = if any_failed { "failed" } else { "success" };
     db.update_pipeline_run_status(run.id, final_run_status)
         .await?;
-    let after = db.get_pipeline_run(run.id).await.unwrap().map(|r| r.status);
     Ok(())
 }
 

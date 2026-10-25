@@ -13,3 +13,6 @@ gita-git = { path = "../gita-git" }
 gita-pipeline = { path = "../gita-pipeline" }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -18,17 +18,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    fn test_event() -> Event {
-        Event {
-            id: 0,
-            event_type: EventType::Push,
-            repo_id: Some(1),
-            actor_id: Some(2),
-            payload: serde_json::json!({"branch": "main"}),
-            created_at: chrono::Utc::now(),
-        }
-    }
-
     #[test]
     fn publish_and_subscribe_receives_event() {
         let bus = EventBus::default();

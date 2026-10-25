@@ -45,6 +45,9 @@ impl InMemoryEventLog {
 /// Useful for tests and for the server's own `/api/events` endpoint.
 #[derive(Debug)]
 pub struct EventLogSubscriber {
+    // Only held for ownership: keeps the Arc<InMemoryEventLog> alive while
+    // the subscriber exists. The listener path uses the log via spawn_listener.
+    #[allow(dead_code)]
     log: Arc<InMemoryEventLog>,
     _rx: tokio::sync::broadcast::Receiver<Event>,
 }

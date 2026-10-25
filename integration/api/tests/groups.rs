@@ -110,7 +110,7 @@ async fn group_member_management() {
 async fn group_owner_role_cannot_be_assigned_to_others() {
     let (app, _guard) = common::test_app().await;
     let owner = register_user(&app, "role-owner").await;
-    let member = register_user(&app, "role-member").await;
+    let _member = register_user(&app, "role-member").await;
 
     let (status, _) = request(
         &app,

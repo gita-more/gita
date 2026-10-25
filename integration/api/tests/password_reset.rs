@@ -335,7 +335,7 @@ async fn password_reset_rate_limit_returns_429() {
 async fn password_reset_flow() {
     let (app, guard) = common::test_app().await;
     let schema = guard.schema.clone();
-    let user = register_user(&app, "reset-user").await;
+    let _user = register_user(&app, "reset-user").await;
 
     // Reset request by username — should succeed silently even if no user matches.
     let (status, _) = request(

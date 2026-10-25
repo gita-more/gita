@@ -52,18 +52,6 @@ mod tests {
     use axum::http::{header, HeaderMap, StatusCode};
     use base64::Engine as _;
     use gita_core::EventType;
-    use std::path::PathBuf;
-
-    fn temp_root() -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("gita-http-test-{}-{}", std::process::id(), id));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     #[tokio::test]
     async fn git_request_authorization() {

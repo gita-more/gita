@@ -38,3 +38,6 @@ tempfile = "3"
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres"] }
 reqwest = { workspace = true, features = ["blocking", "json"] }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -239,7 +239,7 @@ mod tests {
         dir
     }
 
-    fn push_initial_commit(mgr: &GitManager, owner: &str, name: &str, repo_path: &std::path::Path) {
+    fn push_initial_commit(_mgr: &GitManager, _owner: &str, _name: &str, repo_path: &std::path::Path) {
         let work = repo_path.parent().unwrap().join("work");
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(&work).unwrap();
@@ -1139,7 +1139,7 @@ mod tests {
         let mgr = GitManager::new(root.clone());
         let path = mgr.create_repo("alice", "merge", "main").await.unwrap();
         push_initial_commit(&mgr, "alice", "merge", &path);
-        let main_before = mgr.head_sha("alice", "merge", "main").unwrap();
+        let _main_before = mgr.head_sha("alice", "merge", "main").unwrap();
 
         // Branch feature from main, add a file.
         push_branch(

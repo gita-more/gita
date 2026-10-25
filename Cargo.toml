@@ -77,3 +77,8 @@ sha2 = "0.10"
 # the backend per target so cross-compilation for release matrices works.
 keyring = { version = "3", default-features = false }
 url = "2.5"
+
+# Warnings are errors: the tree must stay warning-clean. Lint config lives
+# here; every workspace member opts in with `[lints] workspace = true`.
+[workspace.lints.rust]
+warnings = "deny"

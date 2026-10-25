@@ -12,3 +12,5 @@ serde_yaml = "0.9"
 indexmap = { version = "2", features = ["serde"] }
 thiserror = { workspace = true }
 globset = "0.4"
+[lints]
+workspace = true

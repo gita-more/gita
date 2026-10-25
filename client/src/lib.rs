@@ -3,7 +3,7 @@
 //! `run(args)` is the async entrypoint called by `src/main.rs`. The binary
 //! itself is thin: it only parses args, initializes tracing, and dispatches.
 
-mod api;
+pub mod api;
 mod args;
 mod auth;
 mod cmd;
