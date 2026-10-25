@@ -192,7 +192,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginRoute />} />
-      <Route path="/init" element={<InitPage />} />
+      <Route path="/init" element={<InitPage onDone={() => navigate('/')} />} />
 
       <Route element={<Protected><Root /></Protected>}>
         <Route path="/" element={<Projects />} />

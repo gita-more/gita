@@ -119,12 +119,12 @@ compose_cmd() {
 #
 # 问题背景：docker-compose v1 生成的网络配置是 cniVersion 1.0.0，但
 # Podman 3.4.4 自带的 firewall CNI 插件只支持 0.4.0，导致每次 compose
-# 重建网络时报 "CNI network "gita_default" not found"。
+# 重建网络时报 "CNI network "docker_default" not found"。
 # 解决办法：把 conflist 的 cniVersion 降为 0.4.0，并移除 firewall 的
 # backend 字段（空 backend 在 0.4.0 下会报错）。
 # ---------------------------------------------------------------------------
 
-NETWORK_CONFLIST="${XDG_CONFIG_HOME:-${HOME}/.config}/cni/net.d/gita_default.conflist"
+NETWORK_CONFLIST="${XDG_CONFIG_HOME:-${HOME}/.config}/cni/net.d/docker_default.conflist"
 
 fix_network_conflist() {
   [[ -f "${NETWORK_CONFLIST}" ]] || return 0

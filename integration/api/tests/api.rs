@@ -158,6 +158,136 @@ async fn login_wrong_password_returns_401() {
 }
 
 #[tokio::test]
+async fn system_init_creates_first_admin_and_only_runs_once() {
+    let (app, _guard) = common::test_app().await;
+
+    // Before any account exists, the system reports uninitialized.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/auth/initialized",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "initialized probe: {body}"
+    );
+    assert_eq!(body["initialized"], false);
+
+    // Create the first admin.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/init",
+        Some(serde_json::json!({
+            "username": "root",
+            "email": "root@example.com",
+            "password": "hunter22",
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "init: {body}");
+    assert_eq!(body["user"]["username"], "root");
+    assert!(
+        body["token"].as_str().unwrap().len() >= 32,
+        "init should mint a JWT"
+    );
+    let token = body["token"].as_str().unwrap().to_string();
+
+    // The created account is authenticated and usable.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/auth/me",
+        None,
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "me as root: {body}");
+    assert_eq!(body["username"], "root");
+
+    // After initialization the system reports initialized.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/auth/initialized",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "initialized probe: {body}"
+    );
+    assert_eq!(body["initialized"], true);
+
+    // A second init attempt is rejected.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/init",
+        Some(serde_json::json!({
+            "username": "root2",
+            "email": "root2@example.com",
+            "password": "hunter22",
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "second init: {body}"
+    );
+}
+
+#[tokio::test]
+async fn system_init_is_rejected_once_any_user_exists() {
+    let (app, _guard) = common::test_app().await;
+    let _ = register_user(&app, "earlybird").await;
+
+    // The system reports initialized once a normal account exists.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::GET,
+        "/api/auth/initialized",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "initialized probe: {body}"
+    );
+    assert_eq!(body["initialized"], true);
+
+    // init cannot be used to seize the system after an account exists.
+    let (status, body) = request(
+        &app,
+        axum::http::Method::POST,
+        "/api/auth/init",
+        Some(serde_json::json!({
+            "username": "root",
+            "email": "root@example.com",
+            "password": "hunter22",
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "init after user exists: {body}"
+    );
+}
+
+#[tokio::test]
 async fn access_tokens_create_and_list() {
     let (app, _guard) = common::test_app().await;
     let user = register_user(&app, "token-user").await;
