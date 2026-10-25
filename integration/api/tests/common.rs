@@ -12,6 +12,7 @@ use std::path::Path;
 use std::process::Command;
 
 use gita_server::Config;
+use gita_db::Db;
 
 /// Database URL for integration tests. Override via `GITA_TEST_DATABASE_URL`.
 pub fn test_db_url() -> String {
@@ -502,4 +503,58 @@ pub async fn start_ssh(app: &gita_server::App) -> u16 {
         .await
         .unwrap();
     handle.addr().port()
+}
+
+// ---------------------------------------------------------------------------
+// CI pipeline helpers
+// ---------------------------------------------------------------------------
+
+pub fn push_ci_yml(app: &gita_server::App, owner: &str, name: &str, yaml: &str) {
+    let bare = app
+        .data_dir
+        .join("repos")
+        .join(owner)
+        .join(format!("{name}.git"));
+    let bare_url = format!("file://{}", bare.display());
+    let work_parent = app.data_dir.join(format!(".work-{}", std::process::id()));
+    std::fs::create_dir_all(&work_parent).unwrap();
+    let work_root = work_parent.join(format!("ciwktmp-{}", rand::random::<u64>()));
+    std::fs::create_dir_all(&work_root).unwrap();
+
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&work_root)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {:?} failed:\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    std::fs::write(work_root.join(".gita-ci.yml"), yaml).unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", &bare_url]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "add ci config"]);
+    // The remote may already have a main from a prior push_initial_commit;
+    // force is fine for the test sandbox.
+    git(&["push", "-q", "-f", "origin", "main"]);
+}
+
+/// Returns the `ts` of the smallest-seq log line of `job_id`, or None
+/// if the job has no log lines.
+pub async fn first_ts(db: &Db, job_id: i64) -> Option<String> {
+    db.list_logs_since(job_id, 0, 1)
+        .await
+        .ok()
+        .and_then(|rows| rows.into_iter().next().map(|r| r.ts))
 }
