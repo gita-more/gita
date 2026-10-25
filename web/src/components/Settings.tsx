@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useI18n } from '../i18n'
 import { api, type Token, type User } from '../lib/api'
-import { PageHeader, Alert } from './Layout'
+import { PageHeader, Alert, ConfirmDialog } from './Layout'
 import { SettingsIcon, PlusIcon, XIcon } from './Icons'
 import { useErrorTranslator } from '../i18n'
 import { useAuth } from '../hooks/useAuth'
@@ -19,6 +19,9 @@ export function Settings() {
   const [showCreateToken, setShowCreateToken] = useState(false)
   const [createdToken, setCreatedToken] = useState<string | null>(null)
   const [tokenBusy, setTokenBusy] = useState(false)
+  // Token pending revocation — shown in the confirmation dialog.
+  const [confirmToken, setConfirmToken] = useState<Token | null>(null)
+  const [revokeBusy, setRevokeBusy] = useState(false)
 
   const loadTokens = useCallback(async () => {
     try {
@@ -61,13 +64,17 @@ export function Settings() {
     }
   }
 
-  async function revokeToken(id: number) {
+  async function revokeToken(tok: Token) {
     setError('')
+    setRevokeBusy(true)
     try {
-      await api.deleteToken(id)
+      await api.deleteToken(tok.id)
       await loadTokens()
+      setConfirmToken(null)
     } catch (err) {
       setError(translateError(err))
+    } finally {
+      setRevokeBusy(false)
     }
   }
 
@@ -165,7 +172,7 @@ export function Settings() {
                   <td>{tok.name}</td>
                   <td>{new Date(tok.created_at).toLocaleString()}</td>
                   <td>
-                    <button className="btn btn-danger btn-xs" onClick={() => void revokeToken(tok.id)}>
+                    <button className="btn btn-danger btn-xs" onClick={() => setConfirmToken(tok)}>
                       {t('settings.revokeToken')}
                     </button>
                   </td>
@@ -183,6 +190,17 @@ export function Settings() {
           {t('common.back')}
         </button>
       </div>
+
+      {confirmToken && (
+        <ConfirmDialog
+          title={t('confirm.revokeTokenTitle')}
+          message={t('confirm.revokeTokenMessage', { name: confirmToken.name })}
+          confirmLabel={t('settings.revokeToken')}
+          busy={revokeBusy}
+          onConfirm={() => void revokeToken(confirmToken)}
+          onCancel={() => setConfirmToken(null)}
+        />
+      )}
     </>
   )
 }
@@ -206,6 +224,9 @@ function AdminUsersSection() {
   const [password, setPassword] = useState('')
   const [asAdmin, setAsAdmin] = useState(false)
   const [busy, setBusy] = useState(false)
+  // User pending deletion — shown in the confirmation dialog.
+  const [confirmUser, setConfirmUser] = useState<User | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
 
   const loadUsers = useCallback(async () => {
     try {
@@ -255,12 +276,16 @@ function AdminUsersSection() {
   async function removeUser(target: User) {
     setError('')
     setNotice('')
+    setDeleteBusy(true)
     try {
       await api.deleteUser(target.username)
       setNotice(t('admin.deleted'))
+      setConfirmUser(null)
       await loadUsers()
     } catch (err) {
       setError(translateError(err))
+    } finally {
+      setDeleteBusy(false)
     }
   }
 
@@ -374,7 +399,7 @@ function AdminUsersSection() {
                       </button>{' '}
                       <button
                         className="btn btn-danger btn-xs"
-                        onClick={() => void removeUser(u)}
+                        onClick={() => setConfirmUser(u)}
                       >
                         {t('admin.deleteUser')}
                       </button>
@@ -385,6 +410,17 @@ function AdminUsersSection() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {confirmUser && (
+        <ConfirmDialog
+          title={t('confirm.deleteUserTitle')}
+          message={t('confirm.deleteUserMessage', { name: confirmUser.username })}
+          confirmLabel={t('admin.deleteUser')}
+          busy={deleteBusy}
+          onConfirm={() => void removeUser(confirmUser)}
+          onCancel={() => setConfirmUser(null)}
+        />
       )}
     </div>
   )

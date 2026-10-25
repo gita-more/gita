@@ -599,3 +599,49 @@ function SearchBox() {
 function FileCodeIconPlaceholder() {
   return <span className="search-row-icon">📄</span>
 }
+
+/**
+ * A minimal confirmation dialog for destructive actions (deleting a user,
+ * revoking a token, …). Renders as a modal overlay; click on the backdrop
+ * or the cancel button to dismiss. `busy` disables the confirm button while
+ * the destructive request is in flight.
+ */
+export function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  busy = false,
+  onConfirm,
+  onCancel,
+}: {
+  title: string
+  message: string
+  confirmLabel: string
+  busy?: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const { t } = useI18n()
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div
+        className="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="modal-title">{title}</h3>
+        <p className="modal-message">{message}</p>
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onCancel}>
+            {t('common.cancel')}
+          </button>
+          <button className="btn btn-danger" disabled={busy} onClick={onConfirm}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

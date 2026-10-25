@@ -227,6 +227,12 @@ export const messages = {
     empty: '还没有用户。',
     passwordHint: '至少 6 位',
   },
+  confirm: {
+    deleteUserTitle: '删除用户',
+    deleteUserMessage: '确定删除用户 {name} 吗？该用户的个人仓库和拥有的群组会被一并删除，且不可恢复。',
+    revokeTokenTitle: '吊销令牌',
+    revokeTokenMessage: '确定吊销令牌 {name} 吗？正在使用它的客户端会立即失效。',
+  },
   pages: {
     title: 'Pages',
     subtitle: '从仓库分支发布静态站点（类似 GitHub Pages）',

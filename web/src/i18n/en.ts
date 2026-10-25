@@ -227,6 +227,12 @@ export const messages = {
     empty: 'No users yet.',
     passwordHint: 'At least 6 characters',
   },
+  confirm: {
+    deleteUserTitle: 'Delete user',
+    deleteUserMessage: 'Delete user {name}? Their personal repositories and owned groups are removed too — this cannot be undone.',
+    revokeTokenTitle: 'Revoke token',
+    revokeTokenMessage: 'Revoke token {name}? Clients using it stop working immediately.',
+  },
   pages: {
     title: 'Pages',
     subtitle: 'Publish a static site from a repository branch (like GitHub Pages)',
