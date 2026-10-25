@@ -21,6 +21,24 @@ AI-native Git server REST API. Standard GitHub-like endpoints, PR/Issue workflow
 
 User registration, login and personal access tokens
 
+### `POST /api/auth/init`
+
+Initialize the system by creating the first admin account
+
+Only accepted when the users table is completely empty. Can only ever run once. Returns a JWT for the new admin.
+
+- 无需认证
+- 响应码：`200`, `400`, `409`
+
+### `GET /api/auth/initialized`
+
+Whether the system has been initialized yet
+
+True once any user account exists. Unauthenticated, so the frontend can decide whether to show the init page before any account exists.
+
+- 无需认证
+- 响应码：`200`
+
 ### `GET /api/auth/keys`
 
 List SSH public keys of the current user

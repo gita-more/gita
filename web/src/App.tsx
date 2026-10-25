@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, type ReactNode, useState } from 'react'
 import {
   Link,
   Navigate,
@@ -10,6 +10,7 @@ import {
   useParams,
 } from 'react-router-dom'
 import { LoginPage } from './components/LoginPage'
+import { InitPage } from './components/InitPage'
 import { Projects } from './components/Projects'
 import { Groups } from './components/Groups'
 import { Issues } from './components/Issues'
@@ -18,6 +19,7 @@ import { RepoDetail } from './components/RepoDetail'
 import { Settings } from './components/Settings'
 import { useAuth } from './hooks/useAuth'
 import { useI18n } from './i18n'
+import { api } from './lib/api'
 import { AppLayout, EmptyState } from './components/Layout'
 import { FolderIcon } from './components/Icons'
 
@@ -145,11 +147,41 @@ function NotFound() {
 
 export default function App() {
   const { user } = useAuth()
+  const navigate = useNavigate()
+  const { t } = useI18n()
+  const [initialized, setInitialized] = useState<boolean | null>(null)
+
+  // Probe whether any account exists yet, so we can show the init page on
+  // first-ever use instead of the login page.
+  useEffect(() => {
+    api.initialized().then(({ initialized }) => setInitialized(initialized)).catch(() => setInitialized(false))
+  }, [])
 
   // Stay backwards-compatible: when the user logs out, redirect to /login.
   useEffect(() => {
     // No-op: the Protected wrapper handles it. Hook reserved for future use.
   }, [])
+
+  // Still probing whether the system has been initialized.
+  if (initialized === null) {
+    return (
+      <div className="auth-page" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#0d1117' }}>
+        {t('init.processing')}
+      </div>
+    )
+  }
+
+  // No account exists yet: create the first administrator.
+  if (!initialized) {
+    return (
+      <InitPage
+        onDone={() => {
+          setInitialized(true)
+          navigate('/', { replace: true })
+        }}
+      />
+    )
+  }
 
   // If we have a user and the URL is /login, redirect to / (so the auth gate
   // doesn't trap a logged-in user on the login page).
@@ -160,6 +192,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginRoute />} />
+      <Route path="/init" element={<InitPage />} />
 
       <Route element={<Protected><Root /></Protected>}>
         <Route path="/" element={<Projects />} />

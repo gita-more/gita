@@ -49,6 +49,18 @@ export const messages = {
     goLogin: '去登录',
     processing: '处理中…',
   },
+  init: {
+    title: '初始化系统',
+    subtitle: '首次进入系统，请创建管理员账号',
+    username: '用户名',
+    email: '邮箱',
+    password: '密码',
+    usernamePlaceholder: '如 admin',
+    emailPlaceholder: 'you@example.com',
+    passwordPlaceholder: '至少 6 位',
+    create: '创建管理员',
+    processing: '处理中…',
+  },
   projects: {
     title: '项目',
     subtitle: '共 {n} 个仓库',

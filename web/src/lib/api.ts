@@ -261,6 +261,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
+  initialized: () => request<{ initialized: boolean }>('/api/auth/initialized'),
+  init: (username: string, email: string, password: string) =>
+    request<{ token: string; user: User }>('/api/auth/init', {
+      method: 'POST',
+      body: JSON.stringify({ username, email, password }),
+    }),
   me: () => request<User>('/api/auth/me'),
   /**
    * Revoke the current session token on the server.

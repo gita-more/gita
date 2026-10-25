@@ -323,7 +323,16 @@ impl Db {
         Ok(Some(row_to_user(&rows[0])?))
     }
 
-    pub async fn list_users(&self, limit: usize) -> Result<Vec<User>> {
+    /// Return the number of registered users. Used to decide whether the
+/// system has been initialized (first admin account created) yet.
+pub async fn count_users(&self) -> Result<i64> {
+    let row = sqlx::query("SELECT COUNT(*)::bigint AS n FROM users")
+        .fetch_one(&self.pool)
+        .await?;
+    Ok(row.try_get("n").unwrap_or(0))
+}
+
+pub async fn list_users(&self, limit: usize) -> Result<Vec<User>> {
         let rows = sqlx::query("SELECT id, username, email, password_hash, created_at, locale FROM users ORDER BY id DESC LIMIT $1")
             .bind(limit as i64)
             .fetch_all(&self.pool)

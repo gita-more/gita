@@ -49,6 +49,18 @@ export const messages = {
     goLogin: 'Sign in',
     processing: 'Processing…',
   },
+  init: {
+    title: 'Initialize Gita',
+    subtitle: 'First time here — create the administrator account',
+    username: 'Username',
+    email: 'Email',
+    password: 'Password',
+    usernamePlaceholder: 'e.g. admin',
+    emailPlaceholder: 'you@example.com',
+    passwordPlaceholder: 'At least 6 characters',
+    create: 'Create admin account',
+    processing: 'Processing…',
+  },
   projects: {
     title: 'Projects',
     subtitle: '{n} repositories',

@@ -5,11 +5,12 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::AuthUserExtractor;
 use crate::state::AppState;
 use axum::extract::{Path, State};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use gita_core::EventType;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
@@ -60,6 +61,17 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+/// Payload for initializing the system on first-ever use.
+///
+/// Only accepted when the users table is completely empty. The created
+/// account becomes the first administrator (owner of everything it owns).
+#[derive(Debug, Deserialize)]
+pub struct InitRequest {
+    pub username: String,
+    pub email: String,
+    pub password: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateTokenRequest {
     pub name: Option<String>,
@@ -85,9 +97,16 @@ fn token_prefix(token: &str) -> String {
 }
 
 pub fn auth_routes() -> Router<AppState> {
+    // Whether the system has been initialized yet (any user exists).
+    // Unauthenticated — needed so the frontend can decide to show the
+    // init page before any account exists.
+    // Create the very first admin account. Rejected once any user
+    // exists, so it can only ever run once.
     Router::new()
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
+        .route("/api/auth/initialized", get(initialized))
+        .route("/api/auth/init", post(init))
         .route("/api/auth/tokens", post(create_token).get(list_tokens))
         .route("/api/auth/tokens/{id}", axum::routing::delete(delete_token))
         .route("/api/auth/me", axum::routing::get(me).patch(update_me))
@@ -230,6 +249,79 @@ pub async fn login(
         return Err(ApiError::Unauthorized("invalid credentials".into()));
     }
     let token = state.auth.sign_jwt(&user)?;
+    Ok(Json(AuthResponse {
+        token,
+        user: PublicUser::from(user),
+    }))
+}
+
+/// Whether the system has been initialized yet — true once any user
+/// exists. Unauthenticated: the frontend checks this before any account
+/// exists to decide whether to show the init page.
+async fn initialized(
+    State(state): State<AppState>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let count = state.db.count_users().await?;
+    Ok(Json(json!({ "initialized": count > 0 })))
+}
+
+/// Create the very first admin account.
+///
+/// Only accepted when the users table is completely empty, so this can
+/// only ever run once — the first person to initialize the system becomes
+/// its first administrator.
+async fn init(
+    State(state): State<AppState>,
+    Json(req): Json<InitRequest>,
+) -> ApiResult<Json<AuthResponse>> {
+    let username = req.username.trim().to_string();
+    let email = req.email.trim().to_string();
+    if username.is_empty() || username.len() < 2 {
+        return Err(ApiError::BadRequest("username must be at least 2 characters".into()));
+    }
+    // The username becomes a directory name under the repositories root
+    // (`<data_dir>/repos/<username>/`), so it must not be able to escape it.
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(ApiError::BadRequest(
+            "username may only contain letters, numbers, '-', '_', '.'".into(),
+        ));
+    }
+    if username == "." || username == ".." {
+        return Err(ApiError::BadRequest("invalid username".into()));
+    }
+    if email.is_empty() || !email.contains('@') {
+        return Err(ApiError::BadRequest("invalid email".into()));
+    }
+    if req.password.len() < 6 {
+        return Err(ApiError::BadRequest("password must be at least 6 characters".into()));
+    }
+
+    // Guard: only initialize an empty system. This check and the insert are
+    // two statements, so a race could theoretically create two users — but
+    // the unique constraints on username/email make the second insert fail,
+    // which we surface as a conflict. The first writer wins.
+    let count = state.db.count_users().await?;
+    if count > 0 {
+        return Err(ApiError::BadRequest("system already initialized".into()));
+    }
+
+    let hash = Auth::hash_password(&req.password)?;
+    let user = state
+        .db
+        .create_user_with_locale(&username, &email, &hash, "zh")
+        .await?;
+    let token = state.auth.sign_jwt(&user)?;
+
+    state.bus.publish(
+        EventType::UserRegistered,
+        None,
+        Some(user.id),
+        serde_json::json!({"username": username}),
+    );
+
     Ok(Json(AuthResponse {
         token,
         user: PublicUser::from(user),

@@ -74,6 +74,12 @@ export function useAuth() {
     return res.user
   }, [])
 
+  const init = useCallback(async (username: string, email: string, password: string) => {
+    const res = await api.init(username, email, password)
+    persist(res.user, res.token)
+    return res.user
+  }, [])
+
   const logout = useCallback(() => {
     // Revoke the token on the server first. Clearing it in the browser
     // only hides it — the JWT itself stays valid for the rest of its
@@ -95,7 +101,7 @@ export function useAuth() {
     }
   }, [])
 
-  return { user, token: tokenValue, login, register, logout, refresh }
+  return { user, token: tokenValue, login, register, init, logout, refresh }
 }
 
 // Keep token exported for non-hook usage.

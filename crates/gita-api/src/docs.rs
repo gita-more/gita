@@ -116,6 +116,55 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/api/auth/initialized": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "Whether the system has been initialized yet",
+        "description": "True once any user account exists. Unauthenticated, so the frontend can decide whether to show the init page before any account exists.",
+        "responses": {
+          "200": {
+            "description": "Initialization status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "initialized": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/init": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Initialize the system by creating the first admin account",
+        "description": "Only accepted when the users table is completely empty. Can only ever run once. Returns a JWT for the new admin.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/InitRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Initialized",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthResponse" }
+              }
+            }
+          },
+          "400": { "description": "Bad request, or the system is already initialized" },
+          "409": { "description": "Username or email already in use" }
+        }
+      }
+    },
     "/api/auth/me": {
       "get": {
         "tags": ["auth"],
@@ -1340,6 +1389,15 @@ pub const OPENAPI_JSON: &str = r##"{
         "required": ["username", "password"],
         "properties": {
           "username": { "type": "string" },
+          "password": { "type": "string", "format": "password" }
+        }
+      },
+      "InitRequest": {
+        "type": "object",
+        "required": ["username", "email", "password"],
+        "properties": {
+          "username": { "type": "string" },
+          "email": { "type": "string" },
           "password": { "type": "string", "format": "password" }
         }
       },
