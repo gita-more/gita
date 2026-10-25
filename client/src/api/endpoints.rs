@@ -108,6 +108,61 @@ impl GitaClient {
         .await
     }
 
+    // ------------------------------------------------------------------
+    // admin (requires an administrator account)
+    // ------------------------------------------------------------------
+
+    pub async fn admin_list_users(&self) -> Result<UsersResponse> {
+        self.request(reqwest::Method::GET, "/api/admin/users", None)
+            .await
+    }
+
+    pub async fn admin_create_user(
+        &self,
+        username: &str,
+        email: &str,
+        password: &str,
+        is_admin: bool,
+    ) -> Result<User> {
+        self.request(
+            reqwest::Method::POST,
+            "/api/admin/users",
+            Some(&json!({
+                "username": username,
+                "email": email,
+                "password": password,
+                "is_admin": is_admin,
+            })),
+        )
+        .await
+    }
+
+    pub async fn admin_update_user(
+        &self,
+        username: &str,
+        is_admin: Option<bool>,
+        password: Option<&str>,
+    ) -> Result<User> {
+        self.request(
+            reqwest::Method::PATCH,
+            &format!("/api/admin/users/{username}"),
+            Some(&json!({
+                "is_admin": is_admin,
+                "password": password,
+            })),
+        )
+        .await
+    }
+
+    pub async fn admin_delete_user(&self, username: &str) -> Result<MessageResponse> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/api/admin/users/{username}"),
+            None::<&serde_json::Value>,
+        )
+        .await
+    }
+
     pub async fn list_ssh_keys(&self) -> Result<SshKeysResponse> {
         self.request(reqwest::Method::GET, "/api/auth/keys", None)
             .await
@@ -741,7 +796,11 @@ impl GitaClient {
         .await
     }
 
-    pub async fn remove_group_member(&self, group: &str, username: &str) -> Result<MessageResponse> {
+    pub async fn remove_group_member(
+        &self,
+        group: &str,
+        username: &str,
+    ) -> Result<MessageResponse> {
         self.request(
             reqwest::Method::DELETE,
             &format!("/api/groups/{group}/members/{username}"),

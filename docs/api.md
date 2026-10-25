@@ -138,6 +138,46 @@ Revoke a personal access token
 - 需要认证
 - 响应码：`200`, `404`
 
+## admin
+
+Administrator user management
+
+### `GET /api/admin/users`
+
+List all users (admin only)
+
+Requires the caller to be a system administrator. Returns every registered account with its admin flag.
+
+- 需要认证
+- 响应码：`200`, `403`
+
+### `POST /api/admin/users`
+
+Create a user (admin only)
+
+Requires the caller to be a system administrator. Creates an account with the given username, email and password; optionally promotes it to administrator.
+
+- 需要认证
+- 响应码：`200`, `400`, `403`, `409`
+
+### `DELETE /api/admin/users/{username}`
+
+Delete a user (admin only)
+
+Requires the caller to be a system administrator. Deletes the account together with its personal repositories and owned groups. Refuses to delete the last administrator or the caller's own account.
+
+- 需要认证
+- 响应码：`200`, `400`, `403`, `404`
+
+### `PATCH /api/admin/users/{username}`
+
+Update a user (admin only)
+
+Requires the caller to be a system administrator. Can change the admin flag, email, locale or password. Refuses to demote the very last administrator.
+
+- 需要认证
+- 响应码：`200`, `400`, `403`, `404`, `409`
+
 ## repos
 
 Repository CRUD and content browsing

@@ -210,6 +210,23 @@ export const messages = {
     revokeToken: '吊销',
     tokenCreatedTime: '创建时间',
   },
+  admin: {
+    title: '用户管理',
+    subtitle: '管理本系统的用户账号（仅管理员可见）',
+    createUser: '创建用户',
+    username: '用户名',
+    email: '邮箱',
+    password: '密码',
+    adminRole: '管理员',
+    grantAdmin: '设为管理员',
+    revokeAdmin: '取消管理员',
+    deleteUser: '删除',
+    created: '用户 {name} 已创建',
+    adminUpdated: '{name} 的管理员角色已更新',
+    deleted: '用户已删除',
+    empty: '还没有用户。',
+    passwordHint: '至少 6 位',
+  },
   pages: {
     title: 'Pages',
     subtitle: '从仓库分支发布静态站点（类似 GitHub Pages）',
@@ -269,6 +286,10 @@ export const messages = {
     pagesBranchNotFound: '该分支不存在',
     pagesOwnerOnly: '只有仓库所有者可以配置 Pages',
     pagesDisabled: 'Pages 已停用',
+    adminRequired: '需要管理员权限',
+    lastAdmin: '至少需要保留一个管理员',
+    deleteSelf: '不能删除自己的账号',
+    usernameOrEmailTaken: '用户名或邮箱已被占用',
     // The error *categories*. The backend prefixes every message with one
     // of these ("not found: …"), so they are what an unknown message
     // falls back to.

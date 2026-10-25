@@ -222,7 +222,7 @@ impl Db {
         let row = sqlx::query(
             "INSERT INTO users (username, email, password_hash, created_at, locale)
              VALUES ($1, $2, $3, $4, $5)
-             RETURNING id",
+             RETURNING id, is_admin",
         )
         .bind(username)
         .bind(email)
@@ -241,13 +241,14 @@ impl Db {
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
             locale: locale.to_string(),
+            is_admin: row.try_get("is_admin").unwrap_or(false),
         })
     }
 
     pub async fn update_user_locale(&self, user_id: i64, locale: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
             "UPDATE users SET locale = $2 WHERE id = $1
-             RETURNING id, username, email, password_hash, created_at, locale",
+             RETURNING id, username, email, password_hash, created_at, locale, is_admin",
         )
         .bind(user_id)
         .bind(locale)
@@ -262,7 +263,7 @@ impl Db {
     pub async fn update_user_email(&self, user_id: i64, email: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
             "UPDATE users SET email = $2 WHERE id = $1
-             RETURNING id, username, email, password_hash, created_at, locale",
+             RETURNING id, username, email, password_hash, created_at, locale, is_admin",
         )
         .bind(user_id)
         .bind(email)
@@ -286,7 +287,7 @@ impl Db {
 
     pub async fn get_user_by_id(&self, id: i64) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, email, password_hash, created_at, locale FROM users WHERE id = $1",
+            "SELECT id, username, email, password_hash, created_at, locale, is_admin FROM users WHERE id = $1",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -299,7 +300,7 @@ impl Db {
 
     pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, email, password_hash, created_at, locale FROM users WHERE username = $1",
+            "SELECT id, username, email, password_hash, created_at, locale, is_admin FROM users WHERE username = $1",
         )
         .bind(username)
         .fetch_all(&self.pool)
@@ -312,7 +313,7 @@ impl Db {
 
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<User>> {
         let rows = sqlx::query(
-            "SELECT id, username, email, password_hash, created_at, locale FROM users WHERE email = $1",
+            "SELECT id, username, email, password_hash, created_at, locale, is_admin FROM users WHERE email = $1",
         )
         .bind(email)
         .fetch_all(&self.pool)
@@ -324,20 +325,134 @@ impl Db {
     }
 
     /// Return the number of registered users. Used to decide whether the
-/// system has been initialized (first admin account created) yet.
-pub async fn count_users(&self) -> Result<i64> {
-    let row = sqlx::query("SELECT COUNT(*)::bigint AS n FROM users")
-        .fetch_one(&self.pool)
-        .await?;
-    Ok(row.try_get("n").unwrap_or(0))
-}
+    /// system has been initialized (first admin account created) yet.
+    pub async fn count_users(&self) -> Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*)::bigint AS n FROM users")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.try_get("n").unwrap_or(0))
+    }
 
-pub async fn list_users(&self, limit: usize) -> Result<Vec<User>> {
-        let rows = sqlx::query("SELECT id, username, email, password_hash, created_at, locale FROM users ORDER BY id DESC LIMIT $1")
+    pub async fn list_users(&self, limit: usize) -> Result<Vec<User>> {
+        let rows = sqlx::query("SELECT id, username, email, password_hash, created_at, locale, is_admin FROM users ORDER BY id DESC LIMIT $1")
             .bind(limit as i64)
             .fetch_all(&self.pool)
             .await?;
         rows.iter().map(row_to_user).collect()
+    }
+
+    /// Create a user with an explicit administrator flag. Used by the admin
+    /// settings page to provision accounts (and to grant/revoke the admin
+    /// role on creation).
+    pub async fn create_user_with_role(
+        &self,
+        username: &str,
+        email: &str,
+        password_hash: &str,
+        locale: &str,
+        is_admin: bool,
+    ) -> Result<User> {
+        let created_at = Utc::now().to_rfc3339();
+        let row = sqlx::query(
+            "INSERT INTO users (username, email, password_hash, created_at, locale, is_admin)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id, is_admin",
+        )
+        .bind(username)
+        .bind(email)
+        .bind(password_hash)
+        .bind(&created_at)
+        .bind(locale)
+        .bind(is_admin)
+        .fetch_one(&self.pool)
+        .await?;
+        let id: i64 = row.try_get("id").unwrap_or(0);
+        Ok(User {
+            id,
+            username: username.to_string(),
+            email: email.to_string(),
+            password_hash: password_hash.to_string(),
+            created_at: DateTime::parse_from_rfc3339(&created_at)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            locale: locale.to_string(),
+            is_admin: row.try_get("is_admin").unwrap_or(false),
+        })
+    }
+
+    /// Update a user's administrator flag. Returns `None` if the user does
+    /// not exist. Refuses to demote the very last admin: at least one
+    /// administrator must always remain so the system stays manageable.
+    pub async fn update_user_admin(&self, user_id: i64, is_admin: bool) -> Result<Option<User>> {
+        // If we are about to demote this user, count the remaining admins.
+        if !is_admin {
+            let admins = self.count_admins().await?;
+            if admins <= 1 {
+                let target = self.get_user_by_id(user_id).await?;
+                if target.as_ref().is_some_and(|u| u.is_admin) {
+                    return Err(anyhow::anyhow!(
+                        "cannot demote the last administrator: at least one admin must remain"
+                    ));
+                }
+            }
+        }
+        let rows = sqlx::query(
+            "UPDATE users SET is_admin = $2 WHERE id = $1
+             RETURNING id, username, email, password_hash, created_at, locale, is_admin",
+        )
+        .bind(user_id)
+        .bind(is_admin)
+        .fetch_all(&self.pool)
+        .await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(row_to_user(&rows[0])?))
+    }
+
+    /// Count how many users have the administrator flag set.
+    pub async fn count_admins(&self) -> Result<i64> {
+        let row = sqlx::query("SELECT COUNT(*)::bigint AS n FROM users WHERE is_admin = TRUE")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.try_get("n").unwrap_or(0))
+    }
+
+    /// List the repositories a user owns (personal repositories plus any
+    /// group repositories they created, i.e. where `owner_id = user_id`).
+    pub async fn list_repositories_owned_by(&self, user_id: i64) -> Result<Vec<Repository>> {
+        let rows = sqlx::query(
+            "SELECT id, owner_id, owner_name, name, description, is_private, default_branch, created_at, group_id
+             FROM repositories WHERE owner_id = $1 ORDER BY id",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_repo).collect()
+    }
+
+    /// List the groups a user created (i.e. `owner_id = user_id`).
+    pub async fn list_groups_owned_by(&self, user_id: i64) -> Result<Vec<Group>> {
+        let rows = sqlx::query(
+            "SELECT id, name, description, owner_id, created_at FROM groups WHERE owner_id = $1 ORDER BY id",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_group).collect()
+    }
+
+    /// Delete a user row. Callers must first remove (or reassign) the data
+    /// that references the user without `ON DELETE CASCADE` (repositories,
+    /// groups, comments, issues, PRs). Rows that carry `ON DELETE CASCADE`
+    /// (access tokens, ssh keys, stars, password-reset tokens) are removed
+    /// automatically by the database.
+    pub async fn delete_user(&self, user_id: i64) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 }
 
@@ -352,6 +467,7 @@ fn row_to_user(row: &PgRow) -> Result<User> {
             .map(|d| d.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
         locale: row.try_get("locale")?,
+        is_admin: row.try_get("is_admin").unwrap_or(false),
     })
 }
 
@@ -1800,7 +1916,7 @@ impl Db {
     pub async fn get_user_by_token(&self, token: &str) -> Result<Option<User>> {
         let hash = hash_token(token);
         let rows = sqlx::query(
-            "SELECT u.id, u.username, u.email, u.password_hash, u.created_at, u.locale,
+            "SELECT u.id, u.username, u.email, u.password_hash, u.created_at, u.locale, u.is_admin,
                     t.id AS token_id, t.token_hash, t.token
              FROM access_tokens t JOIN users u ON u.id = t.user_id
              WHERE t.token_hash = $1 OR (t.token_hash IS NULL AND t.token = $2)
@@ -1961,6 +2077,17 @@ impl Db {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_repo).collect()
+    }
+
+    /// Delete a group row. `group_members` rows cascade; repositories that
+    /// belong to the group must be deleted (or reassigned) by the caller
+    /// first — there is no `ON DELETE CASCADE` on `repositories.group_id`.
+    pub async fn delete_group(&self, group_id: i64) -> Result<bool> {
+        let res = sqlx::query("DELETE FROM groups WHERE id = $1")
+            .bind(group_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// List all issues across all (public) repositories, joined with the
@@ -2658,6 +2785,69 @@ mod tests {
         assert_eq!(updated.locale, "en");
         let fetched2 = db.get_user_by_username("alice").await.unwrap().unwrap();
         assert_eq!(fetched2.locale, "en");
+        drop_test_db(&db).await;
+    }
+
+    #[tokio::test]
+    async fn admin_user_management() {
+        let db = fresh_db().await;
+
+        // Created with an explicit role.
+        let admin = db
+            .create_user_with_role("root", "root@example.com", "h", "zh", true)
+            .await
+            .unwrap();
+        assert!(admin.is_admin);
+        let plain = db
+            .create_user_with_role("peon", "peon@example.com", "h", "en", false)
+            .await
+            .unwrap();
+        assert!(!plain.is_admin);
+        assert_eq!(db.count_admins().await.unwrap(), 1);
+
+        // Granting the role works.
+        let promoted = db
+            .update_user_admin(plain.id, true)
+            .await
+            .unwrap()
+            .expect("user exists");
+        assert!(promoted.is_admin);
+        assert_eq!(db.count_admins().await.unwrap(), 2);
+
+        // Demoting one of two admins works.
+        let demoted = db
+            .update_user_admin(plain.id, false)
+            .await
+            .unwrap()
+            .expect("user exists");
+        assert!(!demoted.is_admin);
+
+        // Demoting the very last admin is refused.
+        let err = db.update_user_admin(admin.id, false).await.unwrap_err();
+        assert!(
+            err.to_string().contains("last administrator"),
+            "unexpected error: {err}"
+        );
+
+        // Ownership helpers and deletion.
+        let repo = db
+            .create_repository(admin.id, "root", "solo", "", false, "main", None)
+            .await
+            .unwrap();
+        let group = db.create_group("roots", "", admin.id).await.unwrap();
+        assert_eq!(
+            db.list_repositories_owned_by(admin.id).await.unwrap().len(),
+            1
+        );
+        assert_eq!(db.list_groups_owned_by(admin.id).await.unwrap().len(), 1);
+
+        // The repository must go before the group (no cascade on group_id),
+        // matching what the admin delete route does.
+        assert!(db.delete_repository(repo.id).await.unwrap());
+        assert!(db.delete_group(group.id).await.unwrap());
+        assert!(db.delete_user(admin.id).await.unwrap());
+        assert!(db.get_user_by_username("root").await.unwrap().is_none());
+        assert_eq!(db.count_admins().await.unwrap(), 0);
         drop_test_db(&db).await;
     }
 

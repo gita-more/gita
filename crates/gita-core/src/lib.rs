@@ -23,6 +23,9 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     /// UI language preference ("zh" | "en").
     pub locale: String,
+    /// Whether this account is a system administrator, allowed to manage
+    /// other users from the admin settings page.
+    pub is_admin: bool,
 }
 
 /// A group (namespace) that can own repositories.
@@ -323,6 +326,7 @@ mod tests {
             password_hash: "hash".to_string(),
             created_at: Utc::now(),
             locale: "zh".to_string(),
+            is_admin: false,
         }
     }
 

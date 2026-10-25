@@ -1054,19 +1054,14 @@ async fn e2e_ssh_key() {
 
     // A syntactically valid OpenSSH public key line (server validates the
     // algorithm prefix and base64 blob, not whether the key is real).
-    let pubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB32vUpOqxd60GVVNxMePF3cdub6Q0yRIXQlVxP4vTa7 gita-e2e";
+    let pubkey =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB32vUpOqxd60GVVNxMePF3cdub6Q0yRIXQlVxP4vTa7 gita-e2e";
 
     // Add the key.
     let out = gita_ok(
         port,
         &token,
-        &[
-            "ssh-key",
-            "add",
-            "--title",
-            "e2e-laptop",
-            pubkey,
-        ],
+        &["ssh-key", "add", "--title", "e2e-laptop", pubkey],
     );
     stdout_contains(&out, "e2e-laptop");
 
@@ -1077,7 +1072,9 @@ async fn e2e_ssh_key() {
     // Get the key id from JSON.
     let keys: serde_json::Value = gita_json(port, &token, &["ssh-key", "list"]);
     let empty = serde_json::Value::Array(vec![]);
-    let key_list = keys["keys"].as_array().unwrap_or(&empty.as_array().unwrap());
+    let key_list = keys["keys"]
+        .as_array()
+        .unwrap_or(&empty.as_array().unwrap());
     let key_id = key_list
         .iter()
         .find(|k| k.get("title").and_then(|t| t.as_str()) == Some("e2e-laptop"))
@@ -1120,7 +1117,14 @@ async fn e2e_repo_edit() {
     let out = gita_ok(
         port,
         &token,
-        &["repo", "edit", "editor", "editme", "--description", "Updated desc"],
+        &[
+            "repo",
+            "edit",
+            "editor",
+            "editme",
+            "--description",
+            "Updated desc",
+        ],
     );
     stdout_contains(&out, "Updated desc");
 
@@ -1232,12 +1236,26 @@ async fn e2e_issue_global_list() {
     gita_ok(
         port,
         &token,
-        &["issue", "create", "globissue", "repo-a", "--title", "Issue in A"],
+        &[
+            "issue",
+            "create",
+            "globissue",
+            "repo-a",
+            "--title",
+            "Issue in A",
+        ],
     );
     gita_ok(
         port,
         &token,
-        &["issue", "create", "globissue", "repo-b", "--title", "Issue in B"],
+        &[
+            "issue",
+            "create",
+            "globissue",
+            "repo-b",
+            "--title",
+            "Issue in B",
+        ],
     );
 
     // Global list should show both, with repo names.
@@ -1261,13 +1279,24 @@ async fn e2e_group_members() {
     let member_token = register_via_binary(port, "grpmember");
 
     // Owner creates a group.
-    gita_ok(port, &owner_token, &["group", "create", "eng", "--description", "Eng group"]);
+    gita_ok(
+        port,
+        &owner_token,
+        &["group", "create", "eng", "--description", "Eng group"],
+    );
 
     // Add the member.
     let out = gita_ok(
         port,
         &owner_token,
-        &["group", "member-add", "eng", "grpmember", "--role", "maintainer"],
+        &[
+            "group",
+            "member-add",
+            "eng",
+            "grpmember",
+            "--role",
+            "maintainer",
+        ],
     );
     stdout_contains(&out, "grpmember");
 
@@ -1279,7 +1308,14 @@ async fn e2e_group_members() {
     let out = gita_ok(
         port,
         &owner_token,
-        &["group", "member-set-role", "eng", "grpmember", "--role", "developer"],
+        &[
+            "group",
+            "member-set-role",
+            "eng",
+            "grpmember",
+            "--role",
+            "developer",
+        ],
     );
     stdout_contains(&out, "developer");
 
@@ -1317,17 +1353,29 @@ async fn e2e_repo_star_status() {
     gita_ok(port, &token, &["repo", "create", "ssdemo"]);
 
     // Not starred initially.
-    let out = gita_ok(port, &token, &["repo", "star-status", "starstatus", "ssdemo"]);
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "star-status", "starstatus", "ssdemo"],
+    );
     stdout_contains(&out, "starred: false");
 
     // Star it, then status should flip.
     gita_ok(port, &token, &["repo", "star", "starstatus", "ssdemo"]);
-    let out = gita_ok(port, &token, &["repo", "star-status", "starstatus", "ssdemo"]);
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "star-status", "starstatus", "ssdemo"],
+    );
     stdout_contains(&out, "starred: true");
 
     // Unstar, status flips back.
     gita_ok(port, &token, &["repo", "unstar", "starstatus", "ssdemo"]);
-    let out = gita_ok(port, &token, &["repo", "star-status", "starstatus", "ssdemo"]);
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "star-status", "starstatus", "ssdemo"],
+    );
     stdout_contains(&out, "starred: false");
 }
 
@@ -1363,7 +1411,11 @@ async fn e2e_event_filter() {
     assert!(found, "expected a push event for evuser/evdemo");
 
     // Type filter also works.
-    let out = gita_ok(port, &token, &["event", "list", "--type", "push", "--limit", "50"]);
+    let out = gita_ok(
+        port,
+        &token,
+        &["event", "list", "--type", "push", "--limit", "50"],
+    );
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("push"),
         "event list --type push should contain push events"
@@ -1460,11 +1512,19 @@ async fn e2e_repo_pages() {
     push_initial_commit(port, &token, "pagesuser", "pagesuser", "sitedemo", "main");
 
     // Enable Pages.
-    let out = gita_ok(port, &token, &["repo", "pages-enable", "pagesuser", "sitedemo"]);
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "pages-enable", "pagesuser", "sitedemo"],
+    );
     stdout_contains(&out, "enabled");
 
     // Status should report enabled.
-    let out = gita_ok(port, &token, &["repo", "pages-status", "pagesuser", "sitedemo"]);
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "pages-status", "pagesuser", "sitedemo"],
+    );
     let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
         serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap_or_default()
     });
@@ -1478,7 +1538,11 @@ async fn e2e_repo_pages() {
     );
 
     // Disable Pages.
-    let out = gita_ok(port, &token, &["repo", "pages-disable", "pagesuser", "sitedemo"]);
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "pages-disable", "pagesuser", "sitedemo"],
+    );
     stdout_contains(&out, "disabled");
 }
 
@@ -1517,7 +1581,11 @@ async fn e2e_repo_hooks() {
     stdout_contains(&out, "http://example.com/hook");
 
     // Delete the hook.
-    let out = gita_ok(port, &token, &["repo", "hook-delete", "hookuser", "hookdemo", "1"]);
+    let out = gita_ok(
+        port,
+        &token,
+        &["repo", "hook-delete", "hookuser", "hookdemo", "1"],
+    );
     stdout_contains(&out, "deleted");
 
     // List hooks again — should be empty.
@@ -1557,4 +1625,135 @@ async fn e2e_keyring_local() {
             eprintln!("warning: keyring not available, skipping keyring test");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// admin user management
+// ---------------------------------------------------------------------------
+
+/// Create the first administrator via POST /api/auth/init and return its
+/// JWT. The e2e database schema starts empty, so init always succeeds —
+/// and the account it creates is the system administrator.
+async fn init_admin_via_http(port: u16, username: &str) -> String {
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!("http://127.0.0.1:{port}/api/auth/init"))
+        .json(&serde_json::json!({
+            "username": username,
+            "email": format!("{username}@e2e.local"),
+            "password": "hunter22",
+        }))
+        .send()
+        .await
+        .expect("init request");
+    assert!(
+        res.status().is_success(),
+        "auth/init failed: {}",
+        res.status()
+    );
+    let v: serde_json::Value = res.json().await.unwrap();
+    v["token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_admin_user_management() {
+    let server = Server::new().await.expect("boot server");
+    let port = server.port();
+
+    // The first account, created through init, is the administrator.
+    let admin_token = init_admin_via_http(port, "rootadmin").await;
+
+    // A normal self-registered account.
+    let staff_token = register_via_binary(port, "staff");
+
+    // A non-admin is rejected before anything else happens.
+    let out = gita(port, &staff_token, &["admin", "list"]);
+    gita_fails(&out);
+    stderr_contains(&out, "403");
+
+    // The admin sees every account in the list.
+    let out = gita_ok(port, &admin_token, &["admin", "list"]);
+    stdout_contains(&out, "rootadmin");
+    stdout_contains(&out, "staff");
+
+    // The admin creates an account for someone else.
+    let out = gita_ok(
+        port,
+        &admin_token,
+        &[
+            "admin",
+            "create",
+            "newbie",
+            "--email",
+            "newbie@e2e.local",
+            "--password",
+            "hunter22",
+        ],
+    );
+    stdout_contains(&out, "newbie");
+
+    // Duplicate creation is a conflict.
+    let out = gita(
+        port,
+        &admin_token,
+        &[
+            "admin",
+            "create",
+            "newbie",
+            "--email",
+            "other@e2e.local",
+            "--password",
+            "hunter22",
+        ],
+    );
+    gita_fails(&out);
+    stderr_contains(&out, "409");
+
+    // Grant, then revoke the admin role.
+    let out = gita_ok(port, &admin_token, &["admin", "set-admin", "newbie"]);
+    stdout_contains(&out, "admin: true");
+    let out = gita_ok(
+        port,
+        &admin_token,
+        &["admin", "set-admin", "newbie", "--admin=false"],
+    );
+    stdout_contains(&out, "admin: false");
+
+    // The very last admin cannot be demoted — otherwise the system would
+    // be left without anyone able to manage it.
+    let out = gita(
+        port,
+        &admin_token,
+        &["admin", "set-admin", "rootadmin", "--admin=false"],
+    );
+    gita_fails(&out);
+    stderr_contains(&out, "400");
+
+    // An admin cannot delete their own account.
+    let out = gita(port, &admin_token, &["admin", "delete", "rootadmin"]);
+    gita_fails(&out);
+    stderr_contains(&out, "400");
+
+    // Reset a password without knowing the old one.
+    let out = gita_ok(
+        port,
+        &admin_token,
+        &[
+            "admin",
+            "reset-password",
+            "newbie",
+            "--password",
+            "fresh-pass-1",
+        ],
+    );
+    stdout_contains(&out, "Password reset for newbie");
+
+    // Delete the account; it disappears from the list.
+    let out = gita_ok(port, &admin_token, &["admin", "delete", "newbie"]);
+    stdout_contains(&out, "deleted");
+    let out = gita_ok(port, &admin_token, &["admin", "list"]);
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("newbie"),
+        "deleted user should not appear in admin list"
+    );
 }

@@ -206,6 +206,7 @@ mod tests {
             password_hash: "x".to_string(),
             created_at: Utc::now(),
             locale: "zh".to_string(),
+            is_admin: false,
         };
         let token = auth.sign_jwt(&user).unwrap();
         let claims = auth.decode_jwt(&token).unwrap();
@@ -226,6 +227,7 @@ mod tests {
             password_hash: "x".to_string(),
             created_at: Utc::now(),
             locale: "zh".to_string(),
+            is_admin: false,
         };
         let a = auth.decode_jwt(&auth.sign_jwt(&user).unwrap()).unwrap();
         let b = auth.decode_jwt(&auth.sign_jwt(&user).unwrap()).unwrap();
@@ -246,6 +248,7 @@ mod tests {
             password_hash: "x".to_string(),
             created_at: Utc::now(),
             locale: "zh".to_string(),
+            is_admin: false,
         };
         // Mint a token the old way: no `jti` in the claims.
         let legacy = Claims {
@@ -281,6 +284,7 @@ mod tests {
             password_hash: "x".to_string(),
             created_at: Utc::now(),
             locale: "zh".to_string(),
+            is_admin: false,
         };
         let token = signer.sign_jwt(&user).unwrap();
         let verifier = Auth::new("secret-B".to_string());

@@ -210,6 +210,23 @@ export const messages = {
     revokeToken: 'Revoke',
     tokenCreatedTime: 'Created',
   },
+  admin: {
+    title: 'User administration',
+    subtitle: 'Manage the accounts of this instance (admins only)',
+    createUser: 'Create user',
+    username: 'Username',
+    email: 'Email',
+    password: 'Password',
+    adminRole: 'Admin',
+    grantAdmin: 'Make admin',
+    revokeAdmin: 'Revoke admin',
+    deleteUser: 'Delete',
+    created: 'User {name} created',
+    adminUpdated: 'Admin role of {name} updated',
+    deleted: 'User deleted',
+    empty: 'No users yet.',
+    passwordHint: 'At least 6 characters',
+  },
   pages: {
     title: 'Pages',
     subtitle: 'Publish a static site from a repository branch (like GitHub Pages)',
@@ -269,6 +286,10 @@ export const messages = {
     pagesBranchNotFound: 'That branch does not exist',
     pagesOwnerOnly: 'Only the repository owner can configure Pages',
     pagesDisabled: 'Pages disabled',
+    adminRequired: 'Administrator privileges required',
+    lastAdmin: 'At least one administrator must remain',
+    deleteSelf: 'You cannot delete your own account',
+    usernameOrEmailTaken: 'Username or email already in use',
     // The error *categories*. The backend prefixes every message with one
     // of these ("not found: …"), so they are what an unknown message
     // falls back to.

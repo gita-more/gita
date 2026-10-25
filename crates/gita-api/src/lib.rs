@@ -31,6 +31,7 @@ pub use state::AppState;
 pub fn api_router(state: AppState) -> axum::Router {
     axum::Router::new()
         .merge(routes::auth_routes())
+        .merge(routes::admin_routes())
         .merge(routes::repo_routes())
         .merge(routes::pr_routes())
         .merge(routes::issue_routes())

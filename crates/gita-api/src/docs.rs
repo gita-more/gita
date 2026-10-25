@@ -30,6 +30,7 @@ pub const OPENAPI_JSON: &str = r##"{
   ],
   "tags": [
     { "name": "auth", "description": "User registration, login and personal access tokens" },
+    { "name": "admin", "description": "Administrator user management" },
     { "name": "repos", "description": "Repository CRUD and content browsing" },
     { "name": "commits", "description": "Commit history" },
     { "name": "prs", "description": "Pull request workflow" },
@@ -1289,6 +1290,73 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/api/admin/users": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "List all users (admin only)",
+        "description": "Requires the caller to be a system administrator. Returns every registered account with its admin flag.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "User list" },
+          "403": { "description": "Caller is not an administrator" }
+        }
+      },
+      "post": {
+        "tags": ["admin"],
+        "summary": "Create a user (admin only)",
+        "description": "Requires the caller to be a system administrator. Creates an account with the given username, email and password; optionally promotes it to administrator.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AdminCreateUserRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Created user" },
+          "400": { "description": "Invalid username, email, password or locale" },
+          "403": { "description": "Caller is not an administrator" },
+          "409": { "description": "Username or email already in use" }
+        }
+      }
+    },
+    "/api/admin/users/{username}": {
+      "patch": {
+        "tags": ["admin"],
+        "summary": "Update a user (admin only)",
+        "description": "Requires the caller to be a system administrator. Can change the admin flag, email, locale or password. Refuses to demote the very last administrator.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AdminUpdateUserRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated user" },
+          "400": { "description": "Invalid field value, or attempting to demote the last admin" },
+          "403": { "description": "Caller is not an administrator" },
+          "404": { "description": "User not found" },
+          "409": { "description": "Email already registered" }
+        }
+      },
+      "delete": {
+        "tags": ["admin"],
+        "summary": "Delete a user (admin only)",
+        "description": "Requires the caller to be a system administrator. Deletes the account together with its personal repositories and owned groups. Refuses to delete the last administrator or the caller's own account.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "User deleted" },
+          "400": { "description": "Cannot delete the last admin or your own account" },
+          "403": { "description": "Caller is not an administrator" },
+          "404": { "description": "User not found" }
+        }
+      }
+    },
     "/api/repos/{owner}/{repo}/branches/{branch}": {
       "delete": {
         "tags": ["repos"],
@@ -1414,7 +1482,28 @@ pub const OPENAPI_JSON: &str = r##"{
           "id": { "type": "integer" },
           "username": { "type": "string" },
           "email": { "type": "string" },
-          "locale": { "type": "string", "enum": ["zh", "en"] }
+          "locale": { "type": "string", "enum": ["zh", "en"] },
+          "is_admin": { "type": "boolean" }
+        }
+      },
+      "AdminCreateUserRequest": {
+        "type": "object",
+        "required": ["username", "email", "password"],
+        "properties": {
+          "username": { "type": "string" },
+          "email": { "type": "string" },
+          "password": { "type": "string", "format": "password" },
+          "locale": { "type": "string", "enum": ["zh", "en"] },
+          "is_admin": { "type": "boolean" }
+        }
+      },
+      "AdminUpdateUserRequest": {
+        "type": "object",
+        "properties": {
+          "is_admin": { "type": "boolean" },
+          "email": { "type": "string" },
+          "locale": { "type": "string", "enum": ["zh", "en"] },
+          "password": { "type": "string", "format": "password" }
         }
       },
       "SshKey": {
@@ -1981,6 +2070,7 @@ mod tests {
         let mut routes = Vec::new();
         for module in [
             include_str!("routes/auth.rs"),
+            include_str!("routes/admin.rs"),
             include_str!("routes/repo.rs"),
             include_str!("routes/pr.rs"),
             include_str!("routes/issue.rs"),

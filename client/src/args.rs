@@ -70,6 +70,11 @@ pub enum Command {
         #[command(subcommand)]
         cmd: EventCommand,
     },
+    /// Administrator user management (admin only).
+    Admin {
+        #[command(subcommand)]
+        cmd: AdminCommand,
+    },
     /// Make an authenticated request against the REST API.
     Api {
         path: String,
@@ -220,7 +225,11 @@ pub enum RepoCommand {
         r#ref: Option<String>,
     },
     /// Delete a branch.
-    BranchDelete { owner: String, repo: String, branch: String },
+    BranchDelete {
+        owner: String,
+        repo: String,
+        branch: String,
+    },
     /// List tags.
     Tags { owner: String, repo: String },
     /// Create a tag.
@@ -233,7 +242,11 @@ pub enum RepoCommand {
         r#ref: Option<String>,
     },
     /// Delete a tag.
-    TagDelete { owner: String, repo: String, tag: String },
+    TagDelete {
+        owner: String,
+        repo: String,
+        tag: String,
+    },
     /// Get a single commit with its diff.
     Commit {
         owner: String,
@@ -290,7 +303,11 @@ pub enum RepoCommand {
         inactive: bool,
     },
     /// Delete a webhook.
-    HookDelete { owner: String, repo: String, id: i64 },
+    HookDelete {
+        owner: String,
+        repo: String,
+        id: i64,
+    },
     /// Fork a repository under your namespace.
     Fork {
         owner: String,
@@ -517,6 +534,44 @@ pub enum EventCommand {
         #[arg(long)]
         r#type: Option<String>,
     },
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum AdminCommand {
+    /// List all registered users.
+    List,
+    /// Create a user account.
+    Create {
+        username: String,
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        password: String,
+        /// Grant administrator privileges to the new account.
+        #[arg(long)]
+        admin: bool,
+    },
+    /// Grant or revoke a user's administrator role.
+    SetAdmin {
+        username: String,
+        /// Bare `--admin` grants the role; `--admin=false` revokes it.
+        #[arg(
+            long,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            default_value_t = true
+        )]
+        admin: bool,
+    },
+    /// Reset a user's password without knowing the old one.
+    ResetPassword {
+        username: String,
+        #[arg(long)]
+        password: String,
+    },
+    /// Delete a user, their personal repositories and their owned groups.
+    Delete { username: String },
 }
 
 #[derive(Debug, clap::Subcommand)]

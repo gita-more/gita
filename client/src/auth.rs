@@ -197,10 +197,7 @@ async fn me_update(
     new_password: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    if locale.is_none()
-        && email.is_none()
-        && new_password.is_none()
-    {
+    if locale.is_none() && email.is_none() && new_password.is_none() {
         bail!("nothing to update; pass --locale, --email and/or --new-password");
     }
     if new_password.is_some() && current_password.is_none() {

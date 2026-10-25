@@ -6,6 +6,8 @@ export interface User {
   email: string
   /** UI language preference ("zh" | "en"). */
   locale: string
+  /** Whether this account is a system administrator. */
+  is_admin: boolean
 }
 
 export interface Repository {
@@ -280,6 +282,26 @@ export const api = {
     request<User>('/api/auth/me', {
       method: 'PATCH',
       body: JSON.stringify({ locale }),
+    }),
+
+  // admin (requires an administrator account)
+  listUsers: () => request<{ users: User[] }>('/api/admin/users'),
+  createUser: (username: string, email: string, password: string, is_admin: boolean) =>
+    request<User>('/api/admin/users', {
+      method: 'POST',
+      body: JSON.stringify({ username, email, password, is_admin }),
+    }),
+  updateUser: (
+    username: string,
+    body: { is_admin?: boolean; password?: string },
+  ) =>
+    request<User>(`/api/admin/users/${encodeURIComponent(username)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteUser: (username: string) =>
+    request<{ message: string }>(`/api/admin/users/${encodeURIComponent(username)}`, {
+      method: 'DELETE',
     }),
 
   // repos

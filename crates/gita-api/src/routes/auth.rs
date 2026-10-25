@@ -34,6 +34,7 @@ pub struct PublicUser {
     pub username: String,
     pub email: String,
     pub locale: String,
+    pub is_admin: bool,
 }
 
 impl From<gita_core::User> for PublicUser {
@@ -43,6 +44,7 @@ impl From<gita_core::User> for PublicUser {
             username: u.username,
             email: u.email,
             locale: u.locale,
+            is_admin: u.is_admin,
         }
     }
 }
@@ -258,9 +260,7 @@ pub async fn login(
 /// Whether the system has been initialized yet — true once any user
 /// exists. Unauthenticated: the frontend checks this before any account
 /// exists to decide whether to show the init page.
-async fn initialized(
-    State(state): State<AppState>,
-) -> ApiResult<Json<serde_json::Value>> {
+async fn initialized(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let count = state.db.count_users().await?;
     Ok(Json(json!({ "initialized": count > 0 })))
 }
@@ -277,7 +277,9 @@ async fn init(
     let username = req.username.trim().to_string();
     let email = req.email.trim().to_string();
     if username.is_empty() || username.len() < 2 {
-        return Err(ApiError::BadRequest("username must be at least 2 characters".into()));
+        return Err(ApiError::BadRequest(
+            "username must be at least 2 characters".into(),
+        ));
     }
     // The username becomes a directory name under the repositories root
     // (`<data_dir>/repos/<username>/`), so it must not be able to escape it.
@@ -296,7 +298,9 @@ async fn init(
         return Err(ApiError::BadRequest("invalid email".into()));
     }
     if req.password.len() < 6 {
-        return Err(ApiError::BadRequest("password must be at least 6 characters".into()));
+        return Err(ApiError::BadRequest(
+            "password must be at least 6 characters".into(),
+        ));
     }
 
     // Guard: only initialize an empty system. This check and the insert are
@@ -311,7 +315,7 @@ async fn init(
     let hash = Auth::hash_password(&req.password)?;
     let user = state
         .db
-        .create_user_with_locale(&username, &email, &hash, "zh")
+        .create_user_with_role(&username, &email, &hash, "zh", true)
         .await?;
     let token = state.auth.sign_jwt(&user)?;
 

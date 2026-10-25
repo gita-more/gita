@@ -20,6 +20,7 @@ pub async fn dispatch(cmd: args::Command, client: &GitaClient, json: bool) -> Re
         args::Command::Pipeline { cmd } => pipeline(cmd, client, json).await,
         args::Command::SshKey { cmd } => ssh_key(cmd, client, json).await,
         args::Command::Event { cmd } => event(cmd, client, json).await,
+        args::Command::Admin { cmd } => admin(cmd, client, json).await,
         args::Command::Api { path, method, body } => {
             call_api(client, &path, &method, body.as_deref(), json).await
         }
@@ -156,14 +157,20 @@ async fn repo(cmd: args::RepoCommand, client: &GitaClient, json: bool) -> Result
             name,
             r#ref,
         } => {
-            let v = client.create_branch(&owner, &repo, &name, r#ref.as_deref()).await?;
+            let v = client
+                .create_branch(&owner, &repo, &name, r#ref.as_deref())
+                .await?;
             if json {
                 output::print_json(&v)?;
             } else {
                 println!("Created branch {}", v["branch"]);
             }
         }
-        args::RepoCommand::BranchDelete { owner, repo, branch } => {
+        args::RepoCommand::BranchDelete {
+            owner,
+            repo,
+            branch,
+        } => {
             let msg = client.delete_branch(&owner, &repo, &branch).await?;
             if json {
                 output::print_json(&msg)?;
@@ -189,7 +196,9 @@ async fn repo(cmd: args::RepoCommand, client: &GitaClient, json: bool) -> Result
             name,
             r#ref,
         } => {
-            let v = client.create_tag(&owner, &repo, &name, r#ref.as_deref()).await?;
+            let v = client
+                .create_tag(&owner, &repo, &name, r#ref.as_deref())
+                .await?;
             if json {
                 output::print_json(&v)?;
             } else {
@@ -255,10 +264,7 @@ async fn repo(cmd: args::RepoCommand, client: &GitaClient, json: bool) -> Result
             if json {
                 output::print_json(&s)?;
             } else {
-                println!(
-                    "starred: {} (count: {})",
-                    s.starred, s.count
-                );
+                println!("starred: {} (count: {})", s.starred, s.count);
             }
         }
         args::RepoCommand::PagesShow { owner, repo } => {
@@ -610,7 +616,9 @@ async fn issue(cmd: args::IssueCommand, client: &GitaClient, json: bool) -> Resu
                 let repo = repo
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("repo is required unless --all is given"))?;
-                let v = serde_json::to_value(client.list_issues(owner, repo, status.as_deref()).await?)?;
+                let v = serde_json::to_value(
+                    client.list_issues(owner, repo, status.as_deref()).await?,
+                )?;
                 if json {
                     output::print_json(&v)?;
                 } else {
@@ -935,8 +943,14 @@ async fn ssh_key(cmd: args::SshKeyCommand, client: &GitaClient, json: bool) -> R
 
 async fn event(cmd: args::EventCommand, client: &GitaClient, json: bool) -> Result<()> {
     match cmd {
-        args::EventCommand::List { limit, repo, r#type } => {
-            let events = client.list_events(limit, repo.as_deref(), r#type.as_deref()).await?;
+        args::EventCommand::List {
+            limit,
+            repo,
+            r#type,
+        } => {
+            let events = client
+                .list_events(limit, repo.as_deref(), r#type.as_deref())
+                .await?;
             if json {
                 output::print_json(&events)?;
             } else {
@@ -951,6 +965,76 @@ async fn event(cmd: args::EventCommand, client: &GitaClient, json: bool) -> Resu
                     ]);
                 }
                 table.print();
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// admin (user management; requires an administrator account)
+// ---------------------------------------------------------------------------
+
+async fn admin(cmd: args::AdminCommand, client: &GitaClient, json: bool) -> Result<()> {
+    match cmd {
+        args::AdminCommand::List => {
+            let v = client.admin_list_users().await?;
+            if json {
+                output::print_json(&v)?;
+            } else {
+                let mut table = output::Table::new(&["id", "username", "email", "admin"]);
+                for u in &v.users {
+                    table.add_row(vec![
+                        u.id.to_string(),
+                        u.username.clone(),
+                        u.email.clone(),
+                        u.is_admin.to_string(),
+                    ]);
+                }
+                table.print();
+            }
+        }
+        args::AdminCommand::Create {
+            username,
+            email,
+            password,
+            admin,
+        } => {
+            let u = client
+                .admin_create_user(&username, &email, &password, admin)
+                .await?;
+            if json {
+                output::print_json(&u)?;
+            } else {
+                println!("Created user {} (admin: {})", u.username, u.is_admin);
+            }
+        }
+        args::AdminCommand::SetAdmin { username, admin } => {
+            let u = client
+                .admin_update_user(&username, Some(admin), None)
+                .await?;
+            if json {
+                output::print_json(&u)?;
+            } else {
+                println!("{} admin: {}", u.username, u.is_admin);
+            }
+        }
+        args::AdminCommand::ResetPassword { username, password } => {
+            let u = client
+                .admin_update_user(&username, None, Some(&password))
+                .await?;
+            if json {
+                output::print_json(&u)?;
+            } else {
+                println!("Password reset for {}", u.username);
+            }
+        }
+        args::AdminCommand::Delete { username } => {
+            let msg = client.admin_delete_user(&username).await?;
+            if json {
+                output::print_json(&msg)?;
+            } else {
+                println!("{}", msg.message);
             }
         }
     }
@@ -995,10 +1079,9 @@ async fn call_api(
     };
 
     let body_value = match body {
-        Some(b) => Some(
-            serde_json::from_str(b)
-                .map_err(|e| anyhow::anyhow!("invalid --body JSON: {e}"))?,
-        ),
+        Some(b) => {
+            Some(serde_json::from_str(b).map_err(|e| anyhow::anyhow!("invalid --body JSON: {e}"))?)
+        }
         None => None,
     };
 

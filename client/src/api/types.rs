@@ -12,6 +12,7 @@ pub struct User {
     pub username: String,
     pub email: String,
     pub locale: String,
+    pub is_admin: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -237,6 +238,11 @@ pub struct JobLogLine {
 pub struct AuthResponse {
     pub token: String,
     pub user: User,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UsersResponse {
+    pub users: Vec<User>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

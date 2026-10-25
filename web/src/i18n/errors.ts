@@ -43,6 +43,11 @@ const ERROR_MAP: Record<string, string> = {
   'branch not found: no such branch in this repository': 'error.pagesBranchNotFound',
   'only the repository owner can configure pages': 'error.pagesOwnerOnly',
   'pages disabled': 'error.pagesDisabled',
+  'admin privileges required': 'error.adminRequired',
+  'cannot demote the last administrator: at least one admin must remain': 'error.lastAdmin',
+  'cannot delete the last administrator: at least one admin must remain': 'error.lastAdmin',
+  'cannot delete your own account': 'error.deleteSelf',
+  'username or email already in use': 'error.usernameOrEmailTaken',
 }
 
 /**

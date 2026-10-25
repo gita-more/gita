@@ -1,5 +1,6 @@
 //! Route modules.
 
+pub mod admin;
 pub mod auth;
 pub mod avatar;
 pub mod comment;
@@ -16,6 +17,7 @@ pub mod ssh_key;
 pub mod visibility;
 
 // Re-export route functions.
+pub use admin::admin_routes;
 pub use auth::auth_routes;
 pub use avatar::avatar_routes;
 pub use comment::comment_routes;

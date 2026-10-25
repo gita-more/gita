@@ -12,6 +12,8 @@ use gita_core::User;
 pub struct AuthUserExtractor {
     pub id: i64,
     pub username: String,
+    /// Whether this account is a system administrator (users.is_admin).
+    pub is_admin: bool,
 }
 impl FromRequestParts<AppState> for AuthUserExtractor {
     type Rejection = ApiError;
@@ -34,6 +36,7 @@ impl FromRequestParts<AppState> for AuthUserExtractor {
         Ok(AuthUserExtractor {
             id: user.id,
             username: user.username,
+            is_admin: user.is_admin,
         })
     }
 }
@@ -63,6 +66,7 @@ impl FromRequestParts<AppState> for OptionalAuthUser {
             Ok(user) => Ok(OptionalAuthUser(Some(AuthUserExtractor {
                 id: user.id,
                 username: user.username,
+                is_admin: user.is_admin,
             }))),
             Err(e) => Err(e),
         }
