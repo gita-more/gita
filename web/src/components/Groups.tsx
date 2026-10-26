@@ -6,7 +6,7 @@ import {
   Alert,
   EmptyState,
 } from './Layout'
-import { PlusIcon, UsersIcon, XIcon } from './Icons'
+import { PlusIcon, FolderIcon, XIcon } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
 
 export function Groups({
@@ -18,7 +18,7 @@ export function Groups({
   const translateError = useErrorTranslator()
   const navigate = useNavigate()
   const openGroup = (g: string) =>
-    onOpenGroup ? onOpenGroup(g) : navigate(`/groups/${g}`)
+    onOpenGroup ? onOpenGroup(g) : navigate(`/${g}`)
   const [groups, setGroups] = useState<Group[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
@@ -48,7 +48,7 @@ export function Groups({
       setShowCreate(false)
       setName('')
       setDescription('')
-      openGroup(g.name)
+      openGroup(g.full_path)
     } catch (err) {
       setError(translateError(err))
     } finally {
@@ -59,7 +59,7 @@ export function Groups({
   return (
     <>
       <PageHeader
-        icon={<UsersIcon size={18} />}
+        icon={<FolderIcon size={18} />}
         title={t('groups.title')}
         subtitle={t('groups.subtitle', { n: groups.length })}
         actions={
@@ -113,7 +113,7 @@ export function Groups({
 
       {groups.length === 0 ? (
         <EmptyState
-          icon={<UsersIcon size={22} />}
+          icon={<FolderIcon size={22} />}
           title={t('groups.emptyTitle')}
           description={t('groups.emptyDescription')}
           action={
@@ -126,14 +126,14 @@ export function Groups({
       ) : (
         <div className="repo-grid">
           {groups.map((g) => (
-            <button key={g.id} className="repo-card" onClick={() => openGroup(g.name)}>
+            <button key={g.id} className="repo-card" onClick={() => openGroup(g.full_path)}>
               <div className="repo-card-top">
                 <span className="repo-card-icon">
-                  <UsersIcon size={18} />
+                  <FolderIcon size={18} />
                 </span>
               </div>
               <div className="repo-card-body">
-                <div className="repo-card-name">{g.name}</div>
+                <div className="repo-card-name">{g.full_path}</div>
                 <div className="repo-card-desc">{g.description || t('common.noDescription')}</div>
               </div>
             </button>

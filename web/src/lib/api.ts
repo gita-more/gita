@@ -132,6 +132,8 @@ export interface Group {
   description: string
   owner_id: number
   created_at: string
+  parent_id: number | null
+  full_path: string
 }
 
 /** Issue item as returned by the global /api/issues feed. */
@@ -530,24 +532,31 @@ export const api = {
 
   // groups
   listGroups: () => request<Group[]>('/api/groups'),
-  createGroup: (name: string, description: string) =>
+  createGroup: (name: string, description: string, parent_path?: string) =>
     request<Group>('/api/groups', {
       method: 'POST',
-      body: JSON.stringify({ name, description }),
+      body: JSON.stringify({ name, description, parent_path }),
     }),
-  getGroup: (name: string) =>
-    request<{ group: Group; repos: Repository[] }>(`/api/groups/${encodeURIComponent(name)}`),
+  getGroup: (full_path: string) =>
+    request<{ group: Group; repos: Repository[]; subgroups: Group[] }>(`/api/groups/${encodeURIComponent(full_path)}`),
   createGroupRepo: (
-    group: string,
+    group_full_path: string,
     name: string,
     description: string,
     is_private: boolean,
     default_branch: string,
   ) =>
-    request<Repository>(`/api/groups/${encodeURIComponent(group)}/repos`, {
+    request<Repository>(`/api/groups/${encodeURIComponent(group_full_path)}/repos`, {
       method: 'POST',
       body: JSON.stringify({ name, description, is_private, default_branch }),
     }),
+  createSubgroup: (parent_full_path: string, name: string, description: string) =>
+    request<Group>(`/api/groups/${encodeURIComponent(parent_full_path)}/subgroups`, {
+      method: 'POST',
+      body: JSON.stringify({ name, description }),
+    }),
+  listSubgroups: (group_full_path: string) =>
+    request<Group[]>(`/api/groups/${encodeURIComponent(group_full_path)}/subgroups`),
 
   // search
   search: (q: string, type_?: 'repos' | 'code' | 'all') =>

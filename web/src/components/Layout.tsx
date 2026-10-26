@@ -5,6 +5,7 @@ import {
   BookIcon,
   CircleCheckIcon,
   CircleDotIcon,
+  FolderIcon,
   GitCommitIcon,
   GitPullRequestIcon,
   GlobeIcon,
@@ -14,7 +15,6 @@ import {
   RocketIcon,
   SettingsIcon,
   ShieldAlertIcon,
-  UsersIcon,
   XIcon,
 } from './Icons'
 import { useAuth } from '../hooks/useAuth'
@@ -50,7 +50,7 @@ export type GlobalNavTarget = 'projects' | 'groups' | 'issues'
 
 const GLOBAL_NAV: { key: GlobalNavTarget; labelKey: string; icon: typeof HomeIcon }[] = [
   { key: 'projects', labelKey: 'nav.projects', icon: BookIcon },
-  { key: 'groups', labelKey: 'nav.groups', icon: UsersIcon },
+  { key: 'groups', labelKey: 'nav.groups', icon: FolderIcon },
   { key: 'issues', labelKey: 'nav.issuesGlobal', icon: CircleDotIcon },
 ]
 
