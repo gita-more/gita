@@ -197,21 +197,25 @@ Create a repository
 - 需要认证
 - 响应码：`200`, `400`, `409`
 
-### `DELETE /api/repos/{owner}/{repo}`
+### `DELETE /api/repos/{*path}`
 
-Delete a repository (owner only)
+Delete a repository or a sub-resource (owner only)
+
+Suffix dispatch: (empty) delete the repository, /star unstar, /hooks/{id} delete a webhook, /branches/{branch} delete a branch, /tags/{tag} delete a tag.
 
 - 需要认证
 - 响应码：`200`, `404`
 
-### `GET /api/repos/{owner}/{repo}`
+### `GET /api/repos/{*path}`
 
-Get a repository
+Repository metadata or a read-only sub-resource
 
-- 无需认证
+Suffix dispatch: (empty) get the repository, /tree list a directory (query: ref, path), /file read a file (query: ref, path), /commits list commits (query: ref, limit), /commits/{sha} get one commit with its diff, /branches list branches, /tags list tags, /star get star status, /hooks list webhooks.
+
+- 需要认证
 - 响应码：`200`, `404`
 
-### `PATCH /api/repos/{owner}/{repo}`
+### `PATCH /api/repos/{*path}`
 
 Update a repository (owner only)
 
@@ -220,70 +224,21 @@ Change the description, the visibility, the name, or transfer the repository to 
 - 需要认证
 - 响应码：`200`, `400`, `404`, `409`
 
-### `GET /api/repos/{owner}/{repo}/branches`
+### `POST /api/repos/{*path}`
 
-List branches
+Create a sub-resource
 
-- 无需认证
-- 响应码：`200`
-
-### `POST /api/repos/{owner}/{repo}/branches`
-
-Create a branch
-
-Creating a branch changes the repository's refs, so it takes the same rights as pushing to it.
+Suffix dispatch: /fork fork the repository under the caller's namespace (optional body: {name}), /hooks create a webhook, /branches create a branch ({name, ref}), /tags create a tag ({name, ref}).
 
 - 需要认证
-- 响应码：`200`, `400`, `404`
+- 响应码：`200`, `400`, `403`, `404`, `409`
 
-### `DELETE /api/repos/{owner}/{repo}/branches/{branch}`
+### `PUT /api/repos/{*path}`
 
-Delete a branch
-
-- 需要认证
-- 响应码：`200`, `404`
-
-### `GET /api/repos/{owner}/{repo}/commits/{sha}`
-
-Get a single commit with its diff
+Star a repository
 
 - 需要认证
-- 响应码：`200`
-
-### `GET /api/repos/{owner}/{repo}/file`
-
-Read a file's content at a ref
-
-- 需要认证
-- 响应码：`200`, `404`
-
-### `POST /api/repos/{owner}/{repo}/fork`
-
-Fork this repository under the caller's namespace
-
-- 需要认证
-- 响应码：`200`, `409`
-
-### `GET /api/repos/{owner}/{repo}/hooks`
-
-List webhooks for a repository
-
-- 需要认证
-- 响应码：`200`
-
-### `POST /api/repos/{owner}/{repo}/hooks`
-
-Create a webhook
-
-- 需要认证
-- 响应码：`200`, `400`, `404`
-
-### `DELETE /api/repos/{owner}/{repo}/hooks/{id}`
-
-Delete a webhook
-
-- 需要认证
-- 响应码：`200`, `404`
+- 响应码：`200`, `401`, `404`
 
 ### `DELETE /api/repos/{owner}/{repo}/pages`
 
@@ -305,68 +260,6 @@ Set the Pages publishing configuration
 
 - 需要认证
 - 响应码：`200`, `400`, `404`
-
-### `DELETE /api/repos/{owner}/{repo}/star`
-
-Unstar a repository
-
-- 需要认证
-- 响应码：`200`
-
-### `GET /api/repos/{owner}/{repo}/star`
-
-Check if the authenticated user starred this repo
-
-- 需要认证
-- 响应码：`200`
-
-### `PUT /api/repos/{owner}/{repo}/star`
-
-Star a repository
-
-- 需要认证
-- 响应码：`200`
-
-### `GET /api/repos/{owner}/{repo}/tags`
-
-List tags
-
-- 需要认证
-- 响应码：`200`
-
-### `POST /api/repos/{owner}/{repo}/tags`
-
-Create a tag
-
-- 需要认证
-- 响应码：`200`
-
-### `DELETE /api/repos/{owner}/{repo}/tags/{tag}`
-
-Delete a tag
-
-- 需要认证
-- 响应码：`200`, `404`
-
-### `GET /api/repos/{owner}/{repo}/tree`
-
-List files in a directory of a repository
-
-- 无需认证
-- 查询参数：`path`, `ref`
-- 响应码：`200`, `404`
-
-## commits
-
-Commit history
-
-### `GET /api/repos/{owner}/{repo}/commits`
-
-List recent commits
-
-- 无需认证
-- 查询参数：`ref`, `limit`
-- 响应码：`200`
 
 ## prs
 
@@ -520,51 +413,37 @@ Create a group
 - 需要认证
 - 响应码：`200`
 
-### `GET /api/groups/{group}`
+### `DELETE /api/groups/{*path}`
 
-Get a group and its repositories
+Remove a group member
 
-Readable without authentication, but only public repositories are listed to an anonymous caller.
+- 需要认证
+- 响应码：`200`, `403`, `404`
+
+### `GET /api/groups/{*path}`
+
+Get a group and its repositories, or list subgroups/members
+
+Use path suffix to select: (empty) for group detail, /subgroups for subgroup list, /members for member list.
 
 - 需要认证
 - 响应码：`200`, `404`
 
-### `GET /api/groups/{group}/members`
+### `PATCH /api/groups/{*path}`
 
-List group members
-
-Only the group owner or an existing member may read the membership list.
+Update a group member's role
 
 - 需要认证
-- 响应码：`200`, `401`, `403`
+- 响应码：`200`, `403`, `404`
 
-### `POST /api/groups/{group}/members`
+### `POST /api/groups/{*path}`
 
-Add a member
+Create a repository or subgroup, or add a member
 
-- 需要认证
-- 响应码：`200`, `400`, `403`
-
-### `DELETE /api/groups/{group}/members/{username}`
-
-Remove a member
+Use path suffix to select action: /repos to create repo, /subgroups to create subgroup, /members to add member.
 
 - 需要认证
-- 响应码：`200`, `404`
-
-### `PATCH /api/groups/{group}/members/{username}`
-
-Update a member's role
-
-- 需要认证
-- 响应码：`200`
-
-### `POST /api/groups/{group}/repos`
-
-Create a repository owned by a group
-
-- 需要认证
-- 响应码：`200`, `403`
+- 响应码：`200`, `403`, `404`
 
 ## search
 

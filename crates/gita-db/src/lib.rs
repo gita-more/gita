@@ -384,7 +384,7 @@ mod tests {
             .create_repository(admin.id, "root", "solo", "", false, "main", None)
             .await
             .unwrap();
-        let group = db.create_group("roots", "", admin.id).await.unwrap();
+        let group = db.create_group("roots", "", admin.id, None).await.unwrap();
         assert_eq!(
             db.list_repositories_owned_by(admin.id).await.unwrap().len(),
             1
@@ -534,7 +534,7 @@ mod tests {
             .await
             .unwrap();
         let g = db
-            .create_group("acme", "The Acme group", owner.id)
+            .create_group("acme", "The Acme group", owner.id, None)
             .await
             .unwrap();
         assert!(g.id > 0);

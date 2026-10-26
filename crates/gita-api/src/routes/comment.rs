@@ -1,10 +1,15 @@
-//! Comment routes: create/list/delete comments on pull requests and issues.
+//! Comment handlers: create/list comments on pull requests and issues,
+//! plus the global `DELETE /api/comments/{id}` route.
+//!
+//! The repo-scoped comment endpoints are served through the single
+//! catch-all route in [`crate::routes::repo`]: the pr/issue module
+//! dispatchers forward `.../comments` suffixes here. Only the comment
+//! delete keeps its own axum route.
 
 use crate::error::{ApiError, ApiResult, MessageResponse};
 use crate::extract::{AuthUserExtractor, OptionalAuthUser};
 use crate::state::AppState;
-use axum::extract::{Path, State};
-use axum::routing::get;
+use axum::extract::State;
 use axum::{Json, Router};
 use gita_core::{Comment, EventType};
 use serde::{Deserialize, Serialize};
@@ -40,31 +45,50 @@ impl From<Comment> for CommentResponse {
 }
 
 pub fn comment_routes() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/repos/{owner}/{repo}/prs/{number}/comments",
-            get(list_pr_comments).post(create_pr_comment),
-        )
-        .route(
-            "/api/repos/{owner}/{repo}/issues/{number}/comments",
-            get(list_issue_comments).post(create_issue_comment),
-        )
-        .route("/api/comments/{id}", axum::routing::delete(delete_comment))
+    Router::new().route(
+        "/api/comments/{id}",
+        axum::routing::delete(delete_comment),
+    )
 }
 
-async fn create_pr_comment(
-    State(state): State<AppState>,
-    user: AuthUserExtractor,
-    Path((owner, repo, number)): Path<(String, String, i64)>,
-    Json(req): Json<CreateCommentRequest>,
+pub(crate) async fn list_pr_comments(
+    state: &AppState,
+    user: &OptionalAuthUser,
+    owner: &str,
+    repo: &str,
+    number: i64,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repository =
+        crate::routes::visibility::load_readable_repo(state, owner, repo, user.0.as_ref()).await?;
+    let pr = state
+        .db
+        .get_pull_request(repository.id, number)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("pull request not found".into()))?;
+
+    let comments = state.db.list_pr_comments(pr.id, 500).await?;
+    Ok(Json(serde_json::json!({
+        "comments": comments
+            .into_iter()
+            .map(CommentResponse::from)
+            .collect::<Vec<_>>(),
+    })))
+}
+
+pub(crate) async fn create_pr_comment(
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+    number: i64,
+    req: CreateCommentRequest,
 ) -> ApiResult<Json<CommentResponse>> {
     let body = req.body.trim().to_string();
     if body.is_empty() {
         return Err(ApiError::BadRequest("comment body is required".into()));
     }
 
-    let repository =
-        crate::routes::visibility::load_writable_repo(&state, &owner, &repo, &user).await?;
+    let repository = crate::routes::visibility::load_writable_repo(state, owner, repo, user).await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -90,21 +114,22 @@ async fn create_pr_comment(
     Ok(Json(CommentResponse::from(comment)))
 }
 
-async fn list_pr_comments(
-    State(state): State<AppState>,
-    user: OptionalAuthUser,
-    Path((owner, repo, number)): Path<(String, String, i64)>,
+pub(crate) async fn list_issue_comments(
+    state: &AppState,
+    user: &OptionalAuthUser,
+    owner: &str,
+    repo: &str,
+    number: i64,
 ) -> ApiResult<Json<serde_json::Value>> {
     let repository =
-        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
-            .await?;
-    let pr = state
+        crate::routes::visibility::load_readable_repo(state, owner, repo, user.0.as_ref()).await?;
+    let issue = state
         .db
-        .get_pull_request(repository.id, number)
+        .get_issue(repository.id, number)
         .await?
-        .ok_or_else(|| ApiError::NotFound("pull request not found".into()))?;
+        .ok_or_else(|| ApiError::NotFound("issue not found".into()))?;
 
-    let comments = state.db.list_pr_comments(pr.id, 500).await?;
+    let comments = state.db.list_issue_comments(issue.id, 500).await?;
     Ok(Json(serde_json::json!({
         "comments": comments
             .into_iter()
@@ -113,19 +138,20 @@ async fn list_pr_comments(
     })))
 }
 
-async fn create_issue_comment(
-    State(state): State<AppState>,
-    user: AuthUserExtractor,
-    Path((owner, repo, number)): Path<(String, String, i64)>,
-    Json(req): Json<CreateCommentRequest>,
+pub(crate) async fn create_issue_comment(
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+    number: i64,
+    req: CreateCommentRequest,
 ) -> ApiResult<Json<CommentResponse>> {
     let body = req.body.trim().to_string();
     if body.is_empty() {
         return Err(ApiError::BadRequest("comment body is required".into()));
     }
 
-    let repository =
-        crate::routes::visibility::load_writable_repo(&state, &owner, &repo, &user).await?;
+    let repository = crate::routes::visibility::load_writable_repo(state, owner, repo, user).await?;
     let issue = state
         .db
         .get_issue(repository.id, number)
@@ -151,33 +177,10 @@ async fn create_issue_comment(
     Ok(Json(CommentResponse::from(comment)))
 }
 
-async fn list_issue_comments(
-    State(state): State<AppState>,
-    user: OptionalAuthUser,
-    Path((owner, repo, number)): Path<(String, String, i64)>,
-) -> ApiResult<Json<serde_json::Value>> {
-    let repository =
-        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
-            .await?;
-    let issue = state
-        .db
-        .get_issue(repository.id, number)
-        .await?
-        .ok_or_else(|| ApiError::NotFound("issue not found".into()))?;
-
-    let comments = state.db.list_issue_comments(issue.id, 500).await?;
-    Ok(Json(serde_json::json!({
-        "comments": comments
-            .into_iter()
-            .map(CommentResponse::from)
-            .collect::<Vec<_>>(),
-    })))
-}
-
 async fn delete_comment(
     State(state): State<AppState>,
     user: AuthUserExtractor,
-    Path(id): Path<i64>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> ApiResult<Json<MessageResponse>> {
     let comment = state
         .db

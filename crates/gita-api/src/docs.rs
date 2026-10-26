@@ -343,37 +343,48 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
-    "/api/repos/{owner}/{repo}": {
+    "/api/repos/{*path}": {
+      "description": "All repository sub-resources are served through one catch-all path. `{*path}` is `owner/repo` optionally followed by a sub-resource suffix. `owner` may be a username or a nested group path (`groupa/subgroupa`); `repo` is the last path segment. Sub-resource suffixes: (empty) repository metadata, `/tree`, `/file`, `/commits`, `/commits/{sha}`, `/branches`, `/branches/{branch}`, `/tags`, `/tags/{tag}`, `/star`, `/fork`, `/hooks`, `/hooks/{id}.",
       "get": {
         "tags": ["repos"],
-        "summary": "Get a repository",
+        "summary": "Repository metadata or a read-only sub-resource",
+        "description": "Suffix dispatch: (empty) get the repository, /tree list a directory (query: ref, path), /file read a file (query: ref, path), /commits list commits (query: ref, limit), /commits/{sha} get one commit with its diff, /branches list branches, /tags list tags, /star get star status, /hooks list webhooks.",
+        "security": [{}, { "bearerAuth": [] }],
         "parameters": [
-          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } }
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "owner/repo plus optional sub-resource suffix" }
         ],
         "responses": {
-          "200": {
-            "description": "Repository",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Repository" }
-              }
-            }
-          },
-          "404": { "description": "Not found" }
+          "200": { "description": "Depends on the suffix: repository, tree entries, file content, commit list, commit detail, branch/tag list, star status, or webhook list" },
+          "404": { "description": "Repository, ref, file or endpoint not found" }
         }
       },
-      "delete": {
+      "post": {
         "tags": ["repos"],
-        "summary": "Delete a repository (owner only)",
+        "summary": "Create a sub-resource",
+        "description": "Suffix dispatch: /fork fork the repository under the caller's namespace (optional body: {name}), /hooks create a webhook, /branches create a branch ({name, ref}), /tags create a tag ({name, ref}).",
         "security": [{ "bearerAuth": [] }],
         "parameters": [
-          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } }
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "owner/repo plus suffix /fork, /hooks, /branches, or /tags" }
         ],
         "responses": {
-          "200": { "description": "Deleted" },
-          "404": { "description": "Not found, or not the repository's owner" }
+          "200": { "description": "Created: fork, webhook, branch or tag" },
+          "400": { "description": "Invalid request body or name" },
+          "403": { "description": "Not allowed to write to this repository" },
+          "404": { "description": "Repository or endpoint not found" },
+          "409": { "description": "Destination repository already exists" }
+        }
+      },
+      "put": {
+        "tags": ["repos"],
+        "summary": "Star a repository",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "owner/repo plus suffix /star" }
+        ],
+        "responses": {
+          "200": { "description": "Starred; returns {starred, new, count}" },
+          "401": { "description": "Not authenticated" },
+          "404": { "description": "Repository not found" }
         }
       },
       "patch": {
@@ -382,8 +393,7 @@ pub const OPENAPI_JSON: &str = r##"{
         "description": "Change the description, the visibility, the name, or transfer the repository to another user or group. A non-owner gets 404, not 403: the refusal must not disclose that the repository exists.",
         "security": [{ "bearerAuth": [] }],
         "parameters": [
-          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } }
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "owner/repo" }
         ],
         "requestBody": {
           "required": true,
@@ -414,112 +424,18 @@ pub const OPENAPI_JSON: &str = r##"{
           "404": { "description": "Not found, or not the repository's owner" },
           "409": { "description": "The target name is already taken" }
         }
-      }
-    },
-    "/api/repos/{owner}/{repo}/tree": {
-      "get": {
-        "tags": ["repos"],
-        "summary": "List files in a directory of a repository",
-        "parameters": [
-          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "path", "in": "query", "schema": { "type": "string" }, "description": "Directory path (default root)" },
-          { "name": "ref", "in": "query", "schema": { "type": "string" }, "description": "Branch or commit (default default_branch)" }
-        ],
-        "responses": {
-          "200": {
-            "description": "Tree entries",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/TreeResponse" }
-              }
-            }
-          },
-          "404": { "description": "Repository not found" }
-        }
-      }
-    },
-    "/api/repos/{owner}/{repo}/commits": {
-      "get": {
-        "tags": ["commits"],
-        "summary": "List recent commits",
-        "parameters": [
-          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "ref", "in": "query", "schema": { "type": "string" } },
-          { "name": "limit", "in": "query", "schema": { "type": "integer" } }
-        ],
-        "responses": {
-          "200": {
-            "description": "Commit list",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/CommitsResponse" }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/repos/{owner}/{repo}/branches": {
-      "get": {
-        "tags": ["repos"],
-        "summary": "List branches",
-        "parameters": [
-          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": {
-          "200": {
-            "description": "Branch names",
-            "content": {
-              "application/json": {
-                "schema": { "type": "array", "items": { "type": "string" } }
-              }
-            }
-          }
-        }
       },
-      "post": {
+      "delete": {
         "tags": ["repos"],
-        "summary": "Create a branch",
-        "description": "Creating a branch changes the repository's refs, so it takes the same rights as pushing to it.",
+        "summary": "Delete a repository or a sub-resource (owner only)",
+        "description": "Suffix dispatch: (empty) delete the repository, /star unstar, /hooks/{id} delete a webhook, /branches/{branch} delete a branch, /tags/{tag} delete a tag.",
         "security": [{ "bearerAuth": [] }],
         "parameters": [
-          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } }
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "owner/repo plus optional sub-resource suffix" }
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["name"],
-                "properties": {
-                  "name": { "type": "string", "description": "The new branch name" },
-                  "ref": { "type": "string", "description": "The commit or branch to start it from (default: the repository's default branch)" }
-                }
-              }
-            }
-          }
-        },
         "responses": {
-          "200": {
-            "description": "The created branch",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "branch": { "type": "string" }
-                  }
-                }
-              }
-            }
-          },
-          "400": { "description": "Invalid branch name, or the start point does not exist" },
-          "404": { "description": "Not found, or not allowed to push to it" }
+          "200": { "description": "Deleted" },
+          "404": { "description": "Not found, or not the repository's owner" }
         }
       }
     },
@@ -700,109 +616,6 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
-    "/api/repos/{owner}/{repo}/commits/{sha}": {
-      "get": {
-        "tags": ["repos"],
-        "summary": "Get a single commit with its diff",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "sha", "in": "path", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": {
-          "200": { "description": "Commit detail + diff" }
-        }
-      }
-    },
-    "/api/repos/{owner}/{repo}/star": {
-      "get": {
-        "tags": ["repos"],
-        "summary": "Check if the authenticated user starred this repo",
-        "security": [{ "bearerAuth": [] }],
-        "responses": { "200": { "description": "Star status" } }
-      },
-      "put": {
-        "tags": ["repos"],
-        "summary": "Star a repository",
-        "security": [{ "bearerAuth": [] }],
-        "responses": { "200": { "description": "Starred" } }
-      },
-      "delete": {
-        "tags": ["repos"],
-        "summary": "Unstar a repository",
-        "security": [{ "bearerAuth": [] }],
-        "responses": { "200": { "description": "Unstarred" } }
-      }
-    },
-    "/api/repos/{owner}/{repo}/fork": {
-      "post": {
-        "tags": ["repos"],
-        "summary": "Fork this repository under the caller's namespace",
-        "security": [{ "bearerAuth": [] }],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "name": { "type": "string", "description": "Optional fork name" }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": { "description": "Fork created" },
-          "409": { "description": "Destination already exists" }
-        }
-      }
-    },
-    "/api/repos/{owner}/{repo}/hooks": {
-      "get": {
-        "tags": ["repos"],
-        "summary": "List webhooks for a repository",
-        "security": [{ "bearerAuth": [] }],
-        "responses": { "200": { "description": "Hook list" } }
-      },
-      "post": {
-        "tags": ["repos"],
-        "summary": "Create a webhook",
-        "security": [{ "bearerAuth": [] }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "url": { "type": "string" },
-                  "events": { "type": "array", "items": { "type": "string" } },
-                  "secret": { "type": "string" },
-                  "active": { "type": "boolean" }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": { "description": "Hook created" },
-          "400": { "description": "Invalid URL or events" },
-          "404": { "description": "Repository not found, or not the repository's owner" }
-        }
-      }
-    },
-    "/api/repos/{owner}/{repo}/hooks/{id}": {
-      "delete": {
-        "tags": ["repos"],
-        "summary": "Delete a webhook",
-        "security": [{ "bearerAuth": [] }],
-        "responses": {
-          "200": { "description": "Hook deleted" },
-          "404": { "description": "Hook not found" }
-        }
-      }
-    },
     "/api/repos/{owner}/{repo}/pages": {
       "get": {
         "tags": ["repos"],
@@ -845,73 +658,6 @@ pub const OPENAPI_JSON: &str = r##"{
         "responses": {
           "200": { "description": "Pages disabled" },
           "404": { "description": "Repository not found, or not the repository's owner" }
-        }
-      }
-    },
-    "/api/groups/{group}/members": {
-      "get": {
-        "tags": ["groups"],
-        "summary": "List group members",
-        "description": "Only the group owner or an existing member may read the membership list.",
-        "security": [{ "bearerAuth": [] }],
-        "responses": {
-          "200": { "description": "Member list" },
-          "401": { "description": "Authentication required" },
-          "403": { "description": "Not the group owner or a member" }
-        }
-      },
-      "post": {
-        "tags": ["groups"],
-        "summary": "Add a member",
-        "security": [{ "bearerAuth": [] }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "username": { "type": "string" },
-                  "role": { "type": "string", "enum": ["maintainer", "developer", "member", "guest"] }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": { "description": "Member added" },
-          "400": { "description": "Unknown role — 'owner' is reserved for the group creator" },
-          "403": { "description": "Not the group owner" }
-        }
-      }
-    },
-    "/api/groups/{group}/members/{username}": {
-      "patch": {
-        "tags": ["groups"],
-        "summary": "Update a member's role",
-        "security": [{ "bearerAuth": [] }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "role": { "type": "string" }
-                }
-              }
-            }
-          }
-        },
-        "responses": { "200": { "description": "Role updated" } }
-      },
-      "delete": {
-        "tags": ["groups"],
-        "summary": "Remove a member",
-        "security": [{ "bearerAuth": [] }],
-        "responses": {
-          "200": { "description": "Member removed" },
-          "404": { "description": "Not a member" }
         }
       }
     },
@@ -970,7 +716,8 @@ pub const OPENAPI_JSON: &str = r##"{
                 "type": "object",
                 "properties": {
                   "name": { "type": "string" },
-                  "description": { "type": "string" }
+                  "description": { "type": "string" },
+                  "parent_path": { "type": "string" }
                 }
               }
             }
@@ -979,42 +726,78 @@ pub const OPENAPI_JSON: &str = r##"{
         "responses": { "200": { "description": "Group created" } }
       }
     },
-    "/api/groups/{group}": {
+    "/api/groups/{*path}": {
       "get": {
         "tags": ["groups"],
-        "summary": "Get a group and its repositories",
-        "description": "Readable without authentication, but only public repositories are listed to an anonymous caller.",
+        "summary": "Get a group and its repositories, or list subgroups/members",
+        "description": "Use path suffix to select: (empty) for group detail, /subgroups for subgroup list, /members for member list.",
         "security": [{}, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Full path of the group, optionally with suffix /subgroups or /members" }
+        ],
         "responses": {
-          "200": { "description": "Group detail" },
+          "200": { "description": "Group detail, subgroup list, or member list" },
           "404": { "description": "Group not found" }
         }
-      }
-    },
-    "/api/groups/{group}/repos": {
+      },
       "post": {
         "tags": ["groups"],
-        "summary": "Create a repository owned by a group",
+        "summary": "Create a repository or subgroup, or add a member",
+        "description": "Use path suffix to select action: /repos to create repo, /subgroups to create subgroup, /members to add member.",
         "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Full path of the group with suffix /repos, /subgroups, or /members" }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "name": { "type": "string" },
-                  "description": { "type": "string" },
-                  "is_private": { "type": "boolean" },
-                  "default_branch": { "type": "string" }
-                }
-              }
+              "oneOf": [
+                { "$ref": "#/components/schemas/CreateGroupRepoRequest" },
+                { "$ref": "#/components/schemas/CreateGroupRequest" },
+                { "$ref": "#/components/schemas/AddGroupMemberRequest" }
+              ]
             }
           }
         },
         "responses": {
-          "200": { "description": "Repository created" },
-          "403": { "description": "Not the group owner" }
+          "200": { "description": "Repository, subgroup, or member created" },
+          "403": { "description": "Not the group owner" },
+          "404": { "description": "Group not found" }
+        }
+      },
+      "patch": {
+        "tags": ["groups"],
+        "summary": "Update a group member's role",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Full path of the group with suffix /members/{username}" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateGroupMemberRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Member updated" },
+          "403": { "description": "Not the group owner" },
+          "404": { "description": "Group or member not found" }
+        }
+      },
+      "delete": {
+        "tags": ["groups"],
+        "summary": "Remove a group member",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Full path of the group with suffix /members/{username}" }
+        ],
+        "responses": {
+          "200": { "description": "Member removed" },
+          "403": { "description": "Not the group owner" },
+          "404": { "description": "Group or member not found" }
         }
       }
     },
@@ -1031,45 +814,6 @@ pub const OPENAPI_JSON: &str = r##"{
         "tags": ["misc"],
         "summary": "List the tools exposed to MCP clients",
         "responses": { "200": { "description": "Tool list" } }
-      }
-    },
-    "/api/repos/{owner}/{repo}/file": {
-      "get": {
-        "tags": ["repos"],
-        "summary": "Read a file's content at a ref",
-        "security": [{ "bearerAuth": [] }],
-        "responses": {
-          "200": { "description": "File content" },
-          "404": { "description": "File not found" }
-        }
-      }
-    },
-    "/api/repos/{owner}/{repo}/tags": {
-      "get": {
-        "tags": ["repos"],
-        "summary": "List tags",
-        "security": [{ "bearerAuth": [] }],
-        "responses": { "200": { "description": "Tag list" } }
-      },
-      "post": {
-        "tags": ["repos"],
-        "summary": "Create a tag",
-        "security": [{ "bearerAuth": [] }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "name": { "type": "string" },
-                  "ref": { "type": "string" }
-                }
-              }
-            }
-          }
-        },
-        "responses": { "200": { "description": "Tag created" } }
       }
     },
     "/api/repos/{owner}/{repo}/prs/{number}/merge": {
@@ -1354,28 +1098,6 @@ pub const OPENAPI_JSON: &str = r##"{
           "400": { "description": "Cannot delete the last admin or your own account" },
           "403": { "description": "Caller is not an administrator" },
           "404": { "description": "User not found" }
-        }
-      }
-    },
-    "/api/repos/{owner}/{repo}/branches/{branch}": {
-      "delete": {
-        "tags": ["repos"],
-        "summary": "Delete a branch",
-        "security": [{ "bearerAuth": [] }],
-        "responses": {
-          "200": { "description": "Branch deleted" },
-          "404": { "description": "Repository not found, or not allowed to push to it" }
-        }
-      }
-    },
-    "/api/repos/{owner}/{repo}/tags/{tag}": {
-      "delete": {
-        "tags": ["repos"],
-        "summary": "Delete a tag",
-        "security": [{ "bearerAuth": [] }],
-        "responses": {
-          "200": { "description": "Tag deleted" },
-          "404": { "description": "Repository not found, or not allowed to push to it" }
         }
       }
     },
@@ -2009,13 +1731,29 @@ mod tests {
             .iter()
             .map(|(path, method)| (normalize_path(path), method.clone()))
             .collect();
+        // A catch-all route (`{*path}`) serves every documented sub-path
+        // beneath it: the repo dispatcher routes by suffix, so e.g.
+        // `/api/repos/{owner}/{repo}/prs` is served by `GET /api/repos/{*path}`.
+        // A documented sub-path counts as covered when a catch-all with the
+        // same method prefixes it.
+        let catch_alls: Vec<(String, String)> = registered_routes
+            .iter()
+            .filter(|(path, _)| path.contains("{*"))
+            .map(|(path, method)| (normalize_path(path), method.clone()))
+            .collect();
         for (path, method) in &registered_routes {
             if !documented.contains(&(normalize_path(path), method.clone())) {
                 missing.push(format!("{} {}", method.to_uppercase(), path));
             }
         }
         for (path, method) in &documented {
-            if !registered.contains(&(path.clone(), method.clone())) {
+            if registered.contains(&(path.clone(), method.clone())) {
+                continue;
+            }
+            let covered_by_catch_all = catch_alls
+                .iter()
+                .any(|(prefix, m)| m == method && path.starts_with(prefix.as_str()));
+            if !covered_by_catch_all {
                 undocumented.push(format!("{} {}", method.to_uppercase(), path));
             }
         }

@@ -1,15 +1,18 @@
-//! Pipeline routes: list pipeline configs, list runs, get a run, cancel
-//! a run, and stream log lines. Phase 1 endpoints only — see goal.md
-//! §In-repo CI for the deferred Phase 2/3 surface.
+//! Pipeline (in-repo CI) handlers: list pipeline configs, list runs, get
+//! a run, cancel a run, and stream log lines. Phase 1 endpoints only —
+//! see goal.md §In-repo CI for the deferred Phase 2/3 surface.
+//!
+//! Pipelines are served through the single catch-all route in
+//! [`crate::routes::repo`]; the two `*_dispatch` functions below are called
+//! from that dispatcher once the path's `pipelines` or `runs` marker
+//! segment has been split off. `rest` is everything after the marker.
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{AuthUserExtractor, OptionalAuthUser};
 use crate::state::AppState;
-use axum::extract::{Path, Query, State};
-use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::response::IntoResponse;
 use gita_db::{JobRow, LogRow, PipelineRow, PipelineRunRow};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::convert::Infallible;
 
 // ----- Response shapes --------------------------------------------------
@@ -126,6 +129,93 @@ impl From<LogRow> for LogLineResponse {
     }
 }
 
+// ----- Dispatch ---------------------------------------------------------
+
+/// GET dispatch for `/api/repos/{owner}/{repo}/(pipelines|runs)[...]`.
+///
+/// `rest` is the path after the marker: `pipelines` marker → `""`,
+/// `".gita-ci.yml/runs"`; `runs` marker → `"{run_id}"`,
+/// `"{run_id}/jobs/{job_id}/logs"`, `"{run_id}/jobs/{job_id}/logs/stream"`.
+pub(crate) async fn get_dispatch(
+    state: &AppState,
+    user: &OptionalAuthUser,
+    owner: &str,
+    repo: &str,
+    marker: &str,
+    rest: &str,
+    q: &std::collections::HashMap<String, String>,
+) -> ApiResult<axum::response::Response> {
+    match (marker, rest.split('/').collect::<Vec<_>>().as_slice()) {
+        ("pipelines", [""]) => {
+            let res = list_pipelines(state, user, owner, repo).await?;
+            Ok(res.into_response())
+        }
+        ("pipelines", [path, "runs"]) => {
+            let res = list_runs(state, user, owner, repo, path).await?;
+            Ok(res.into_response())
+        }
+        ("runs", [run_id]) => {
+            let run_id = parse_id(run_id, "run")?;
+            let res = get_run(state, user, owner, repo, run_id).await?;
+            Ok(res.into_response())
+        }
+        ("runs", [run_id, "jobs", job_id, "logs"]) => {
+            let run_id = parse_id(run_id, "run")?;
+            let job_id = parse_id(job_id, "job")?;
+            let res = get_logs(
+                state,
+                user,
+                owner,
+                repo,
+                run_id,
+                job_id,
+                q.get("since").and_then(|v| v.parse::<i64>().ok()),
+                q.get("max").and_then(|v| v.parse::<i64>().ok()),
+            )
+            .await?;
+            Ok(res.into_response())
+        }
+        ("runs", [run_id, "jobs", job_id, "logs", "stream"]) => {
+            let run_id = parse_id(run_id, "run")?;
+            let job_id = parse_id(job_id, "job")?;
+            let res = stream_logs(state, user, owner, repo, run_id, job_id).await?;
+            Ok(res.into_response())
+        }
+        _ => Err(ApiError::NotFound("endpoint not found".into())),
+    }
+}
+
+/// POST dispatch for `/api/repos/{owner}/{repo}/(pipelines|runs)[...]`.
+///
+/// `rest` is the path after the marker: `pipelines` marker →
+/// `".gita-ci.yml/runs"` (trigger); `runs` marker → `"{run_id}/cancel"`.
+pub(crate) async fn post_dispatch(
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+    marker: &str,
+    rest: &str,
+) -> ApiResult<axum::response::Response> {
+    match (marker, rest.split('/').collect::<Vec<_>>().as_slice()) {
+        ("pipelines", [path, "runs"]) => {
+            let res = trigger_run(state, user, owner, repo, path).await?;
+            Ok(res.into_response())
+        }
+        ("runs", [run_id, "cancel"]) => {
+            let run_id = parse_id(run_id, "run")?;
+            let res = cancel_run(state, user, owner, repo, run_id).await?;
+            Ok(res.into_response())
+        }
+        _ => Err(ApiError::NotFound("endpoint not found".into())),
+    }
+}
+
+fn parse_id(s: &str, what: &str) -> ApiResult<i64> {
+    s.parse()
+        .map_err(|_| ApiError::BadRequest(format!("invalid {what} id")))
+}
+
 // ----- Handlers ---------------------------------------------------------
 
 /// List pipeline configs for a repo. Phase 1 returns the latest
@@ -133,24 +223,24 @@ impl From<LogRow> for LogLineResponse {
 /// entry. If the file doesn't exist at the default branch's HEAD, the
 /// response is `{pipelines: []}` with HTTP 200.
 async fn list_pipelines(
-    State(state): State<AppState>,
-    user: OptionalAuthUser,
-    Path((owner, repo)): Path<(String, String)>,
-) -> ApiResult<Json<PipelinesResponse>> {
+    state: &AppState,
+    user: &OptionalAuthUser,
+    owner: &str,
+    repo: &str,
+) -> ApiResult<axum::Json<PipelinesResponse>> {
     // Find the repo + default branch.
     let repo_row =
-        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
-            .await?;
+        crate::routes::visibility::load_readable_repo(state, owner, repo, user.0.as_ref()).await?;
     let head = state
         .git
-        .head_sha(&owner, &repo, &repo_row.default_branch)
+        .head_sha(owner, repo, &repo_row.default_branch)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let content = state
         .git
         // Argument order is (owner, name, reference, path) — the ref and
-        // path were swapped here, so the lookup never resolved and the
+        // path were swapped here once, so the lookup never resolved and the
         // pipeline list was always empty.
-        .read_file(&owner, &repo, &head, ".gita-ci.yml")
+        .read_file(owner, repo, &head, ".gita-ci.yml")
         .ok()
         .flatten();
     let pipelines = match content {
@@ -177,36 +267,38 @@ async fn list_pipelines(
         }
         None => Vec::new(),
     };
-    Ok(Json(PipelinesResponse { pipelines }))
+    Ok(axum::Json(PipelinesResponse { pipelines }))
 }
 
 async fn list_runs(
-    State(state): State<AppState>,
-    user: OptionalAuthUser,
-    Path((owner, repo, path)): Path<(String, String, String)>,
-) -> ApiResult<Json<RunsResponse>> {
+    state: &AppState,
+    user: &OptionalAuthUser,
+    owner: &str,
+    repo: &str,
+    path: &str,
+) -> ApiResult<axum::Json<RunsResponse>> {
     let repo_row =
-        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
-            .await?;
+        crate::routes::visibility::load_readable_repo(state, owner, repo, user.0.as_ref()).await?;
     let pipeline = state
         .db
-        .get_pipeline_by_path(repo_row.id, &path)
+        .get_pipeline_by_path(repo_row.id, path)
         .await?
         .ok_or_else(|| ApiError::NotFound("pipeline not found".into()))?;
     let rows = state.db.list_pipeline_runs(pipeline.id, 50).await?;
-    Ok(Json(RunsResponse {
+    Ok(axum::Json(RunsResponse {
         runs: rows.into_iter().map(PipelineRunResponse::from).collect(),
     }))
 }
 
 async fn get_run(
-    State(state): State<AppState>,
-    user: OptionalAuthUser,
-    Path((owner, repo, run_id)): Path<(String, String, i64)>,
-) -> ApiResult<Json<RunDetailResponse>> {
+    state: &AppState,
+    user: &OptionalAuthUser,
+    owner: &str,
+    repo: &str,
+    run_id: i64,
+) -> ApiResult<axum::Json<RunDetailResponse>> {
     let repository =
-        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, user.0.as_ref())
-            .await?;
+        crate::routes::visibility::load_readable_repo(state, owner, repo, user.0.as_ref()).await?;
     let run = state
         .db
         .get_pipeline_run(run_id)
@@ -218,7 +310,7 @@ async fn get_run(
         return Err(ApiError::NotFound("run not found".into()));
     }
     let jobs = state.db.list_jobs(run_id).await?;
-    Ok(Json(RunDetailResponse {
+    Ok(axum::Json(RunDetailResponse {
         run: PipelineRunResponse::from(run),
         jobs: jobs.into_iter().map(JobResponse::from).collect(),
     }))
@@ -228,14 +320,16 @@ async fn get_run(
 /// on the pipeline's stored ref + SHA. Auth required; a run executes the
 /// repository's own code, so it needs the same rights as pushing to it.
 async fn trigger_run(
-    State(state): State<AppState>,
-    user: AuthUserExtractor,
-    Path((owner, repo, path)): Path<(String, String, String)>,
-) -> ApiResult<Json<RunTriggerResponse>> {
-    let repo = crate::routes::visibility::load_pushable_repo(&state, &owner, &repo, &user).await?;
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+    path: &str,
+) -> ApiResult<axum::Json<RunTriggerResponse>> {
+    let repo = crate::routes::visibility::load_pushable_repo(state, owner, repo, user).await?;
     let pipeline = state
         .db
-        .get_pipeline_by_path(repo.id, &path)
+        .get_pipeline_by_path(repo.id, path)
         .await?
         .ok_or_else(|| ApiError::NotFound("pipeline not found".into()))?;
 
@@ -243,7 +337,7 @@ async fn trigger_run(
     // current tip, not necessarily the SHA that last enqueued a run.
     let head_sha = state
         .git
-        .head_sha(&owner, &repo.name, &pipeline.ref_name)
+        .head_sha(owner, &repo.name, &pipeline.ref_name)
         .map_err(ApiError::from)?;
 
     let run_id = state
@@ -280,7 +374,7 @@ async fn trigger_run(
         .get_pipeline_run(run_id)
         .await?
         .ok_or_else(|| ApiError::Internal("inserted run vanished".into()))?;
-    Ok(Json(RunTriggerResponse {
+    Ok(axum::Json(RunTriggerResponse {
         run: PipelineRunResponse::from(run),
     }))
 }
@@ -291,16 +385,18 @@ pub struct RunTriggerResponse {
 }
 
 async fn cancel_run(
-    State(state): State<AppState>,
-    user: AuthUserExtractor,
-    Path((owner, repo, run_id)): Path<(String, String, i64)>,
-) -> ApiResult<Json<crate::error::MessageResponse>> {
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+    run_id: i64,
+) -> ApiResult<axum::Json<crate::error::MessageResponse>> {
     // The run must belong to the repository named in the path, and the
     // caller must be able to write to that repository. Without both checks
     // any authenticated user could cancel any run in the system — including
     // runs belonging to private repositories they cannot even read.
     let repository =
-        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
+        crate::routes::visibility::load_readable_repo(state, owner, repo, Some(user)).await?;
     let run = state
         .db
         .get_pipeline_run(run_id)
@@ -311,7 +407,7 @@ async fn cancel_run(
     }
     // A run executes the repository's code, so cancelling one takes the
     // same rights as pushing to the repository.
-    crate::routes::visibility::ensure_pushable(&state, &repository, &user).await?;
+    crate::routes::visibility::ensure_pushable(state, &repository, user).await?;
     if !matches!(run.status.as_str(), "queued" | "running") {
         return Err(ApiError::Conflict(format!(
             "run is in terminal state '{}' and cannot be canceled",
@@ -322,28 +418,26 @@ async fn cancel_run(
         .db
         .update_pipeline_run_status(run_id, "canceled")
         .await?;
-    Ok(Json(crate::error::MessageResponse {
+    Ok(axum::Json(crate::error::MessageResponse {
         message: "canceled".into(),
     }))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct LogsQuery {
-    pub since: Option<i64>,
-    pub max: Option<i64>,
-}
-
 async fn get_logs(
-    State(state): State<AppState>,
-    user: OptionalAuthUser,
-    Path((owner, repo, run_id, job_id)): Path<(String, String, i64, i64)>,
-    Query(q): Query<LogsQuery>,
-) -> ApiResult<Json<LogsResponse>> {
-    authorize_job_access(&state, &owner, &repo, run_id, job_id, user.0.as_ref()).await?;
-    let since = q.since.unwrap_or(-1);
-    let max = q.max.unwrap_or(1000).clamp(1, 5000);
+    state: &AppState,
+    user: &OptionalAuthUser,
+    owner: &str,
+    repo: &str,
+    run_id: i64,
+    job_id: i64,
+    since: Option<i64>,
+    max: Option<i64>,
+) -> ApiResult<axum::Json<LogsResponse>> {
+    authorize_job_access(state, owner, repo, run_id, job_id, user.0.as_ref()).await?;
+    let since = since.unwrap_or(-1);
+    let max = max.unwrap_or(1000).clamp(1, 5000);
     let rows = state.db.list_logs_since(job_id, since, max).await?;
-    Ok(Json(LogsResponse {
+    Ok(axum::Json(LogsResponse {
         lines: rows.into_iter().map(LogLineResponse::from).collect(),
     }))
 }
@@ -361,8 +455,7 @@ async fn authorize_job_access(
     job_id: i64,
     user: Option<&crate::extract::AuthUserExtractor>,
 ) -> ApiResult<()> {
-    let repository =
-        crate::routes::visibility::load_readable_repo(state, owner, repo, user).await?;
+    let repository = crate::routes::visibility::load_readable_repo(state, owner, repo, user).await?;
     let run = state
         .db
         .get_pipeline_run(run_id)
@@ -393,22 +486,23 @@ async fn authorize_job_access(
 /// Phase 1 polls the DB at ~1 Hz to discover new rows. A future
 /// revision could switch to LISTEN/NOTIFY for lower latency.
 async fn stream_logs(
-    State(state): State<AppState>,
-    user: OptionalAuthUser,
-    Path((owner, repo, run_id, job_id)): Path<(String, String, i64, i64)>,
-) -> Result<
+    state: &AppState,
+    user: &OptionalAuthUser,
+    owner: &str,
+    repo: &str,
+    run_id: i64,
+    job_id: i64,
+) -> ApiResult<
     axum::response::sse::Sse<
         impl futures_util::Stream<Item = Result<axum::response::sse::Event, Infallible>>,
     >,
-    ApiError,
 > {
     use axum::response::sse::{Event, KeepAlive, Sse};
-    use std::convert::Infallible;
     use std::time::Duration;
 
     // Authorize before streaming: the job id alone would otherwise expose
     // another repository's logs.
-    authorize_job_access(&state, &owner, &repo, run_id, job_id, user.0.as_ref()).await?;
+    authorize_job_access(state, owner, repo, run_id, job_id, user.0.as_ref()).await?;
 
     let db = state.db.clone();
 
@@ -485,28 +579,4 @@ pub struct RunDetailResponse {
 #[derive(Debug, Serialize)]
 pub struct LogsResponse {
     pub lines: Vec<LogLineResponse>,
-}
-
-// ----- Router -----------------------------------------------------------
-
-pub fn pipeline_routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/repos/{owner}/{repo}/pipelines", get(list_pipelines))
-        .route(
-            "/api/repos/{owner}/{repo}/pipelines/{path}/runs",
-            get(list_runs).post(trigger_run),
-        )
-        .route("/api/repos/{owner}/{repo}/runs/{run_id}", get(get_run))
-        .route(
-            "/api/repos/{owner}/{repo}/runs/{run_id}/cancel",
-            post(cancel_run),
-        )
-        .route(
-            "/api/repos/{owner}/{repo}/runs/{run_id}/jobs/{job_id}/logs",
-            get(get_logs),
-        )
-        .route(
-            "/api/repos/{owner}/{repo}/runs/{run_id}/jobs/{job_id}/logs/stream",
-            get(stream_logs),
-        )
 }

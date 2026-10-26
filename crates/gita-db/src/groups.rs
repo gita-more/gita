@@ -10,23 +10,39 @@ use crate::Db;
 use crate::repositories::row_to_repo;
 
 impl Db {
-    /// Create a new group owned by `owner_id`.
+    /// Create a new group owned by `owner_id`, optionally under a parent group.
     pub async fn create_group(
         &self,
         name: &str,
         description: &str,
         owner_id: i64,
+        parent_id: Option<i64>,
     ) -> Result<Group> {
         let created_at = Utc::now().to_rfc3339();
+
+        // Compute full_path
+        let full_path = if let Some(pid) = parent_id {
+            let parent = sqlx::query("SELECT full_path FROM groups WHERE id = $1")
+                .bind(pid)
+                .fetch_one(&self.pool)
+                .await?;
+            let parent_path: String = parent.try_get("full_path")?;
+            format!("{}/{}", parent_path, name)
+        } else {
+            name.to_string()
+        };
+
         let row = sqlx::query(
-            "INSERT INTO groups (name, description, owner_id, created_at)
-             VALUES ($1, $2, $3, $4)
+            "INSERT INTO groups (name, description, owner_id, created_at, parent_id, full_path)
+             VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING id",
         )
         .bind(name)
         .bind(description)
         .bind(owner_id)
         .bind(&created_at)
+        .bind(parent_id)
+        .bind(&full_path)
         .fetch_one(&self.pool)
         .await?;
         let id: i64 = row.try_get("id").unwrap_or(0);
@@ -50,13 +66,26 @@ impl Db {
             created_at: DateTime::parse_from_rfc3339(&created_at)
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
+            parent_id,
+            full_path,
         })
     }
 
-    /// Fetch a group by its unique name.
+    /// Fetch a group by its full path (e.g. "groupa/subgroupa").
+    pub async fn get_group_by_full_path(&self, full_path: &str) -> Result<Option<Group>> {
+        let rows = sqlx::query(
+            "SELECT id, name, description, owner_id, created_at, parent_id, full_path FROM groups WHERE full_path = $1",
+        )
+        .bind(full_path)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.first().map(row_to_group).transpose()?)
+    }
+
+    /// Fetch a group by its unique name (for root-level groups only, backward compat).
     pub async fn get_group_by_name(&self, name: &str) -> Result<Option<Group>> {
         let rows = sqlx::query(
-            "SELECT id, name, description, owner_id, created_at FROM groups WHERE name = $1",
+            "SELECT id, name, description, owner_id, created_at, parent_id, full_path FROM groups WHERE name = $1 AND parent_id IS NULL",
         )
         .bind(name)
         .fetch_all(&self.pool)
@@ -67,13 +96,24 @@ impl Db {
     /// List all groups the given user is a member of (including owned).
     pub async fn list_groups_for_user(&self, user_id: i64) -> Result<Vec<Group>> {
         let rows = sqlx::query(
-            "SELECT g.id, g.name, g.description, g.owner_id, g.created_at
+            "SELECT g.id, g.name, g.description, g.owner_id, g.created_at, g.parent_id, g.full_path
              FROM groups g
              JOIN group_members gm ON gm.group_id = g.id
              WHERE gm.user_id = $1
-             ORDER BY g.name",
+             ORDER BY g.full_path",
         )
         .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_group).collect()
+    }
+
+    /// List direct subgroups of a group.
+    pub async fn list_subgroups(&self, parent_id: i64) -> Result<Vec<Group>> {
+        let rows = sqlx::query(
+            "SELECT id, name, description, owner_id, created_at, parent_id, full_path FROM groups WHERE parent_id = $1 ORDER BY name",
+        )
+        .bind(parent_id)
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(row_to_group).collect()
@@ -209,5 +249,7 @@ pub(crate) fn row_to_group(row: &PgRow) -> Result<Group> {
         created_at: DateTime::parse_from_rfc3339(&created_at)
             .map(|d| d.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now()),
+        parent_id: row.try_get("parent_id")?,
+        full_path: row.try_get("full_path")?,
     })
 }

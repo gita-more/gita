@@ -244,7 +244,7 @@ impl Db {
     /// List the groups a user created (i.e. `owner_id = user_id`).
     pub async fn list_groups_owned_by(&self, user_id: i64) -> Result<Vec<Group>> {
         let rows = sqlx::query(
-            "SELECT id, name, description, owner_id, created_at FROM groups WHERE owner_id = $1 ORDER BY id",
+            "SELECT id, name, description, owner_id, created_at, parent_id, full_path FROM groups WHERE owner_id = $1 ORDER BY id",
         )
         .bind(user_id)
         .fetch_all(&self.pool)

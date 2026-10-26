@@ -1,29 +1,45 @@
 //! Path parsing and read/write classification for git-over-HTTP.
 
 /// Parse `owner/name.git/...` from a path like `/owner/name.git/info/refs`.
+/// For group repositories, owner can be a nested path like `groupa/subgroupa`.
 pub(crate) fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<String>) {
-    let mut parts = path_info.trim_start_matches('/').split('/');
-    let owner = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    let repo = parts
-        .next()
-        .map(|s| s.strip_suffix(".git").unwrap_or(s).to_string());
+    let parts = path_info.trim_start_matches('/').split('/').collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return (None, None);
+    }
+    // Find the repo segment (the one ending with .git)
+    let Some(repo_idx) = parts.iter().position(|p| p.ends_with(".git")) else {
+        return (None, None);
+    };
+    if repo_idx == 0 {
+        return (None, None);
+    }
+    // The repo name is the .git segment (with .git stripped)
+    let repo = parts[repo_idx].strip_suffix(".git").map(|s| s.to_string());
+    // Everything before the repo segment is the owner/group path
+    let owner = Some(parts[..repo_idx].join("/"));
     (owner, repo)
 }
 
 /// The git service verb a request addresses, if any.
 ///
 /// A git-over-HTTP path has the shape `/<owner>/<repo>.git/<verb>[/...]`,
-/// where `<verb>` is the third path segment. Parsing the verb *structurally*
-/// matters: a substring match on the whole path would classify every
-/// request for a repository literally named `git-receive-pack` as a write.
+/// where `<verb>` is the segment AFTER the repo (which ends with `.git`).
+/// For nested groups, owner can contain multiple segments, so we find the
+/// repo segment (the one ending with `.git`) and take the next segment as
+/// the verb. Parsing the verb *structurally* matters: a substring match on
+/// the whole path would classify every request for a repository literally
+/// named `git-receive-pack` as a write.
 pub(crate) fn request_verb(path_info: &str) -> Option<&str> {
-    let mut parts = path_info.trim_start_matches('/').split('/');
-    let _owner = parts.next()?;
-    let _repo = parts.next()?;
-    let verb = parts.next()?;
+    let parts = path_info.trim_start_matches('/').split('/').collect::<Vec<_>>();
+    // Find the repo segment (ends with .git)
+    let repo_idx = parts.iter().position(|p| p.ends_with(".git"))?;
+    // The verb is the segment immediately after the repo
+    let verb_idx = repo_idx + 1;
+    if verb_idx >= parts.len() {
+        return None;
+    }
+    let verb = parts[verb_idx];
     if verb.is_empty() {
         None
     } else {

@@ -19,6 +19,7 @@ impl GitManager {
     }
 
     /// The filesystem path of a repository with the given owner/name.
+    /// For group repositories, owner can be a nested path like "groupa/subgroupa".
     pub fn repo_path(&self, owner: &str, name: &str) -> PathBuf {
         self.root.join(owner).join(format!("{name}.git"))
     }
@@ -26,24 +27,37 @@ impl GitManager {
     /// The filesystem path of a repository, rejecting any owner or name that
     /// could escape the repositories root.
     ///
-    /// The owner segment is a directory name and the name segment becomes a
-    /// `.git` directory, so both must be plain names: a value containing a
-    /// path separator or `..` would let a caller create or delete a
+    /// The owner segment is a directory name (can contain slashes for nested groups)
+    /// and the name segment becomes a `.git` directory, so both must be plain names:
+    /// a value containing `..` would let a caller create or delete a
     /// directory outside the root. Read paths use `repo_path` unchanged
     /// (a miss there is a miss, not a traversal), but anything that creates,
     /// moves or removes a repository goes through this check.
     pub fn safe_repo_path(&self, owner: &str, name: &str) -> Result<PathBuf> {
-        for (label, value) in [("owner", owner), ("repository name", name)] {
-            if value.is_empty() {
-                return Err(anyhow!("{label} must not be empty"));
+        // Validate owner path segments
+        for segment in owner.split('/') {
+            if segment.is_empty() {
+                return Err(anyhow!("owner path segment must not be empty"));
             }
-            if value == "." || value == ".." {
-                return Err(anyhow!("invalid {label}: {value}"));
+            if segment == "." || segment == ".." {
+                return Err(anyhow!("invalid owner segment: {segment}"));
             }
-            if value.contains('/') || value.contains('\\') || value.contains('\0') {
-                return Err(anyhow!("invalid {label}: {value}"));
+            if segment.contains('\\') || segment.contains('\0') {
+                return Err(anyhow!("invalid owner segment: {segment}"));
             }
         }
+
+        // Validate repo name
+        if name.is_empty() {
+            return Err(anyhow!("repository name must not be empty"));
+        }
+        if name == "." || name == ".." {
+            return Err(anyhow!("invalid repository name: {name}"));
+        }
+        if name.contains('/') || name.contains('\\') || name.contains('\0') {
+            return Err(anyhow!("invalid repository name: {name}"));
+        }
+
         let path = self.repo_path(owner, name);
         // Belt and braces: confirm the resolved path is still under the root.
         // `Path::starts_with` compares components, so this also catches

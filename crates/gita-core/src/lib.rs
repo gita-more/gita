@@ -36,6 +36,10 @@ pub struct Group {
     pub description: String,
     pub owner_id: i64,
     pub created_at: DateTime<Utc>,
+    /// Parent group ID, if this is a subgroup.
+    pub parent_id: Option<i64>,
+    /// Full path from root group, e.g. "groupa/subgroupa".
+    pub full_path: String,
 }
 
 /// A member of a group, with their role.

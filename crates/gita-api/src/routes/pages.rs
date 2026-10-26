@@ -1,16 +1,17 @@
-//! GitHub-Pages-style configuration endpoints.
+//! GitHub-Pages-style configuration handlers.
 //!
-//! These endpoints manage the per-repository "Deploy from a branch"
-//! publishing configuration. The *serving* side of Pages lives in
-//! [`pages_site_routes`] and is mounted at the server root, not under
-//! `/api`, because a static site must be reachable at `/{owner}/{repo}/`.
+//! These handlers manage the per-repository "Deploy from a branch"
+//! publishing configuration. They are served through the single catch-all
+//! route in [`crate::routes::repo`] (the `pages` marker segment); the
+//! `*_dispatch` functions below are called from that dispatcher. The
+//! *serving* side of Pages lives in [`pages_site_routes`] and is mounted
+//! at the server root, not under `/api`, because a static site must be
+//! reachable at `/{owner}/{repo}/`.
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::AuthUserExtractor;
 use crate::state::AppState;
-use axum::extract::{Path, State};
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 /// Per-repository Pages configuration as exposed to the frontend.
@@ -37,39 +38,87 @@ pub struct PutPagesRequest {
     pub path: Option<String>,
 }
 
-pub fn pages_routes() -> Router<AppState> {
-    Router::new()
-        .route(
-            "/api/repos/{owner}/{repo}/pages",
-            get(get_pages).put(put_pages).delete(delete_pages),
-        )
-        .route(
-            "/api/repos/{owner}/{repo}/pages/status",
-            get(get_pages_status),
-        )
+/// GET dispatch for `/api/repos/{owner}/{repo}/pages[...]`.
+/// `rest` is the path after the `pages` marker: `""` or `"status"`.
+pub(crate) async fn get_dispatch(
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+    rest: &str,
+) -> ApiResult<axum::response::Response> {
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [""] => {
+            let res = get_pages(state, user, owner, repo).await?;
+            Ok(res.into_response())
+        }
+        ["status"] => {
+            let res = get_pages_status(state, user, owner, repo).await?;
+            Ok(res.into_response())
+        }
+        _ => Err(ApiError::NotFound("endpoint not found".into())),
+    }
+}
+
+/// PUT dispatch for `/api/repos/{owner}/{repo}/pages`.
+pub(crate) async fn put_dispatch(
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+    rest: &str,
+    body: &[u8],
+) -> ApiResult<axum::response::Response> {
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [""] => {
+            let req: PutPagesRequest = serde_json::from_slice(body)
+                .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
+            let res = put_pages(state, user, owner, repo, req).await?;
+            Ok(res.into_response())
+        }
+        _ => Err(ApiError::NotFound("endpoint not found".into())),
+    }
+}
+
+/// DELETE dispatch for `/api/repos/{owner}/{repo}/pages`.
+pub(crate) async fn delete_dispatch(
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+    rest: &str,
+) -> ApiResult<axum::response::Response> {
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [""] => {
+            let res = delete_pages(state, user, owner, repo).await?;
+            Ok(res.into_response())
+        }
+        _ => Err(ApiError::NotFound("endpoint not found".into())),
+    }
 }
 
 async fn get_pages(
-    State(state): State<AppState>,
-    user: AuthUserExtractor,
-    Path((owner, repo)): Path<(String, String)>,
-) -> ApiResult<Json<PagesResponse>> {
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+) -> ApiResult<axum::Json<PagesResponse>> {
     // A private repo's configured branch is itself information worth
     // protecting; the shared read rule answers who may see it.
     let repository =
-        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
-    Ok(Json(response_for(&state, &repository).await))
+        crate::routes::visibility::load_readable_repo(state, owner, repo, Some(user)).await?;
+    Ok(axum::Json(response_for(state, &repository).await))
 }
 
 /// Owner-only write: Pages configuration changes the public surface of a repo.
 async fn put_pages(
-    State(state): State<AppState>,
-    user: AuthUserExtractor,
-    Path((owner, repo)): Path<(String, String)>,
-    Json(req): Json<PutPagesRequest>,
-) -> ApiResult<Json<PagesResponse>> {
-    let repository =
-        crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+    req: PutPagesRequest,
+) -> ApiResult<axum::Json<PagesResponse>> {
+    let repository = crate::routes::visibility::load_adminable_repo(state, owner, repo, user).await?;
 
     let branch = req
         .branch
@@ -78,7 +127,7 @@ async fn put_pages(
 
     validate_pages_path(&path)?;
     validate_branch_name(&branch)?;
-    if req.enabled && !state.git.ref_exists(&owner, &repo, &branch) {
+    if req.enabled && !state.git.ref_exists(owner, repo, &branch) {
         return Err(ApiError::BadRequest(
             "branch not found: no such branch in this repository".into(),
         ));
@@ -89,18 +138,18 @@ async fn put_pages(
         .upsert_pages(repository.id, req.enabled, &branch, &path)
         .await?;
 
-    Ok(Json(response_for(&state, &repository).await))
+    Ok(axum::Json(response_for(state, &repository).await))
 }
 
 /// Disable Pages. Deleting the row is equivalent to disabled-and-defaulted,
 /// so no separate tombstone is needed.
 async fn delete_pages(
-    State(state): State<AppState>,
-    user: AuthUserExtractor,
-    Path((owner, repo)): Path<(String, String)>,
-) -> ApiResult<Json<crate::error::MessageResponse>> {
-    let repository =
-        crate::routes::visibility::load_adminable_repo(&state, &owner, &repo, &user).await?;
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+) -> ApiResult<axum::Json<crate::error::MessageResponse>> {
+    let repository = crate::routes::visibility::load_adminable_repo(state, owner, repo, user).await?;
     state.db.delete_pages(repository.id).await?;
     Ok(crate::error::message("pages disabled"))
 }
@@ -108,14 +157,15 @@ async fn delete_pages(
 /// Status endpoint without any Pages configuration body, so the repo page can
 /// know whether to show a "Pages" entry even before the config exists.
 async fn get_pages_status(
-    State(state): State<AppState>,
-    user: AuthUserExtractor,
-    Path((owner, repo)): Path<(String, String)>,
-) -> ApiResult<Json<serde_json::Value>> {
+    state: &AppState,
+    user: &AuthUserExtractor,
+    owner: &str,
+    repo: &str,
+) -> ApiResult<axum::Json<serde_json::Value>> {
     let repository =
-        crate::routes::visibility::load_readable_repo(&state, &owner, &repo, Some(&user)).await?;
+        crate::routes::visibility::load_readable_repo(state, owner, repo, Some(user)).await?;
     let row = state.db.get_pages(repository.id).await?;
-    Ok(Json(serde_json::json!({
+    Ok(axum::Json(serde_json::json!({
         "configured": row.is_some(),
         "enabled": row.as_ref().map(|r| r.enabled).unwrap_or(false),
     })))

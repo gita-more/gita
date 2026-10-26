@@ -5,15 +5,17 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::{AuthUserExtractor, OptionalAuthUser};
 use crate::state::AppState;
 use axum::extract::{Path, State};
-use axum::routing::get;
+use axum::response::IntoResponse;
 use axum::{Json, Router};
 use gita_core::EventType;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateGroupRequest {
     pub name: String,
     pub description: Option<String>,
+    pub parent_path: Option<String>, // Full path of parent group, e.g. "groupa/subgroupa"
 }
 
 #[derive(Debug, Serialize)]
@@ -23,6 +25,8 @@ pub struct GroupResponse {
     pub description: String,
     pub owner_id: i64,
     pub created_at: String,
+    pub parent_id: Option<i64>,
+    pub full_path: String,
 }
 
 impl From<gita_core::Group> for GroupResponse {
@@ -33,6 +37,8 @@ impl From<gita_core::Group> for GroupResponse {
             description: g.description,
             owner_id: g.owner_id,
             created_at: g.created_at.to_rfc3339(),
+            parent_id: g.parent_id,
+            full_path: g.full_path,
         }
     }
 }
@@ -51,18 +57,12 @@ pub fn group_routes() -> Router<AppState> {
             "/api/groups",
             axum::routing::post(create_group).get(list_groups),
         )
-        .route("/api/groups/{group}", get(get_group))
         .route(
-            "/api/groups/{group}/repos",
-            axum::routing::post(create_group_repo),
-        )
-        .route(
-            "/api/groups/{group}/members",
-            get(list_group_members).post(add_group_member),
-        )
-        .route(
-            "/api/groups/{group}/members/{username}",
-            axum::routing::delete(remove_group_member).patch(update_group_member),
+            "/api/groups/{*path}",
+            axum::routing::get(get_group_or_subgroups)
+                .post(create_group_repo_or_subgroup)
+                .patch(update_group_member_dispatch)
+                .delete(delete_group_member_or_repo),
         )
 }
 
@@ -94,20 +94,116 @@ async fn create_group(
     }
     let description = req.description.unwrap_or_default();
 
-    if state.db.get_group_by_name(&name).await?.is_some() {
+    let parent_id = if let Some(parent_path) = req.parent_path {
+        let parent = state
+            .db
+            .get_group_by_full_path(&parent_path)
+            .await?
+            .ok_or_else(|| ApiError::NotFound("parent group not found".into()))?;
+        Some(parent.id)
+    } else {
+        None
+    };
+
+    // Check if group already exists under the same parent
+    let parent_check = if let Some(pid) = parent_id {
+        format!("parent_id = {}", pid)
+    } else {
+        "parent_id IS NULL".to_string()
+    };
+    let exists = sqlx::query(&format!(
+        "SELECT 1 FROM groups WHERE name = $1 AND ({} OR ({} AND $1 IS NULL))",
+        parent_check, parent_check
+    ))
+    .bind(&name)
+    .fetch_optional(state.db.pool())
+    .await?
+    .is_some();
+    if exists {
         return Err(ApiError::Conflict("group already exists".into()));
     }
 
-    let group = state.db.create_group(&name, &description, user.id).await?;
+    let group = state.db.create_group(&name, &description, user.id, parent_id).await?;
 
     state.bus.publish(
         EventType::RepoCreated,
         None,
         Some(user.id),
-        serde_json::json!({"group": name}),
+        serde_json::json!({"group": group.full_path}),
     );
 
     Ok(Json(GroupResponse::from(group)))
+}
+
+/// Dispatch POST /api/groups/{*path} to the right handler based on path suffix.
+async fn create_group_repo_or_subgroup(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path(path): Path<String>,
+    axum::extract::Json(body): axum::extract::Json<Value>,
+) -> ApiResult<axum::response::Response> {
+    if path.ends_with("/repos") {
+        let group_path = path.strip_suffix("/repos").unwrap();
+        let req: CreateGroupRepoRequest = serde_json::from_value(body)
+            .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
+        let res = create_group_repo(State(state.clone()), user, Path(group_path.to_string()), Json(req)).await?;
+        Ok(res.into_response())
+    } else if path.ends_with("/subgroups") {
+        let group_path = path.strip_suffix("/subgroups").unwrap();
+        let req: CreateGroupRequest = serde_json::from_value(body)
+            .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
+        let res = create_subgroup(State(state.clone()), user, Path(group_path.to_string()), Json(req)).await?;
+        Ok(res.into_response())
+    } else if path.ends_with("/members") {
+        let group_path = path.strip_suffix("/members").unwrap();
+        let req: AddGroupMemberRequest = serde_json::from_value(body)
+            .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
+        let res = add_group_member(State(state.clone()), user, Path(group_path.to_string()), Json(req)).await?;
+        Ok(res.into_response())
+    } else {
+        Err(ApiError::NotFound("endpoint not found".into()))
+    }
+}
+
+/// Dispatch PATCH /api/groups/{*path} to the right handler.
+async fn update_group_member_dispatch(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path(path): Path<String>,
+    axum::extract::Json(body): axum::extract::Json<Value>,
+) -> ApiResult<axum::response::Response> {
+    if path.contains("/members/") {
+        let parts: Vec<&str> = path.split("/members/").collect();
+        if parts.len() == 2 {
+            let req: UpdateGroupMemberRequest = serde_json::from_value(body)
+                .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
+            let res = update_group_member_inner(State(state.clone()), user, Path((parts[0].to_string(), parts[1].to_string())), Json(req)).await?;
+            Ok(res.into_response())
+        } else {
+            Err(ApiError::NotFound("endpoint not found".into()))
+        }
+    } else {
+        Err(ApiError::NotFound("endpoint not found".into()))
+    }
+}
+
+/// Dispatch DELETE /api/groups/{*path} to the right handler.
+async fn delete_group_member_or_repo(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path(path): Path<String>,
+) -> ApiResult<axum::response::Response> {
+    if path.contains("/members/") {
+        let parts: Vec<&str> = path.split("/members/").collect();
+        if parts.len() == 2 {
+            let res = remove_group_member(State(state.clone()), user, Path((parts[0].to_string(), parts[1].to_string()))).await?;
+            Ok(res.into_response())
+        } else {
+            Err(ApiError::NotFound("endpoint not found".into()))
+        }
+    } else {
+        Err(ApiError::NotFound("endpoint not found".into()))
+    }
 }
 
 async fn list_groups(
@@ -118,14 +214,39 @@ async fn list_groups(
     Ok(Json(groups.into_iter().map(GroupResponse::from).collect()))
 }
 
-async fn get_group(
+async fn get_group_or_subgroups(
     State(state): State<AppState>,
     user: OptionalAuthUser,
-    Path(group): Path<String>,
+    Path(path): Path<String>,
+) -> ApiResult<axum::response::Response> {
+    if path.ends_with("/subgroups") {
+        let group_path = path.strip_suffix("/subgroups").unwrap();
+        let auth_user = user.0.ok_or_else(|| ApiError::Unauthorized("authentication required".into()))?;
+        let res = list_subgroups(State(state.clone()), auth_user, Path(group_path.to_string())).await?;
+        Ok(res.into_response())
+    } else if path.ends_with("/members") {
+        let group_path = path.strip_suffix("/members").unwrap();
+        let auth_user = user.0.ok_or_else(|| ApiError::Unauthorized("authentication required".into()))?;
+        let res = list_group_members(State(state.clone()), auth_user, Path(group_path.to_string())).await?;
+        Ok(res.into_response())
+    } else if path.ends_with("/repos") {
+        let group_path = path.strip_suffix("/repos").unwrap();
+        let auth_user = user.0.ok_or_else(|| ApiError::Unauthorized("authentication required".into()))?;
+        let res = list_group_repos(State(state.clone()), auth_user, Path(group_path.to_string())).await?;
+        Ok(res.into_response())
+    } else {
+        let res = get_group(State(state), user, Path(path)).await?;
+        Ok(res.into_response())
+    }
+}
+    async fn get_group(
+    State(state): State<AppState>,
+    user: OptionalAuthUser,
+    Path(path): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let g = state
         .db
-        .get_group_by_name(&group)
+        .get_group_by_full_path(&path)
         .await?
         .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
     let repos = state
@@ -135,10 +256,9 @@ async fn get_group(
             user.0.as_ref().map(|u| u.id),
         )
         .await?;
+    let subgroups = state.db.list_subgroups(g.id).await?;
     Ok(Json(serde_json::json!({
         "group": GroupResponse::from(g),
-        // A group may own private repositories; do not disclose them to a
-        // caller who cannot read them.
         "repos": repos
             .into_iter()
             .map(|r| {
@@ -154,18 +274,142 @@ async fn get_group(
                 })
             })
             .collect::<Vec<_>>(),
+        "subgroups": subgroups
+            .into_iter()
+            .map(GroupResponse::from)
+            .collect::<Vec<_>>(),
     })))
+}
+
+async fn list_subgroups(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path(path): Path<String>,
+) -> ApiResult<Json<Vec<GroupResponse>>> {
+    let g = state
+        .db
+        .get_group_by_full_path(&path)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
+
+    // Check membership
+    let is_member = state
+        .db
+        .get_group_member_role(g.id, user.id)
+        .await?
+        .is_some();
+    if g.owner_id != user.id && !is_member {
+        return Err(ApiError::Forbidden(
+            "only the group owner or a member can list subgroups".into(),
+        ));
+    }
+
+    let subgroups = state.db.list_subgroups(g.id).await?;
+    Ok(Json(subgroups.into_iter().map(GroupResponse::from).collect()))
+}
+
+/// GET /api/groups/{path}/repos — list a group's repositories (bare array).
+///
+/// Like the member list, repositories of a group are only enumerable by
+/// the group's owner and its members; anonymous callers use the group
+/// detail endpoint, which filters to readable repositories.
+async fn list_group_repos(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path(path): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let g = state
+        .db
+        .get_group_by_full_path(&path)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
+    let is_member = state
+        .db
+        .get_group_member_role(g.id, user.id)
+        .await?
+        .is_some();
+    if g.owner_id != user.id && !is_member {
+        return Err(ApiError::Forbidden(
+            "only the group owner or a member can list repositories".into(),
+        ));
+    }
+    let repos = state.db.list_group_repositories(g.id).await?;
+    let readable = state
+        .db
+        .filter_readable(repos, Some(user.id))
+        .await?;
+    Ok(Json(serde_json::json!(readable
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "owner": r.owner_name,
+                "name": r.name,
+                "full_name": format!("{}/{}", r.owner_name, r.name),
+                "description": r.description,
+                "is_private": r.is_private,
+                "default_branch": r.default_branch,
+                "created_at": r.created_at.to_rfc3339(),
+            })
+        })
+        .collect::<Vec<_>>())))
+}
+
+async fn create_subgroup(
+    State(state): State<AppState>,
+    user: AuthUserExtractor,
+    Path(path): Path<String>,
+    Json(req): Json<CreateGroupRequest>,
+) -> ApiResult<Json<GroupResponse>> {
+    let g = state
+        .db
+        .get_group_by_full_path(&path)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
+
+    // Only group owner can create subgroups
+    if g.owner_id != user.id {
+        return Err(ApiError::Forbidden(
+            "only the group owner can create subgroups".into(),
+        ));
+    }
+
+    let name = req.name.trim().to_string();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(ApiError::BadRequest(
+            "group name may only contain letters, numbers, '-', '_', '.'".into(),
+        ));
+    }
+    let description = req.description.unwrap_or_default();
+
+    let group = state
+        .db
+        .create_group(&name, &description, user.id, Some(g.id))
+        .await?;
+
+    state.bus.publish(
+        EventType::RepoCreated,
+        None,
+        Some(user.id),
+        serde_json::json!({"group": group.full_path}),
+    );
+
+    Ok(Json(GroupResponse::from(group)))
 }
 
 async fn create_group_repo(
     State(state): State<AppState>,
     user: AuthUserExtractor,
-    Path(group): Path<String>,
+    Path(path): Path<String>,
     Json(req): Json<CreateGroupRepoRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let g = state
         .db
-        .get_group_by_name(&group)
+        .get_group_by_full_path(&path)
         .await?
         .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
 
@@ -190,10 +434,10 @@ async fn create_group_repo(
     let is_private = req.is_private.unwrap_or(false);
     let default_branch = req.default_branch.unwrap_or_else(|| "main".to_string());
 
-    // Group repos use `owner_name = group name` for uniqueness.
+    // Group repos use `owner_name = group full_path` for uniqueness.
     if state
         .db
-        .get_repository_by_name(&g.name, &name)
+        .get_repository_by_name(&g.full_path, &name)
         .await?
         .is_some()
     {
@@ -206,7 +450,7 @@ async fn create_group_repo(
         .db
         .create_repository(
             g.owner_id,
-            &g.name,
+            &g.full_path,
             &name,
             &description,
             is_private,
@@ -217,21 +461,21 @@ async fn create_group_repo(
 
     state
         .git
-        .create_repo(&g.name, &name, &default_branch)
+        .create_repo(&g.full_path, &name, &default_branch)
         .await?;
 
     state.bus.publish(
         EventType::RepoCreated,
         Some(repo.id),
         Some(user.id),
-        serde_json::json!({"group": g.name, "repo": name}),
+        serde_json::json!({"group": g.full_path, "repo": name}),
     );
 
     Ok(Json(serde_json::json!({
         "id": repo.id,
-        "owner": g.name,
+        "owner": g.full_path,
         "name": name,
-        "full_name": format!("{}/{}", g.name, name),
+        "full_name": format!("{}/{}", g.full_path, name),
         "description": repo.description,
         "is_private": repo.is_private,
         "default_branch": repo.default_branch,
@@ -255,11 +499,11 @@ fn require_group_owner(state: &AppState, g: &gita_core::Group, user_id: i64) -> 
 async fn list_group_members(
     State(state): State<AppState>,
     user: AuthUserExtractor,
-    Path(group): Path<String>,
+    Path(path): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let g = state
         .db
-        .get_group_by_name(&group)
+        .get_group_by_full_path(&path)
         .await?
         .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
     // Membership is only visible to the group's owner and its own members —
@@ -282,12 +526,12 @@ async fn list_group_members(
 async fn add_group_member(
     State(state): State<AppState>,
     user: AuthUserExtractor,
-    Path(group): Path<String>,
+    Path(path): Path<String>,
     Json(req): Json<AddGroupMemberRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let g = state
         .db
-        .get_group_by_name(&group)
+        .get_group_by_full_path(&path)
         .await?
         .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
     require_group_owner(&state, &g, user.id)?;
@@ -307,7 +551,7 @@ async fn add_group_member(
     state.db.upsert_group_member(g.id, target.id, &role).await?;
 
     Ok(Json(serde_json::json!({
-        "group": g.name,
+        "group": g.full_path,
         "username": target.username,
         "role": role,
     })))
@@ -316,11 +560,11 @@ async fn add_group_member(
 async fn remove_group_member(
     State(state): State<AppState>,
     user: AuthUserExtractor,
-    Path((group, username)): Path<(String, String)>,
+    Path((path, username)): Path<(String, String)>,
 ) -> ApiResult<Json<crate::error::MessageResponse>> {
     let g = state
         .db
-        .get_group_by_name(&group)
+        .get_group_by_full_path(&path)
         .await?
         .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
     require_group_owner(&state, &g, user.id)?;
@@ -340,15 +584,15 @@ async fn remove_group_member(
     }))
 }
 
-async fn update_group_member(
+async fn update_group_member_inner(
     State(state): State<AppState>,
     user: AuthUserExtractor,
-    Path((group, username)): Path<(String, String)>,
+    Path((path, username)): Path<(String, String)>,
     Json(req): Json<UpdateGroupMemberRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let g = state
         .db
-        .get_group_by_name(&group)
+        .get_group_by_full_path(&path)
         .await?
         .ok_or_else(|| ApiError::NotFound("group not found".into()))?;
     require_group_owner(&state, &g, user.id)?;
@@ -363,7 +607,7 @@ async fn update_group_member(
     state.db.upsert_group_member(g.id, target.id, &role).await?;
 
     Ok(Json(serde_json::json!({
-        "group": g.name,
+        "group": g.full_path,
         "username": target.username,
         "role": role,
     })))
