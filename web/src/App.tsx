@@ -87,19 +87,27 @@ function SmartRepoDetailContainer() {
   const navigate = useNavigate()
   const owner = params.owner ?? ''
   const repo = params.repo ?? ''
-  const [repoKind, setRepoKind] = useState<'group' | 'personal' | 'loading'>('loading')
+  const [repoKind, setRepoKind] = useState<'group' | 'personal' | 'subgroup' | 'loading'>('loading')
 
   useEffect(() => {
     async function detectType() {
       try {
-        await api.getGroup(owner)
-        setRepoKind('group')
+        // First check if owner is a group
+        const groupRes = await api.getGroup(owner)
+        // If owner is a group, check if repo is a subgroup
+        const subgroups = groupRes.subgroups || []
+        const isSubgroup = subgroups.some((sg) => sg.name === repo)
+        if (isSubgroup) {
+          setRepoKind('subgroup')
+        } else {
+          setRepoKind('group')
+        }
       } catch {
         setRepoKind('personal')
       }
     }
     if (owner) detectType()
-  }, [owner])
+  }, [owner, repo])
 
   if (repoKind === 'loading') {
     return (
@@ -108,6 +116,16 @@ function SmartRepoDetailContainer() {
           Loading...
         </div>
       </Root>
+    )
+  }
+
+  // If it's a subgroup, render GroupDetail instead
+  if (repoKind === 'subgroup') {
+    return (
+      <GroupDetail
+        group={`${owner}/${repo}`}
+        onOpenRepo={(_owner, repoName) => navigate(`/${owner}/${repo}/${repoName}`)}
+      />
     )
   }
 
