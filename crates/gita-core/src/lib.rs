@@ -285,6 +285,17 @@ pub struct AccessToken {
     pub created_at: DateTime<Utc>,
 }
 
+/// Latest commit that touched a tree entry, shown next to it in the
+/// directory browser (GitHub-style "last commit message / date" columns).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EntryCommit {
+    pub sha: String,
+    /// First line of the commit message.
+    pub message: String,
+    pub author_name: String,
+    pub authored_at: DateTime<Utc>,
+}
+
 /// Result of listing files in a repository tree.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TreeEntry {
@@ -293,6 +304,10 @@ pub struct TreeEntry {
     /// `"blob"` or `"tree"`.
     pub kind: String,
     pub size: Option<i64>,
+    /// Newest commit touching this entry, when known. Attached only by the
+    /// non-recursive directory listing; absent (`null`) otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_commit: Option<EntryCommit>,
 }
 
 /// A file at a given commit with its raw content.

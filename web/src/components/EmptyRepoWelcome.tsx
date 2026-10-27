@@ -15,7 +15,7 @@ export interface EmptyRepoWelcomeProps {
 
 type Proto = 'https' | 'ssh'
 
-function buildCloneUrl(
+export function buildCloneUrl(
   owner: string,
   name: string,
   repoKind: 'personal' | 'group',

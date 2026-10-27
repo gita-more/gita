@@ -286,3 +286,53 @@ export function GlobeIcon(props: IconProps) {
     </Icon>
   )
 }
+
+/** A `</>` code glyph, used for the clone dropdown trigger. */
+export function CodeIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </Icon>
+  )
+}
+
+/** A terminal prompt, used for the clone dropdown header. */
+export function TerminalIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
+    </Icon>
+  )
+}
+
+/** Two overlapping rectangles, used for copy-to-clipboard buttons. */
+export function CopyIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </Icon>
+  )
+}
+
+/** A magnifying glass, used for "go to file" search inputs. */
+export function SearchIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </Icon>
+  )
+}
+
+/** A price-tag shape, used for tag counts. */
+export function TagIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" />
+      <line x1="7" y1="7" x2="7.01" y2="7" />
+    </Icon>
+  )
+}

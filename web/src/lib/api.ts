@@ -40,6 +40,16 @@ export interface TreeEntry {
   name: string
   kind: string
   size: number | null
+  /** Newest commit touching this entry (directory listings only). */
+  last_commit?: EntryCommit | null
+}
+
+/** Latest commit that touched a tree entry, from the /dir endpoint. */
+export interface EntryCommit {
+  sha: string
+  message: string
+  author_name: string
+  authored_at: string
 }
 
 export interface Commit {
@@ -348,6 +358,10 @@ export const api = {
   getTree: (owner: string, name: string, path: string, ref: string) =>
     request<{ path: string; ref: string; entries: TreeEntry[] }>(
       `/api/repos/${owner}/${name}/tree?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(ref)}`,
+    ),
+  getDir: (owner: string, name: string, path: string, ref: string) =>
+    request<{ path: string; ref: string; entries: TreeEntry[] }>(
+      `/api/repos/${owner}/${name}/dir?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(ref)}`,
     ),
   getFile: (owner: string, name: string, path: string, ref: string) =>
     request<FileContent>(

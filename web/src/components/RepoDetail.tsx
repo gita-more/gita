@@ -28,9 +28,14 @@ import {
   CheckIcon,
   MessageSquareIcon,
   StarIcon,
+  SearchIcon,
+  TagIcon,
 } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
+import { relativeTime } from '../lib/reltime'
 import { EmptyRepoWelcome } from './EmptyRepoWelcome'
+import { CloneDropdown } from './CloneDropdown'
+import { ReadmePanel } from './ReadmePanel'
 import { PipelinesPanel } from './PipelinesPanel'
 import { PagesPanel } from './PagesPanel'
 
@@ -113,7 +118,9 @@ export function RepoDetail({
     try {
       setFile(null)
       setLoaded(false)
-      const res = await api.getTree(owner, name, path, ref)
+      // Directory listing (immediate children, each with its last commit) —
+      // the GitHub-style view. The recursive /tree endpoint stays for the CLI.
+      const res = await api.getDir(owner, name, path, ref)
       setTree(res.entries)
       setLoaded(true)
     } catch (err) {
@@ -194,6 +201,8 @@ export function RepoDetail({
     switch (tab) {
       case 'files':
         void loadTree()
+        // Commits feed the latest-commit bar above the directory listing.
+        void loadCommits()
         break
       case 'commits':
         void loadCommits()
@@ -292,6 +301,11 @@ export function RepoDetail({
           repoKind={repoKind}
           groupName={groupName}
           repoData={repoData}
+          rev={ref}
+          branches={branches}
+          tags={tags}
+          latestCommit={commits[0] ?? null}
+          commitCount={commits.length}
         />
       )}
       {tab === 'commits' && <CommitsPanel commits={commits} owner={owner} name={name} />}
@@ -322,6 +336,11 @@ function FilesPanel({
   repoKind,
   groupName,
   repoData,
+  rev,
+  branches,
+  tags,
+  latestCommit,
+  commitCount,
 }: {
   path: string
   setPath: (p: string) => void
@@ -335,8 +354,15 @@ function FilesPanel({
   repoKind?: 'personal' | 'group'
   groupName?: string
   repoData: Repository | null
+  rev: string
+  branches: string[]
+  tags: string[]
+  latestCommit: Commit | null
+  commitCount: number
 }) {
   const { t } = useI18n()
+  const setSearchParams = useSearchParams()[1]
+  const [filter, setFilter] = useState('')
   const parts = path.split('/').filter(Boolean)
 
   const crumbParts = ['', ...parts.map((_, idx) => path.split('/').slice(0, idx + 1).join('/'))]
@@ -355,8 +381,57 @@ function FilesPanel({
     )
   }
 
+  // GitHub ordering: directories first, then files, each alphabetically;
+  // the go-to-file filter narrows by name within the current listing.
+  const q = filter.trim().toLowerCase()
+  const visible = tree
+    .filter((entry) => q === '' || entry.name.toLowerCase().includes(q))
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'tree' ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+
+  // README of the current directory (any readme-style filename, any case).
+  const readmeEntry =
+    tree.find((e) => e.kind === 'blob' && /^readme(\.(md|markdown|txt))?$/i.test(e.name)) ?? null
+
+  function goCommits() {
+    setSearchParams({ tab: 'commits' })
+  }
+
   return (
     <div className="file-browser">
+      {/* Toolbar row: counts, go-to-file, clone dropdown — GitHub layout. */}
+      <div className="code-toolbar">
+        <span className="code-toolbar-counts">
+          <span className="count-chip" title={t('repo.code.branchesCount', { n: branches.length })}>
+            <GitBranchIcon size={14} />
+            {t('repo.code.branchesCount', { n: branches.length })}
+          </span>
+          <span className="count-chip" title={t('repo.code.tagsCount', { n: tags.length })}>
+            <TagIcon size={14} />
+            {t('repo.code.tagsCount', { n: tags.length })}
+          </span>
+        </span>
+        <div className="goto-file">
+          <SearchIcon size={13} />
+          <input
+            type="text"
+            placeholder={t('repo.code.goToFiles')}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            aria-label={t('repo.code.goToFiles')}
+          />
+        </div>
+        <CloneDropdown
+          owner={owner}
+          name={name}
+          repoKind={repoKind}
+          groupName={groupName}
+          repoData={repoData}
+        />
+      </div>
+
       {file ? (
         <div className="file-view">
           <div className="file-view-header">
@@ -371,66 +446,105 @@ function FilesPanel({
           <pre className="code-block">{file.content}</pre>
         </div>
       ) : (
-        <div className="box">
-          <div className="box-header">
-            <div className="breadcrumb">
-              <button className={`crumb crumb-root${parts.length === 0 ? ' crumb-current' : ''}`} onClick={() => setPath('')}>
-                <FolderIcon size={14} />
-                root
-              </button>
-              {parts.map((part, idx) => {
-                const isLast = idx === parts.length - 1
-                return (
-                  <span key={idx} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                    <span className="sep">/</span>
-                    <button
-                      className={`crumb${isLast ? ' crumb-current' : ''}`}
-                      onClick={() => !isLast && setPath(crumbParts[idx + 1])}
-                    >
-                      {part}
-                    </button>
-                  </span>
-                )
-              })}
+        <>
+          <div className="box">
+            <div className="box-header">
+              <div className="breadcrumb">
+                <button className={`crumb crumb-root${parts.length === 0 ? ' crumb-current' : ''}`} onClick={() => setPath('')}>
+                  <FolderIcon size={14} />
+                  root
+                </button>
+                {parts.map((part, idx) => {
+                  const isLast = idx === parts.length - 1
+                  return (
+                    <span key={idx} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                      <span className="sep">/</span>
+                      <button
+                        className={`crumb${isLast ? ' crumb-current' : ''}`}
+                        onClick={() => !isLast && setPath(crumbParts[idx + 1])}
+                      >
+                        {part}
+                      </button>
+                    </span>
+                  )
+                })}
+              </div>
             </div>
-          </div>
-          {tree.length === 0 ? (
-            <EmptyState icon={<FolderIcon size={22} />} title={t('repo.emptyDirTitle')} description={t('repo.emptyDirDescription')} />
-          ) : (
-            <table className="tree-table">
-              <tbody>
-                {tree.map((entry) => (
-                  <tr key={entry.path} onClick={() => void openEntry(entry)} className="clickable">
-                    <td>
-                      <div className="tree-entry">
-                        {entry.kind === 'tree' ? (
-                          <FolderIcon size={15} className="entry-icon folder" />
-                        ) : (
-                          <FileIcon size={15} className="entry-icon" />
-                        )}
-                        <span className="entry-name">{entry.name}</span>
-                      </div>
-                    </td>
-                    <td style={{ textAlign: 'right', width: 120 }}>
-                      {entry.kind === 'blob' && entry.size != null ? (
-                        <span className="entry-size">{formatSize(entry.size)}</span>
-                      ) : null}
-                    </td>
+
+            {/* Latest commit bar (GitHub-style) */}
+            {latestCommit && (
+              <div className="latest-commit">
+                <span className="latest-commit-author">{latestCommit.author_name}</span>
+                <span className="latest-commit-msg" title={latestCommit.message}>
+                  {latestCommit.message.split('\n')[0]}
+                </span>
+                <span className="latest-commit-sha">{latestCommit.sha.slice(0, 7)}</span>
+                <span
+                  className="latest-commit-time"
+                  title={new Date(latestCommit.authored_at).toLocaleString()}
+                >
+                  {relativeTime(latestCommit.authored_at)}
+                </span>
+                <span className="latest-commit-spacer" />
+                <button className="btn btn-ghost btn-sm" onClick={goCommits}>
+                  {t('repo.code.commitsCount', { n: commitCount })}
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={goCommits}>
+                  <GitCommitIcon size={14} />
+                  {t('repo.code.history')}
+                </button>
+              </div>
+            )}
+
+            {visible.length === 0 ? (
+              <EmptyState icon={<FolderIcon size={22} />} title={t('repo.emptyDirTitle')} description={t('repo.emptyDirDescription')} />
+            ) : (
+              <table className="tree-table gh-tree">
+                <thead>
+                  <tr>
+                    <th>{t('repo.code.nameCol')}</th>
+                    <th>{t('repo.code.lastCommitMsg')}</th>
+                    <th className="gh-col-date">{t('repo.code.lastCommitDate')}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {visible.map((entry) => (
+                    <tr key={entry.path}>
+                      <td>
+                        <div className="tree-entry">
+                          {entry.kind === 'tree' ? (
+                            <FolderIcon size={15} className="entry-icon folder" />
+                          ) : (
+                            <FileIcon size={15} className="entry-icon" />
+                          )}
+                          <button className="entry-link" onClick={() => void openEntry(entry)}>
+                            {entry.name}
+                          </button>
+                        </div>
+                      </td>
+                      <td className="cell-msg" title={entry.last_commit?.message ?? ''}>
+                        {entry.last_commit?.message ?? '—'}
+                      </td>
+                      <td className="cell-date">
+                        {entry.last_commit
+                          ? relativeTime(entry.last_commit.authored_at)
+                          : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* README block below the listing, like GitHub's code page. */}
+          {!filter && (
+            <ReadmePanel owner={owner} name={name} readmePath={readmeEntry?.path ?? null} rev={rev} />
           )}
-        </div>
+        </>
       )}
     </div>
   )
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 // ---------------------------------------------------------------------------

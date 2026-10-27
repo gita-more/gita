@@ -328,6 +328,19 @@ async fn repo_get_dispatcher(
             return Ok(res.into_response());
         }
     }
+    if let Some(repo_path) = path.strip_suffix("/dir") {
+        let (owner, repo) = parse_owner_repo(repo_path)?;
+        let res = get_dir(
+            &state,
+            &user,
+            &owner,
+            &repo,
+            q.get("ref").cloned(),
+            q.get("path").cloned(),
+        )
+        .await?;
+        return Ok(res.into_response());
+    }
     if let Some(repo_path) = path.strip_suffix("/tree") {
         let (owner, repo) = parse_owner_repo(repo_path)?;
         let res = get_tree(
@@ -772,6 +785,46 @@ async fn get_tree(
     let entries = state
         .git
         .list_tree(owner, &repo.name, &reference, &path)
+        .map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({
+        "path": path,
+        "ref": reference,
+        "entries": entries,
+    })))
+}
+
+async fn get_dir(
+    state: &AppState,
+    user: &OptionalAuthUser,
+    owner: &str,
+    repo: &str,
+    q_ref: Option<String>,
+    q_path: Option<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let repo = crate::routes::visibility::load_readable_repo(state, owner, repo, user.0.as_ref())
+        .await?;
+    let reference = q_ref.unwrap_or_else(|| repo.default_branch.clone());
+    let path = q_path.unwrap_or_default();
+    // Same existence check as `get_tree`: a missing ref must be an error,
+    // not an empty listing — except in a repo with no commits at all.
+    if !state.git.ref_exists(owner, &repo.name, &reference) {
+        let repo_is_empty = state
+            .git
+            .list_commits(owner, &repo.name, &reference, 1)
+            .unwrap_or_default()
+            .is_empty()
+            && state
+                .git
+                .list_branches(owner, &repo.name)
+                .unwrap_or_default()
+                .is_empty();
+        if !repo_is_empty {
+            return Err(ApiError::NotFound(format!("ref not found: {reference}")));
+        }
+    }
+    let entries = state
+        .git
+        .list_dir(owner, &repo.name, &reference, &path)
         .map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({
         "path": path,

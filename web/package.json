@@ -14,6 +14,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "dompurify": "^3.4.17",
+    "marked": "^18.1.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.4"

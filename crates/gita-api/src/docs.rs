@@ -1327,7 +1327,18 @@ pub const OPENAPI_JSON: &str = r##"{
           "path": { "type": "string" },
           "name": { "type": "string" },
           "kind": { "type": "string", "enum": ["blob", "tree"] },
-          "size": { "type": "integer", "nullable": true }
+          "size": { "type": "integer", "nullable": true },
+          "last_commit": {
+            "type": "object",
+            "nullable": true,
+            "description": "Newest commit touching this entry (directory listings only).",
+            "properties": {
+              "sha": { "type": "string" },
+              "message": { "type": "string" },
+              "author_name": { "type": "string" },
+              "authored_at": { "type": "string", "format": "date-time" }
+            }
+          }
         }
       },
       "CommitsResponse": {

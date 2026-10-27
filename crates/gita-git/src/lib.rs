@@ -19,6 +19,7 @@ use std::process::Stdio;
 
 pub mod browse;
 pub mod diff_merge;
+pub mod history;
 pub mod refs;
 pub mod repo;
 
@@ -154,6 +155,7 @@ fn collect_tree_entries_at(
             name: entry.filename().to_string(),
             kind: if is_tree { "tree" } else { "blob" }.to_string(),
             size: None,
+            last_commit: None,
         });
 
         // Descend into directories, stopping at the depth cap. A tree we
@@ -1262,4 +1264,86 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[tokio::test]
+    async fn list_dir_lists_children_with_last_commit() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let root = temp_dir();
+        let mgr = GitManager::new(root.clone());
+        let path = mgr.create_repo("alice", "dirlist", "main").await.unwrap();
+        push_initial_commit(&mgr, "alice", "dirlist", &path);
+        push_branch(
+            &mgr,
+            "alice",
+            "dirlist",
+            "main",
+            &[("docs/guide.md", "guide v1\n")],
+            "commit one: add docs",
+        );
+        push_branch(
+            &mgr,
+            "alice",
+            "dirlist",
+            "main",
+            &[("docs/guide.md", "guide v2\n")],
+            "commit two: update docs",
+        );
+
+        // Root listing shows only immediate children, not deeper descendants.
+        let entries = mgr.list_dir("alice", "dirlist", "main", "").unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"README.md"), "root listing: {paths:?}");
+        assert!(paths.contains(&"docs"), "root listing: {paths:?}");
+        assert!(
+            !paths.contains(&"docs/guide.md"),
+            "list_dir must not recurse, got {paths:?}"
+        );
+
+        // Every entry carries the newest commit that touched it. README.md and
+        // main.rs come from the initial commit; docs/ from "commit two", which
+        // touched a file *inside* it — a directory counts as touched when any
+        // descendant changed.
+        let by_path: std::collections::HashMap<&str, &TreeEntry> =
+            entries.iter().map(|e| (e.path.as_str(), e)).collect();
+        let readme = by_path.get("README.md").expect("README.md entry");
+        let readme_commit = readme.last_commit.as_ref().expect("README last commit");
+        assert_eq!(readme_commit.author_name, "Test");
+        assert!(
+            readme_commit.message.contains("initial"),
+            "unexpected message: {}",
+            readme_commit.message
+        );
+
+        let docs = by_path.get("docs").expect("docs entry");
+        let docs_commit = docs.last_commit.as_ref().expect("docs last commit");
+        assert!(
+            docs_commit.message.contains("commit two"),
+            "docs/ last commit should be the one touching docs/guide.md, got: {}",
+            docs_commit.message
+        );
+
+        // Scoped listing also decorates its entries.
+        let scoped = mgr.list_dir("alice", "dirlist", "main", "docs").unwrap();
+        assert_eq!(scoped.len(), 1, "docs/ has a single child: {scoped:?}");
+        assert_eq!(scoped[0].path, "docs/guide.md");
+        let guide = scoped[0].last_commit.as_ref().expect("guide last commit");
+        assert!(
+            guide.message.contains("commit two"),
+            "unexpected message: {}",
+            guide.message
+        );
+
+        // A file path or a missing path yields an empty listing.
+        assert!(mgr
+            .list_dir("alice", "dirlist", "main", "README.md")
+            .unwrap()
+            .is_empty());
+        assert!(mgr.list_dir("alice", "dirlist", "main", "nope").unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
+
