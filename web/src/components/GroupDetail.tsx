@@ -228,7 +228,7 @@ export function GroupDetail({
               ...res.repos.map((r): GroupTreeChild => ({ kind: 'repo', repo: r })),
             ]
           }}
-          onOpenGroup={(path) => navigate(`/groups/${path}`)}
+          onOpenGroup={(path) => navigate(`/${path}`)}
           onOpenRepo={onOpenRepo}
         />
       )}
