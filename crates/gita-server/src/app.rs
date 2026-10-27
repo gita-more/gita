@@ -177,7 +177,13 @@ impl App {
         let api_state =
             gita_api::AppState::new(db.clone(), auth.clone(), (*git).clone(), bus.clone())
                 .with_avatar_dir(config.server.data_dir.join("avatars"))
-                .with_insecure_password_reset(config.server.allow_insecure_password_reset);
+                .with_insecure_password_reset(config.server.allow_insecure_password_reset)
+                .with_ssh_config(
+                    config.server.ssh.enabled,
+                    config.server.ssh.host.clone(),
+                    config.server.ssh.port,
+                    config.server.ssh.public_host.clone(),
+                );
 
         let git_http_state = GitHttpState {
             git: git.clone(),

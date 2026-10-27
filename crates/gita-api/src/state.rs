@@ -37,6 +37,14 @@ pub struct AppState {
     /// Operators enable it for local development or for a deployment with
     /// no mail transport, where they read the token out of the response.
     pub allow_insecure_password_reset: bool,
+    /// SSH server configuration for generating clone URLs.
+    /// When `ssh_enabled` is true, `clone_url_ssh` will be populated in repo responses.
+    pub ssh_enabled: bool,
+    pub ssh_host: String,
+    pub ssh_port: u16,
+    /// Public host/hostname that clients use to connect via SSH.
+    /// If not set, falls back to `ssh_host` (with `0.0.0.0` replaced by `localhost`).
+    pub ssh_public_host: Option<String>,
 }
 
 impl AppState {
@@ -51,6 +59,10 @@ impl AppState {
             password_reset_limiter: None,
             avatar_dir: PathBuf::from("data/avatars"),
             allow_insecure_password_reset: false,
+            ssh_enabled: false,
+            ssh_host: "localhost".to_string(),
+            ssh_port: 2222,
+            ssh_public_host: None,
         }
     }
 
@@ -85,6 +97,21 @@ impl AppState {
     /// response. Off by default — see the field's documentation.
     pub fn with_insecure_password_reset(mut self, allow: bool) -> Self {
         self.allow_insecure_password_reset = allow;
+        self
+    }
+
+    /// Set SSH server configuration for generating clone URLs.
+    pub fn with_ssh_config(
+        mut self,
+        enabled: bool,
+        host: String,
+        port: u16,
+        public_host: Option<String>,
+    ) -> Self {
+        self.ssh_enabled = enabled;
+        self.ssh_host = host;
+        self.ssh_port = port;
+        self.ssh_public_host = public_host;
         self
     }
 }

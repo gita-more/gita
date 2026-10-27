@@ -63,6 +63,10 @@ pub struct SshConfig {
     /// Bind address for the SSH listener.
     #[serde(default = "default_ssh_host")]
     pub host: String,
+    /// Public host/hostname that clients use to connect via SSH.
+    /// If not set, falls back to `host` (but `0.0.0.0` is replaced with `localhost`).
+    #[serde(default)]
+    pub public_host: Option<String>,
     /// Port for the SSH listener.
     #[serde(default = "default_ssh_port")]
     pub port: u16,
@@ -87,6 +91,7 @@ impl Default for SshConfig {
         Self {
             enabled: default_ssh_enabled(),
             host: default_ssh_host(),
+            public_host: None,
             port: default_ssh_port(),
             host_key: None,
         }
@@ -185,6 +190,9 @@ impl Config {
             }
             if parsed.server.ssh.host_key.is_some() {
                 config.server.ssh.host_key = parsed.server.ssh.host_key;
+            }
+            if parsed.server.ssh.public_host.is_some() {
+                config.server.ssh.public_host = parsed.server.ssh.public_host;
             }
 
             // Pages section. Unlike SSH, these fields must be switchable in

@@ -36,6 +36,10 @@ pub struct RepoResponse {
     pub is_private: bool,
     pub default_branch: String,
     pub created_at: String,
+    /// HTTPS clone URL (always present)
+    pub clone_url_https: String,
+    /// SSH clone URL (present when SSH is enabled on the server)
+    pub clone_url_ssh: Option<String>,
 }
 
 impl From<Repository> for RepoResponse {
@@ -51,6 +55,8 @@ impl From<Repository> for RepoResponse {
             is_private: r.is_private,
             default_branch: r.default_branch,
             created_at: r.created_at.to_rfc3339(),
+            clone_url_https: format!("/git/{}/{}.git", owner_name, name),
+            clone_url_ssh: None,
         }
     }
 }
@@ -268,12 +274,26 @@ async fn list_repos(
     // Filter out private repositories the caller cannot see. The list is
     // not owner-scoped, so without this an anonymous caller learns that a
     // private repository exists.
+    let public_host = state
+        .ssh_public_host
+        .as_deref()
+        .unwrap_or(&state.ssh_host)
+        .replace("0.0.0.0", "localhost");
     let visible: Vec<RepoResponse> = state
         .db
         .filter_readable(repos, user.0.as_ref().map(|u| u.id))
         .await?
         .into_iter()
-        .map(RepoResponse::from)
+        .map(|r| {
+            let mut resp: RepoResponse = r.into();
+            if state.ssh_enabled {
+                resp.clone_url_ssh = Some(format!(
+                    "ssh://git@{}:{}/{}/{}.git",
+                    public_host, state.ssh_port, resp.owner, resp.name
+                ));
+            }
+            resp
+        })
         .collect();
     Ok(Json(visible))
 }
@@ -538,9 +558,22 @@ async fn get_repo(
     owner: &str,
     repo: &str,
 ) -> ApiResult<Json<RepoResponse>> {
-    let repo = crate::routes::visibility::load_readable_repo(state, owner, repo, user.0.as_ref())
+    let repository = crate::routes::visibility::load_readable_repo(state, owner, repo, user.0.as_ref())
         .await?;
-    Ok(Json(RepoResponse::from(repo)))
+    let mut response: RepoResponse = repository.into();
+    // Populate SSH clone URL if SSH is enabled
+    if state.ssh_enabled {
+        let public_host = state
+            .ssh_public_host
+            .as_deref()
+            .unwrap_or(&state.ssh_host)
+            .replace("0.0.0.0", "localhost");
+        response.clone_url_ssh = Some(format!(
+            "ssh://git@{}:{}/{}/{}.git",
+            public_host, state.ssh_port, owner, repo
+        ));
+    }
+    Ok(Json(response))
 }
 
 async fn delete_repo(
@@ -685,7 +718,19 @@ async fn update_repo(
         .get_repository(repository.id)
         .await?
         .ok_or_else(|| ApiError::NotFound("repository not found".into()))?;
-    Ok(Json(RepoResponse::from(updated)))
+    let mut response: RepoResponse = updated.into();
+    if state.ssh_enabled {
+        let public_host = state
+            .ssh_public_host
+            .as_deref()
+            .unwrap_or(&state.ssh_host)
+            .replace("0.0.0.0", "localhost");
+        response.clone_url_ssh = Some(format!(
+            "ssh://git@{}:{}/{}/{}.git",
+            public_host, state.ssh_port, response.owner, response.name
+        ));
+    }
+    Ok(Json(response))
 }
 
 async fn get_tree(
@@ -958,7 +1003,19 @@ async fn post_fork(
         }),
     );
 
-    Ok(Json(RepoResponse::from(repo)))
+    let mut response: RepoResponse = repo.into();
+    if state.ssh_enabled {
+        let public_host = state
+            .ssh_public_host
+            .as_deref()
+            .unwrap_or(&state.ssh_host)
+            .replace("0.0.0.0", "localhost");
+        response.clone_url_ssh = Some(format!(
+            "ssh://git@{}:{}/{}/{}.git",
+            public_host, state.ssh_port, response.owner, response.name
+        ));
+    }
+    Ok(Json(response))
 }
 
 async fn create_branch(

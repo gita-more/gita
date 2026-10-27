@@ -19,6 +19,10 @@ export interface Repository {
   is_private: boolean
   default_branch: string
   created_at: string
+  /** HTTPS clone URL (always present) */
+  clone_url_https: string
+  /** SSH clone URL (present when SSH is enabled on the server) */
+  clone_url_ssh: string | null
 }
 
 export interface PagesConfig {

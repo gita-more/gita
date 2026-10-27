@@ -7,6 +7,10 @@ export interface EmptyRepoWelcomeProps {
   name: string
   repoKind: 'personal' | 'group'
   groupName?: string
+  /** HTTPS clone URL from the API */
+  cloneUrlHttps?: string
+  /** SSH clone URL from the API (null if SSH not enabled) */
+  cloneUrlSsh?: string | null
 }
 
 type Proto = 'https' | 'ssh'
@@ -58,11 +62,21 @@ export function EmptyRepoWelcome({
   name,
   repoKind,
   groupName,
+  cloneUrlHttps,
+  cloneUrlSsh,
 }: EmptyRepoWelcomeProps) {
   const { t } = useI18n()
   const [proto, setProto] = useState<Proto>('https')
   const [copied, setCopied] = useState(false)
-  const cloneUrl = buildCloneUrl(owner, name, repoKind, groupName)
+  // Use API-provided URLs, fall back to client-side generation for backwards compatibility
+  const fallbackHttpsUrl = buildCloneUrl(owner, name, repoKind, groupName)
+  // The API returns a path-relative HTTPS URL (/git/...); make it absolute
+  // for display and copy.
+  const absolute = (url: string) =>
+    url.startsWith('/') ? `${window.location.origin}${url}` : url
+  const httpsUrl = cloneUrlHttps ? absolute(cloneUrlHttps) : fallbackHttpsUrl
+  const sshUrl = cloneUrlSsh
+  const cloneUrl = proto === 'https' ? httpsUrl : (sshUrl || '')
 
   // Render the clone/push snippets with a real placeholder so users can
   // copy and replace; we'll substitute the real URL on copy via the prompt.
@@ -104,6 +118,7 @@ export function EmptyRepoWelcome({
             aria-selected={proto === 'ssh'}
             className={`proto-toggle-btn${proto === 'ssh' ? ' active' : ''}`}
             onClick={() => setProto('ssh')}
+            disabled={!sshUrl}
           >
             {t('repo.empty.protoSsh')}
           </button>
@@ -112,7 +127,7 @@ export function EmptyRepoWelcome({
           <input
             type="text"
             readOnly
-            value={proto === 'https' ? cloneUrl : ''}
+            value={cloneUrl}
             aria-label="clone url"
             className="clone-url-input"
             onClick={(e) => (e.target as HTMLInputElement).select()}
@@ -121,12 +136,12 @@ export function EmptyRepoWelcome({
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => void handleCopy()}
-            disabled={proto === 'ssh' || !cloneUrl}
+            disabled={!cloneUrl}
           >
             {copied ? t('repo.empty.copied') : t('repo.empty.copy')}
           </button>
         </div>
-        {proto === 'ssh' && (
+        {proto === 'ssh' && !sshUrl && (
           <Alert type="info">{t('repo.empty.sshPending')}</Alert>
         )}
       </div>

@@ -10,6 +10,7 @@ import {
   type TreeEntry,
   type Pipeline,
   type Comment,
+  type Repository,
 } from '../lib/api'
 import { PageHeader, Alert, EmptyState, StatusLabel } from './Layout'
 import {
@@ -77,6 +78,17 @@ export function RepoDetail({
   const [tags, setTags] = useState<string[]>([])
   const [starred, setStarred] = useState(false)
   const [starCount, setStarCount] = useState(0)
+  // Repository data including clone URLs
+  const [repoData, setRepoData] = useState<Repository | null>(null)
+
+  const loadRepo = useCallback(async () => {
+    try {
+      const res = await api.getRepo(owner, name)
+      setRepoData(res)
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }, [owner, name, translateError])
 
   const loadTags = useCallback(async () => {
     try {
@@ -172,10 +184,11 @@ export function RepoDetail({
   }, [owner, name, starred])
 
   useEffect(() => {
+    void loadRepo()
     void loadBranches()
     void loadTags()
     void loadStar()
-  }, [loadBranches, loadTags, loadStar])
+  }, [loadRepo, loadBranches, loadTags, loadStar])
 
   useEffect(() => {
     switch (tab) {
@@ -278,6 +291,7 @@ export function RepoDetail({
           name={name}
           repoKind={repoKind}
           groupName={groupName}
+          repoData={repoData}
         />
       )}
       {tab === 'commits' && <CommitsPanel commits={commits} owner={owner} name={name} />}
@@ -307,6 +321,7 @@ function FilesPanel({
   name,
   repoKind,
   groupName,
+  repoData,
 }: {
   path: string
   setPath: (p: string) => void
@@ -319,6 +334,7 @@ function FilesPanel({
   name: string
   repoKind?: 'personal' | 'group'
   groupName?: string
+  repoData: Repository | null
 }) {
   const { t } = useI18n()
   const parts = path.split('/').filter(Boolean)
@@ -333,6 +349,8 @@ function FilesPanel({
         name={name}
         repoKind={repoKind ?? 'personal'}
         groupName={groupName}
+        cloneUrlHttps={repoData?.clone_url_https}
+        cloneUrlSsh={repoData?.clone_url_ssh ?? null}
       />
     )
   }

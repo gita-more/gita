@@ -16,6 +16,7 @@ jwt_secret="${GITA_SERVER_JWT_SECRET:-${JWT_SECRET:-dev-secret-change-me}}"
 
 # SSH listener configuration (optional). Only emitted when explicitly enabled.
 ssh_enabled="${GITA_SERVER_SSH_ENABLED:-false}"
+ssh_public_host="${GITA_SERVER_SSH_PUBLIC_HOST:-}"
 
 cat > "${CONFIG_FILE}" <<EOF
 # Gita configuration - generated from environment variables at container startup
@@ -45,6 +46,13 @@ enabled = ${ssh_enabled}
 host = "${GITA_SERVER_SSH_HOST:-0.0.0.0}"
 port = ${GITA_SERVER_SSH_PORT:-2222}
 EOF
+
+# Optionally include public host for clone URLs (falls back to host with 0.0.0.0 -> localhost)
+if [ -n "${ssh_public_host}" ]; then
+  cat >> "${CONFIG_FILE}" <<EOF
+public_host = "${ssh_public_host}"
+EOF
+fi
 
 # Optionally include a custom host key path (volume-mounted secret).
 if [ -n "${GITA_SERVER_SSH_HOST_KEY:-}" ]; then

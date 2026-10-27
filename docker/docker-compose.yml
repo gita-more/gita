@@ -27,11 +27,9 @@ services:
     restart: unless-stopped
     ports:
       - "${GITA_PORT:-3100}:3000"
-      # Git over SSH (port 2222). This mapping is commented out by default:
-      # the SSH listener is disabled unless GITA_SSH_ENABLED=true, so there is
-      # nothing to connect to. To expose SSH, set GITA_SSH_ENABLED=true in
-      # .env AND uncomment the line below (optionally override GITA_SSH_PORT):
-      # - "${GITA_SSH_PORT:-2222}:${GITA_SSH_PORT:-2222}"
+      # Git over SSH (port 2222). Enable GITA_SSH_ENABLED=true in .env and
+      # uncomment the line below to expose SSH.
+      - "${GITA_SSH_PORT:-2222}:${GITA_SSH_PORT:-2222}"
     environment:
       # Server
       - GITA_SERVER_HOST=0.0.0.0
@@ -46,6 +44,9 @@ services:
       - GITA_SERVER_SSH_ENABLED=${GITA_SSH_ENABLED:-false}
       - GITA_SERVER_SSH_HOST=0.0.0.0
       - GITA_SERVER_SSH_PORT=${GITA_SSH_PORT:-2222}
+      # Public host/hostname for SSH clone URLs (e.g. gita.example.com or localhost).
+      # If not set, falls back to SSH_HOST with 0.0.0.0 -> localhost.
+      - GITA_SERVER_SSH_PUBLIC_HOST=${GITA_SSH_PUBLIC_HOST:-}
       # Pages: GitHub-style static sites at /<owner>/<repo>/. Enabled by
       # default; set GITA_PAGES_ENABLED=false to turn the feature off.
       - GITA_SERVER_PAGES_ENABLED=${GITA_PAGES_ENABLED:-true}
