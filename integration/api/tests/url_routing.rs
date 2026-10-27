@@ -323,7 +323,7 @@ async fn rest_api_vs_git_http_paths() {
     assert_eq!(body["owner"], "mygroup");
 
     // Git 克隆 URL 格式验证 (前端构建)
-    // 预期: http://host/git/mygroup/myrepo.git
+    // 预期: http://host/mygroup/myrepo.git（无 /git 前缀）
     // 这个由前端处理，后端只需保证仓库路径正确
     let (status, body) = get_group(&app, "mygroup", Some(&owner.token)).await;
     assert_eq!(status, StatusCode::OK);

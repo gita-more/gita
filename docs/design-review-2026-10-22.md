@@ -34,7 +34,7 @@ goal.md 最初的定位是"AI 原生的自托管 Git Server"——以事件流�
         │              │              │              │
 ┌───────▼──────────────▼──────────────▼──────────────▼────────┐
 │  axum Router (gita-server)                                  │
-│  /api/*  → gita-api     /git/* → gita-http                  │
+│  /api/*  → gita-api     /owner/repo.git → gita-http                │
 │  /<owner>/<repo>/* → gita-api/pages_site                   │
 │  fallback → gita-web (SPA)                                   │
 └───────┬──────────────────────────────┬───────────────────────┘
@@ -62,7 +62,7 @@ gita-git     (2149 行) 裸仓库 / refs / diff / merge
 gita-events  (360 行)  进程内事件总线
 gita-pipeline(716 行)  .gita-ci.yml 解析 + needs 拓扑排序
 gita-runner  (769 行)  独立 CI runner 二进制
-gita-http    (889 行)  /git/* Smart HTTP
+gita-http    (889 行)  /owner/repo.git Smart HTTP
 gita-ssh     (515 行)  嵌入式 SSH 服务器
 gita-api     (6604 行) REST API + OpenAPI
 gita-web     (316 行)  SPA 静态托管
@@ -540,8 +540,11 @@ GET /git/testuser/cloneurl_probe.git/info/refs?service=git-upload-pack
 **更糟的是**：`integration/web/tests/empty-repo.spec.ts:40` 断言的正是这个错误值，
 **e2e 测试把 bug 固化了**——所以 17 个 e2e 全绿，但功能是坏的。
 
-**修法**：URL 改为 `{origin}/git/{owner}/{name}.git`（群组仓同理，仍用 `/git/groups/{g}/{r}.git`），
+**修法（第一轮）**：URL 改为 `{origin}/git/{owner}/{name}.git`（群组仓同理，仍用 `/git/groups/{g}/{r}.git`），
 并同步改 e2e 断言。
+
+**最终架构（2026-10-27 重构）**：git Smart HTTP 挂到根路径 `/{owner}/{repo}.git/{*rest}`（经最外层中间件按 `.git` 判别），
+clone URL 就是干净的 `{origin}/{owner}/{name}.git`——与 GitLab/GitHub 一致，不再需要 `/git` 前缀。
 
 ---
 
@@ -629,7 +632,8 @@ workspace, exfiltrate the runner's environment, fill the disk, and never time ou
 
 `gita-runner/src/workspace.rs:40-44` 构造 `https://x-access-token:TOKEN@host/{owner}/{repo}.git`，
 **同样缺 `/git` 前缀**。集成测试全用 `file://` 绕过，所以这条生产路径**零覆盖**——
-真跑起来会去 clone SPA fallback。
+真跑起来会去 clone SPA fallback。（后续已改为带 `/git`；2026-10-27 又随根路径重构去掉 `/git`，
+最终形态与后端 `/{owner}/{repo}.git` 一致。）
 
 同时 token 内嵌在 URL 里 → 出现在 `/proc/*/cmdline`，且写进 `<workspace>/repo/.git/config`。
 
@@ -1216,7 +1220,7 @@ sqlx 的 `migrate!` 用 `pg_advisory_lock(current_database())`，是**数据库�
 | `goal.md` §6 | `docs/architecture.md`、`docs/api.md`、`docs/mcp.md` | **三个文件都不存在** | 已订正（`docs/api.md` 已建并由测试守住） |
 | `goal.md` §5.5 | "MCP Server stdio 已实现" | crate 已移除，只剩 `/api/mcp/tools` 静态清单 | 仍待订正 |
 | `README.md:147` | "在 web UI 的 Settings → SSH keys 注册公钥" | **UI 里没有这个页面** | 已订正（改成给 API 调用） |
-| `README.md:116` | `git clone http://.../git/<you>/<repo>.git` | **正确**，但 Web UI 给的是错的（少 `/git`） | 第一批已修 |
+| `README.md:116` | `git clone http://.../<you>/<repo>.git` | **正确**，无 `/git` 前缀，与 GitLab/GitHub 对齐 | 重构完成 |
 | `README.md` 架构树 | 8 个 crate | 实际 12 个（漏了 pipeline/push/runner/ssh） | 已订正 |
 | `README.md:171` | 本地跑指向 `localhost:5432` | compose 的 postgres **没暴露宿主端口** | 仍待订正 |
 | `docs/gita-ci-writing-guide.md` | 多处 | stage 默认值、needs 对象形式、stage_index 排序、glob `*` 语义、保留名、CI 变量表 —— 见 P1-3/P1-4 | 第七批已订正前四项 |
@@ -1247,7 +1251,7 @@ sqlx 的 `migrate!` 用 `pg_advisory_lock(current_database())`，是**数据库�
 | **P0-6** | fork 私有仓 → 公开仓 | fork 前校验源仓可见性；fork **继承源仓的 `is_private`** | 实测非属主 fork 私有仓 → 404 |
 | **P0-7** | `GET /api/events` 泄露私有仓事件 | 带 `?repo=` 时走 `load_readable_repo`；全局流按可见仓过滤 | 实测非属主 404 |
 | **P0-9** | PR / Issue 返回 `"id": 0` | INSERT 加 `RETURNING id` | 实测返回真实 id |
-| **P0-8** | clone URL 缺 `/git`（前端 + runner） | UI 与 `gita-runner` 的 clone URL 都加 `/git` 前缀；e2e 断言同步更新 | 新增 e2e：**真的跑 `git clone`** 验证 UI 给的 URL 可用 |
+| **P0-8** | clone URL 有 `/git` 前缀 | URL 改为干净的 `/owner/repo.git`；git HTTP 路由挂在根路径 `/{owner}/{repo}.git/{*rest}`；UI/CLI/测试/文档同步 | 重构完成 |
 | **P1-7** | `cancel_run` 无鉴权 | 校验 owner + run 属于该仓 | 代码层 |
 | **P1-11** | 注册接口是账户枚举 oracle | 见第二批 | — |
 | **P1-12** | `GET /api/auth/tokens` 重返 PAT 明文 | PAT 改哈希存储；列表不再返回原文（`token` 字段为空串） | 提交 `79477b3` |
@@ -1814,7 +1818,7 @@ Pages 的路径安全有三层防护、CI 的解析器是真严格拒绝的、gi
 | PR 合并 | 是真实的 git merge，但**丢目标分支的改动**（数据丢失）→ ✅ 已修 |
 | Push 事件 | **被拒绝的 push 也会发事件并触发 CI** → ✅ 已修 |
 | SSH | 鉴权正确，但**不产生任何事件、不触发 CI** → ❌ 仍待修（事件部分） |
-| Clone URL | UI 和 runner 给的 URL **都少 `/git`**，必然失败——而 e2e 把 bug 固化了 → ✅ 已修 |
+| Clone URL | UI 和 runner 给的 URL **都少 `/git`**，必然失败——而 e2e 把 bug 固化了 → ✅ 已修；2026-10-27 进一步重构：git Smart HTTP 挂根路径 `/{owner}/{repo}.git`，彻底去掉 `/git` 前缀，与 GitLab/GitHub 对齐 |
 | CI runner | **无沙箱、无超时、继承 runner 全部环境变量**（含 DB 密码）→ 部分修复（环境隔离/超时/目录隔离），**无沙箱** |
 | RBAC | 群组角色存了但**完全不参与访问决策** → ✅ 已修（第三批，GitLab 式角色） |
 | 事件流 | 生产**零订阅者**；CI 生命周期在事件流里**完全不可见** → ❌ 仍待修 |
@@ -1827,5 +1831,5 @@ Pages 的路径安全有三层防护、CI 的解析器是真严格拒绝的、gi
 
 **第二个该做的一件事**：修 clone URL。UI 给用户的那条 `git clone` 命令原来是**必然失败**的，
 而 17 个 e2e 全绿——这说明当时的测试防线在关键处是**假阳性**。
-→ **已修**，并补了"真的跑 `git clone`"的 e2e。新增测试如果沿用
+→ **已重构**，去掉 `/git` 前缀，挂在根路径 `/{owner}/{repo}.git/{*rest}`，并补了"真的跑 `git clone`"的 e2e。新增测试如果沿用
 "断言 UI 显示什么"而非"断言功能可用"的写法，会继续固化 bug。

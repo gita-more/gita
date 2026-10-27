@@ -45,7 +45,7 @@ crates/
 ├── gita-db      # SQLx data access (PostgreSQL)
 ├── gita-git      # bare repo management, git protocol via gix + git CLI
 ├── gita-events  # event bus (pushes, PRs, issues)
-├── gita-http    # Smart HTTP Git protocol endpoint (/git/*)
+├── gita-http    # Smart HTTP Git protocol endpoint (root /owner/repo.git)
 ├── gita-ssh     # embedded SSH server (Git over SSH)
 ├── gita-api     # REST API (/api/*) + OpenAPI docs
 ├── gita-pipeline # .gita-ci.yml parser and stage DAG
@@ -118,7 +118,7 @@ Then open <http://127.0.0.1:3000>:
 3. Clone and push:
 
 ```bash
-git clone http://127.0.0.1:3000/git/<you>/<repo>.git
+git clone http://127.0.0.1:3000/<you>/<repo>.git
 cd <repo>
 git push -u origin main
 ```

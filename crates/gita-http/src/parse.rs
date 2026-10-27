@@ -2,6 +2,7 @@
 
 /// Parse `owner/name.git/...` from a path like `/owner/name.git/info/refs`.
 /// For group repositories, owner can be a nested path like `groupa/subgroupa`.
+#[allow(dead_code)]
 pub(crate) fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<String>) {
     let parts = path_info.trim_start_matches('/').split('/').collect::<Vec<_>>();
     if parts.len() < 2 {
@@ -30,6 +31,7 @@ pub(crate) fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<S
 /// the verb. Parsing the verb *structurally* matters: a substring match on
 /// the whole path would classify every request for a repository literally
 /// named `git-receive-pack` as a write.
+#[allow(dead_code)]
 pub(crate) fn request_verb(path_info: &str) -> Option<&str> {
     let parts = path_info.trim_start_matches('/').split('/').collect::<Vec<_>>();
     // Find the repo segment (ends with .git)
@@ -63,6 +65,7 @@ pub(crate) fn request_verb(path_info: &str) -> Option<&str> {
 ///
 /// Everything under `/<owner>/<repo>.git/` is a read of that repository;
 /// the only write verb is `git-receive-pack`.
+#[allow(dead_code)]
 pub(crate) fn is_write_request(path_info: &str, query_string: &Option<String>) -> bool {
     if request_verb(path_info) == Some("git-receive-pack") {
         return true;
@@ -81,6 +84,7 @@ pub(crate) fn is_write_request(path_info: &str, query_string: &Option<String>) -
 /// not a write is treated as a read. A path we fail to recognise therefore
 /// fails *closed* (a private repository still requires its owner) rather
 /// than open.
+#[allow(dead_code)]
 pub(crate) fn is_read_request(path_info: &str, query_string: &Option<String>) -> bool {
     !is_write_request(path_info, query_string)
 }

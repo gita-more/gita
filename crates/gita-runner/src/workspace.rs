@@ -37,11 +37,10 @@ fn base_host(config: &RunnerConfig) -> &str {
 }
 
 /// Build the clone URL with the runner token as Basic auth password.
-/// git clone https://x-access-token:<TOKEN>@<host>/git/<owner>/<repo>.git
+/// git clone https://x-access-token:<TOKEN>@<host>/<owner>/<repo>.git
 ///
-/// The `/git/` prefix is the path the server mounts its smart-HTTP git
-/// endpoints on (`gita-http::router`). Without it the clone would hit the
-/// SPA fallback and fail.
+/// Git smart-HTTP is mounted at the root path `/{owner}/{repo}.git/...`,
+/// matching GitLab/GitHub's clean clone URLs.
 ///
 /// A `file://` server base is passed through unchanged, without the token,
 /// so a runner can be pointed at a local bare repository. That is what the
@@ -52,7 +51,7 @@ pub fn clone_url(config: &RunnerConfig, owner: &str, repo: &str) -> String {
         return format!("{base}/{owner}/{repo}.git");
     }
     format!(
-        "https://x-access-token:{}@{}/git/{}/{}.git",
+        "https://x-access-token:{}@{}/{}/{}.git",
         config.runner_token,
         base_host(config),
         owner,

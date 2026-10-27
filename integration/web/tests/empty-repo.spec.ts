@@ -40,11 +40,11 @@ test.describe('空仓库 Quick Setup', () => {
     const httpsTab = page.locator('.proto-toggle-btn', { hasText: 'HTTPS' }).first()
     await expect(httpsTab).toHaveClass(/active/)
 
-    // clone URL 输入框值 = <origin>/git/<owner>/<name>.git
-    // The `/git/` prefix is where the server mounts its smart-HTTP git
-    // endpoints; without it the URL serves the SPA and `git clone` fails.
+    // clone URL 输入框值 = <origin>/<owner>/<name>.git
+    // Git smart-HTTP is mounted at the root path, so the clone URL carries
+    // no /git prefix — matching GitLab/GitHub.
     const origin = await pageOrigin(page)
-    const expectedUrl = `${origin}/git/${owner}/${name}.git`
+    const expectedUrl = `${origin}/${owner}/${name}.git`
     await expect(page.locator('.clone-url-input')).toHaveValue(expectedUrl)
 
     // 两个命令片段都包含完整 URL，且不再含 <REMOTE_URL> 占位符
@@ -74,7 +74,8 @@ test.describe('空仓库 Quick Setup', () => {
     await expect(page.locator('.quick-setup')).toBeVisible()
 
     const shown = await page.locator('.clone-url-input').inputValue()
-    expect(shown).toContain('/git/')
+    // Clean clone URL: http://host/owner/repo.git (no /git prefix)
+    expect(shown).toMatch(/\.git$/)
 
     // Clone the (empty) repository with the token as the Basic-auth
     // password, the way a user would after pasting their PAT into the
@@ -161,19 +162,19 @@ test.describe('空仓库 Quick Setup', () => {
     await expect(copyBtn).toHaveText(/复制|Copy/i, { timeout: 3000 })
   })
 
-  test('群组仓：clone URL 形态是 /git/<g>/<r>.git 而不是 /git/<owner>/<r>.git', async ({ page }) => {
+  test('群组仓：clone URL 形态是 /<g>/<r>.git 而不是 /<owner>/<r>.git', async ({ page }) => {
     const groupName = `g-${Date.now()}`
     const repoName = `grepo-w`
     await createGroup(page, groupName, 'group for empty repo URL test')
     await createRepo(page, repoName, { group: groupName })
 
-    await page.goto(`/groups/${groupName}/${repoName}`)
+    await page.goto(`/${groupName}/${repoName}`)
     await expect(page.locator('.quick-setup')).toBeVisible()
 
     const origin = await pageOrigin(page)
     // A group's repositories are addressed by the group's own name (the
     // namespace segment is the group name, not the literal word "groups").
-    const expected = `${origin}/git/${groupName}/${repoName}.git`
+    const expected = `${origin}/${groupName}/${repoName}.git`
     await expect(page.locator('.clone-url-input')).toHaveValue(expected)
   })
 })

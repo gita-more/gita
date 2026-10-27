@@ -1,38 +1,57 @@
-//! The `/git/*` router and its request handler.
+//! The Git smart-HTTP middleware.
+//!
+//! This module provides an axum middleware that intercepts git smart-HTTP
+//! requests (identified by the `.git/` path pattern) and handles them
+//! directly. This avoids catch-all route conflicts with the Pages router
+//! and SPA fallback, which also use catch-all patterns at the root path.
 
 use axum::body::Body;
-use axum::http::{header, HeaderMap, Request, Response, StatusCode};
+use axum::http::{header, Request, Response, StatusCode};
+use axum::middleware::Next;
 use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{body::to_bytes, Router};
+use axum::body::to_bytes;
 use tracing::debug;
 
-use crate::auth::{authorize_git_request, resolve_authed_user};
-use crate::parse::parse_repo_from_path;
+use crate::auth::resolve_authed_user;
 use crate::GitHttpState;
 
-/// Build the router for `/git/*` endpoints.
-pub fn router(state: GitHttpState) -> Router {
-    Router::new()
-        .route(
-            "/git/{*path}",
-            get(handle_git_request).post(handle_git_request),
-        )
-        .with_state(state)
-}
+/// Git smart-HTTP middleware handler.
+///
+/// Git smart-HTTP requests have the pattern `owner/repo.git/...` (the
+/// `.git` suffix is the discriminator). This middleware runs before
+/// the Pages router and SPA fallback, intercepting only those paths
+/// and handling them directly. Everything else falls through to the
+/// main router.
+pub async fn git_middleware(
+    state: GitHttpState,
+    req: Request<Body>,
+    next: Next,
+) -> Response<Body>
+where
+    GitHttpState: Clone + Send + Sync + 'static,
+    Body: Send + 'static,
+{
+    // Extract path before consuming req.
+    let path = req.uri().path().to_string();
+    // Intercept only paths that look like git smart-HTTP:
+    // they contain ".git/" (e.g. "owner/repo.git/info/refs") or end with ".git"
+    if !path.contains(".git/") && !path.ends_with(".git") {
+        return next.run(req).await;
+    }
 
-async fn handle_git_request(
-    axum::extract::State(state): axum::extract::State<GitHttpState>,
-    axum::extract::Path(path): axum::extract::Path<String>,
-    headers: HeaderMap,
-    request: Request<Body>,
-) -> Response<Body> {
-    let method = request.method().to_string();
-    let query_string = request.uri().query().map(|s| s.to_string());
-
-    // Build the PATH_INFO: /git/owner/repo.git/info/refs
-    // The path param includes everything after /git/
-    let path_info = format!("/{}", path.trim_start_matches('/'));
+    // Extract everything we need before consuming req.
+    let method = req.method().clone();
+    let query_string = req.uri().query().map(|s| s.to_string());
+    let headers = req.headers().clone();
+    // The path is like "/owner/repo.git/info/refs" - strip leading "/" then add it back
+    // git http-backend expects PATH_INFO to start with "/"
+    let path_info = format!("/{}", req.uri().path().trim_start_matches('/'));
+    let body = match to_bytes(req.into_body(), 512 * 1024 * 1024).await {
+        Ok(b) => b.to_vec(),
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("failed to read body: {e}")).into_response();
+        }
+    };
 
     let content_type = headers
         .get(header::CONTENT_TYPE)
@@ -40,24 +59,15 @@ async fn handle_git_request(
         .unwrap_or("application/x-git-upload-pack-request")
         .to_string();
 
-    // Read the request body.
-    let body = match to_bytes(request.into_body(), 512 * 1024 * 1024).await {
-        Ok(b) => b.to_vec(),
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("failed to read body: {e}")).into_response();
-        }
-    };
-
     debug!(
         method = %method,
         path_info = %path_info,
         content_type = %content_type,
         body_len = body.len(),
-        "git http request"
+        "git http request (middleware)"
     );
 
-    // Extract owner/repo from the path to emit events and check existence.
-    let (owner, repo_name) = parse_repo_from_path(&path_info);
+    let (owner, repo_name) = crate::parse::parse_repo_from_path(&path_info);
 
     // For receive-pack (push), we need to know the repository exists.
     if path_info.contains("git-receive-pack") {
@@ -72,31 +82,25 @@ async fn handle_git_request(
         }
     }
 
-    // Authorize the request: writes require the repository owner;
-    // reads of private repositories require the owner, while public
-    // repositories are readable anonymously.
-    if let Some(owner) = &owner {
-        if let Some(repo_name) = &repo_name {
-            if let Err(resp) = authorize_git_request(
-                &state,
-                owner,
-                repo_name,
-                &path_info,
-                &query_string,
-                &headers,
-            )
-            .await
-            {
-                return resp;
-            }
+    // Authorize the request: writes require push rights; reads of private
+    // repositories require the owner. Public repositories are readable
+    // anonymously. A private repository answers 401 (the git client needs
+    // the challenge), matching the original `/git/*` handler behavior.
+    if let (Some(owner), Some(repo_name)) = (&owner, &repo_name) {
+        if let Err(resp) = crate::auth::authorize_git_request(
+            &state,
+            owner,
+            repo_name,
+            &path_info,
+            &query_string,
+            &headers,
+        )
+        .await
+        {
+            return resp;
         }
     }
 
-    // Parse ref updates from receive-pack requests BEFORE running the CGI.
-    // The request body is the protocol's authoritative source for what a
-    // push claims to update — the CGI's report-status body is streamed in
-    // chunks and hard to recover synchronously. We keep the parsed updates
-    // in scope for the post-CGI publish below.
     let received_updates = if path_info.contains("git-receive-pack") {
         gita_push::parse_receive_pack_commands(&body)
     } else {
@@ -104,7 +108,7 @@ async fn handle_git_request(
     };
 
     let (status, cgi_headers, body) = match state.git.run_http_backend(
-        &method,
+        method.as_str(),
         &path_info,
         query_string.as_deref(),
         &content_type,
@@ -121,28 +125,13 @@ async fn handle_git_request(
         }
     };
 
-    // Publish events on successful push.
     if path_info.contains("git-receive-pack") && status < 300 {
-        if let (Some(owner), Some(repo_name)) = (&owner, &repo_name) {
-            // Resolve who pushed — this fixes the long-standing
-            // actor_id: None on push events and lets CI enforce policies
-            // like "don't run on pushes from bot users".
-            let pusher = resolve_authed_user(&state, &headers).await;
-            let pusher_id = pusher.as_ref().map(|u| u.id);
-            // `git http-backend` answers a *rejected* push with HTTP 200 as
-            // well — the refusal is reported inside the response body
-            // (`report-status`), not in the status code. The ref updates
-            // parsed from the request body are therefore only what the
-            // client *claimed* it was pushing, not what actually happened.
-            //
-            // Verify each one against the repository: a ref update counts
-            // as applied only if the ref now points at the new sha.
-            // Otherwise a rejected push would publish a `push` event with
-            // a sha that was never written, and would trigger CI for a
-            // commit that does not exist.
+        let pusher = resolve_authed_user(&state, &headers).await;
+        let pusher_id = pusher.as_ref().map(|u| u.id);
+        if let (Some(owner), Some(repo)) = (&owner, &repo_name) {
             let applied_updates: Vec<gita_push::RefUpdate> = received_updates
                 .iter()
-                .filter(|upd| gita_push::ref_update_applied(&state.git, owner, repo_name, upd))
+                .filter(|upd| gita_push::ref_update_applied(&state.git, owner, repo, upd))
                 .cloned()
                 .collect();
             gita_push::publish_push(
@@ -150,7 +139,7 @@ async fn handle_git_request(
                 &state.bus,
                 &state.git,
                 owner,
-                repo_name,
+                repo,
                 &applied_updates,
                 pusher_id,
             )
@@ -158,7 +147,6 @@ async fn handle_git_request(
         }
     }
 
-    // Build the axum response from CGI output.
     let mut builder =
         Response::builder().status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK));
     for (key, value) in cgi_headers {
@@ -167,7 +155,6 @@ async fn handle_git_request(
                 builder = builder.header(header::CONTENT_TYPE, v);
             }
         } else if key.eq_ignore_ascii_case("Content-Length") {
-            // We'll set the body length automatically.
             continue;
         } else if key.eq_ignore_ascii_case("Expires") || key.eq_ignore_ascii_case("Pragma") {
             continue;

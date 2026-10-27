@@ -258,8 +258,6 @@ impl App {
             .with_register_limiter(register_limiter)
             .with_password_reset_limiter(password_reset_limiter);
         let api_router = gita_api::api_router(api_state.clone());
-        let git_router = gita_http::router(self.git_http_state.clone());
-        // Serve the built React frontend (`web/dist`) when present.
         let web_router = match find_web_dist() {
             Some(dist) => gita_web::web_router(Some(dist)),
             None => {
@@ -279,13 +277,14 @@ impl App {
             axum::Router::new()
         };
 
-        // Merge order does not matter: axum tries the path router before any
-        // fallback service, so Pages' explicit routes always win over the SPA
-        // fallback. Do not "reorder" this for readability.
+        // Merge order: api -> pages -> SPA -> git middleware (last, wraps everything)
         axum::Router::new()
             .merge(api_router)
-            .merge(git_router)
             .merge(pages_router)
             .merge(web_router)
+            .layer(axum::middleware::from_fn({
+                let state = self.git_http_state.clone();
+                move |req, next| gita_http::git_middleware(state.clone(), req, next)
+            }))
     }
 }

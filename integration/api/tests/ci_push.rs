@@ -43,7 +43,7 @@ async fn http_push_with_ci_config_enqueues_run() {
         "bare repo should exist at {}",
         bare.display()
     );
-    let url = format!("http://127.0.0.1:{port}/git/pushci/cirepo.git");
+    let url = format!("http://127.0.0.1:{port}/pushci/cirepo.git");
 
     // Commit a `.gita-ci.yml` and push it over HTTP with credentials in the
     // URL — the git-CLI style the Basic-auth path expects.
@@ -78,7 +78,7 @@ async fn http_push_with_ci_config_enqueues_run() {
     git(&["commit", "-q", "-m", "add ci config"]);
 
     let push_url = format!(
-        "http://pushci:{}@127.0.0.1:{port}/git/pushci/cirepo.git",
+        "http://pushci:{}@127.0.0.1:{port}/pushci/cirepo.git",
         user.token
     );
     let push = Command::new("git")
@@ -164,7 +164,7 @@ async fn pipeline_run_is_linked_to_its_triggering_event() {
         .unwrap();
     });
 
-    let url = format!("http://127.0.0.1:{port}/git/linkci2/cirepo.git");
+    let url = format!("http://127.0.0.1:{port}/linkci2/cirepo.git");
     let dir = tempfile::TempDir::new().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
@@ -196,7 +196,7 @@ async fn pipeline_run_is_linked_to_its_triggering_event() {
     git(&["commit", "-q", "-m", "add ci config"]);
 
     let push_url = format!(
-        "http://linkci2:{}@127.0.0.1:{port}/git/linkci2/cirepo.git",
+        "http://linkci2:{}@127.0.0.1:{port}/linkci2/cirepo.git",
         user.token
     );
     let push = Command::new("git")
@@ -311,7 +311,7 @@ async fn http_push_with_top_level_ci_config_enqueues_run() {
         .unwrap();
     });
 
-    let url = format!("http://127.0.0.1:{port}/git/topci/cirepo.git");
+    let url = format!("http://127.0.0.1:{port}/topci/cirepo.git");
     let dir = tempfile::TempDir::new().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
@@ -345,7 +345,7 @@ async fn http_push_with_top_level_ci_config_enqueues_run() {
     git(&["commit", "-q", "-m", "add ci config"]);
 
     let push_url = format!(
-        "http://topci:{}@127.0.0.1:{port}/git/topci/cirepo.git",
+        "http://topci:{}@127.0.0.1:{port}/topci/cirepo.git",
         user.token
     );
     let push = Command::new("git")
@@ -437,7 +437,7 @@ async fn except_paths_filter_skips_a_docs_only_push() {
         .unwrap();
     });
 
-    let url = format!("http://127.0.0.1:{port}/git/pathfilter/cirepo.git");
+    let url = format!("http://127.0.0.1:{port}/pathfilter/cirepo.git");
     let dir = tempfile::TempDir::new().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
@@ -470,7 +470,7 @@ async fn except_paths_filter_skips_a_docs_only_push() {
     git(&["commit", "-q", "-m", "docs only"]);
 
     let push_url = format!(
-        "http://pathfilter:{}@127.0.0.1:{port}/git/pathfilter/cirepo.git",
+        "http://pathfilter:{}@127.0.0.1:{port}/pathfilter/cirepo.git",
         user.token
     );
     let push = Command::new("git")
@@ -561,7 +561,7 @@ async fn only_branches_filter_matches_a_short_branch_name() {
         .unwrap();
     });
 
-    let url = format!("http://127.0.0.1:{port}/git/branchfilter/cirepo.git");
+    let url = format!("http://127.0.0.1:{port}/branchfilter/cirepo.git");
     let dir = tempfile::TempDir::new().unwrap();
     let work = dir.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
@@ -590,7 +590,7 @@ async fn only_branches_filter_matches_a_short_branch_name() {
     git(&["commit", "-q", "-m", "source change"]);
 
     let push_url = format!(
-        "http://branchfilter:{}@127.0.0.1:{port}/git/branchfilter/cirepo.git",
+        "http://branchfilter:{}@127.0.0.1:{port}/branchfilter/cirepo.git",
         user.token
     );
     let push = Command::new("git")

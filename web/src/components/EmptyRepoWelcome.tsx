@@ -25,16 +25,16 @@ function buildCloneUrl(
   const proto = window.location.protocol
   const host = window.location.host
   const base = `${proto}//${host}`
-  // The server mounts the git smart-HTTP endpoints under `/git/`. A clone
-  // URL without that prefix hits the SPA fallback and fails.
+  // Git smart-HTTP is mounted at the root as `/{owner}/{repo}.git`, so the
+  // clone URL carries no prefix — matching GitLab/GitHub.
   //
   // A group's repositories live under the group's *full path* on disk (the
   // namespace segment is the group's full path, e.g. "groupa/subgroupa"),
-  // so the URL is `/git/<full-path>/<repo>.git`.
+  // so the URL is `/<full-path>/<repo>.git`.
   if (repoKind === 'group' && groupName) {
-    return `${base}/git/${groupName}/${name}.git`
+    return `${base}/${groupName}/${name}.git`
   }
-  return `${base}/git/${owner}/${name}.git`
+  return `${base}/${owner}/${name}.git`
 }
 
 function buildCreateCommand(name: string): string {
@@ -70,8 +70,8 @@ export function EmptyRepoWelcome({
   const [copied, setCopied] = useState(false)
   // Use API-provided URLs, fall back to client-side generation for backwards compatibility
   const fallbackHttpsUrl = buildCloneUrl(owner, name, repoKind, groupName)
-  // The API returns a path-relative HTTPS URL (/git/...); make it absolute
-  // for display and copy.
+  // The API returns a path-relative HTTPS URL (/owner/repo.git); make it
+  // absolute for display and copy.
   const absolute = (url: string) =>
     url.startsWith('/') ? `${window.location.origin}${url}` : url
   const httpsUrl = cloneUrlHttps ? absolute(cloneUrlHttps) : fallbackHttpsUrl

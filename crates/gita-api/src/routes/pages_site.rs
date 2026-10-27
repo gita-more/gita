@@ -283,9 +283,13 @@ fn spa_fallthrough() -> Response {
 /// Top-level path segments the application reserves for its own routes.
 ///
 /// Pages publishes at `/{owner}/{repo}/`, which structurally overlaps the
-/// SPA's `/groups/{group}/{repo}` route and the `/api`, `/git` prefixes. Those
-/// first segments are never repository owners, so the Pages route must step
-/// aside and let the SPA (or the API) handle them.
+/// SPA's `/groups/{group}/{repo}` route and the `/api`, `/groups`, etc.
+/// prefixes. Those first segments are never repository owners, so the Pages
+/// route must step aside and let the SPA (or the API) handle them.
+///
+/// Git smart-HTTP requests (any path containing `.git/` or ending in `.git`)
+/// are intercepted by the git middleware *before* this router runs, so they
+/// never reach Pages; no explicit reservation is needed for them here.
 fn is_reserved_path_segment(segment: &str) -> bool {
     matches!(
         segment,

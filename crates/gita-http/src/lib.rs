@@ -1,8 +1,10 @@
 //! Smart HTTP Git protocol endpoint.
 //!
-//! This crate exposes the `/git/*` routes that serve the smart HTTP
-//! protocol. It delegates to the `git http-backend` CGI program via
-//! the [`gita_git::GitManager`], which handles upload-pack (fetch/clone)
+//! This crate exposes an axum middleware that intercepts git smart-HTTP
+//! requests (identified by the `.git` path suffix) at the root path, so
+//! clone URLs are clean (`/owner/repo.git`) like GitHub/GitLab. It
+//! delegates to the `git http-backend` CGI program via the
+//! [`gita_git::GitManager`], which handles upload-pack (fetch/clone)
 //! and receive-pack (push).
 
 pub mod auth;
@@ -15,7 +17,7 @@ use gita_events::EventBus;
 use gita_git::GitManager;
 use std::sync::Arc;
 
-pub use router::router;
+pub use router::git_middleware;
 
 /// Shared state for the git HTTP handler.
 #[derive(Clone)]

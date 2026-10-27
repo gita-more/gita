@@ -111,7 +111,7 @@ async fn e2e_pipeline_suite() {
     )
     .unwrap();
 
-    let origin = format!("http://dev5:{token}@127.0.0.1:{port}/git/dev5/pipedemo.git");
+    let origin = format!("http://dev5:{token}@127.0.0.1:{port}/dev5/pipedemo.git");
     std::process::Command::new("git")
         .arg("-C")
         .arg(&repo_dir)

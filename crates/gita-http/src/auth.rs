@@ -17,6 +17,7 @@ use crate::GitHttpState;
 /// *report* of a refusal is specific to this transport — git clients
 /// need a `WWW-Authenticate` challenge to be prompted for credentials,
 /// so a private repository answers 401 rather than 404.
+#[allow(dead_code)]
 pub(crate) async fn authorize_git_request(
     state: &GitHttpState,
     owner: &str,
@@ -99,6 +100,7 @@ pub(crate) async fn authorize_git_request(
 
 /// Build a `401 Unauthorized` response with a `WWW-Authenticate: Basic`
 /// challenge header, so git clients retry with credentials.
+#[allow(dead_code)]
 fn unauthorized_with_challenge(message: &str) -> Response<Body> {
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)

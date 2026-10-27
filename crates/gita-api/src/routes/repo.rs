@@ -55,7 +55,7 @@ impl From<Repository> for RepoResponse {
             is_private: r.is_private,
             default_branch: r.default_branch,
             created_at: r.created_at.to_rfc3339(),
-            clone_url_https: format!("/git/{}/{}.git", owner_name, name),
+            clone_url_https: format!("/{}/{}.git", owner_name, name),
             clone_url_ssh: None,
         }
     }

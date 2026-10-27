@@ -87,7 +87,7 @@ No REST endpoint — clones via smart HTTP:
 ./target/debug/gita repo clone alice/demo --dir ./demo
 ```
 
-Builds `https://<user>:<token>@<host>/git/<owner>/<repo>.git` (token from keyring
+Builds `https://<user>:<token>@<host>/<owner>/<repo>.git` (token from keyring
 or `GITA_TOKEN`) and runs `git clone`. Without a token, clones anonymously
 (public repos only).
 

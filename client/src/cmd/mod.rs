@@ -101,9 +101,9 @@ pub(crate) async fn clone_repo(client: &GitaClient, repo: &str, dir: Option<&std
     let origin = origin_of(&client.base_url)?;
     let (scheme, host) = origin.split_once("://").unwrap_or(("", &origin));
     let url = if token.is_empty() {
-        format!("{scheme}://{host}/git/{owner}/{name}.git")
+        format!("{scheme}://{host}/{owner}/{name}.git")
     } else {
-        format!("{scheme}://{username}:{token}@{host}/git/{owner}/{name}.git")
+        format!("{scheme}://{username}:{token}@{host}/{owner}/{name}.git")
     };
     let mut git = std::process::Command::new("git");
     git.arg("clone").arg(&url);

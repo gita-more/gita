@@ -269,7 +269,7 @@ pub fn push_initial_commit(
     std::fs::write(repo_dir.join("README.md"), "# Hello\n").unwrap();
     std::fs::write(repo_dir.join("src/main.rs"), "fn main() {}\n").unwrap();
 
-    let origin = format!("http://{username}:{token}@127.0.0.1:{port}/git/{owner}/{repo}.git");
+    let origin = format!("http://{username}:{token}@127.0.0.1:{port}/{owner}/{repo}.git");
     std::process::Command::new("git")
         .arg("-C")
         .arg(&repo_dir)
@@ -324,7 +324,7 @@ pub fn push_commit_to_branch(
     let tmp = TempDir::new().unwrap();
     let repo_dir = tmp.path().join("repo");
 
-    let origin = format!("http://{username}:{token}@127.0.0.1:{port}/git/{owner}/{repo}.git");
+    let origin = format!("http://{username}:{token}@127.0.0.1:{port}/{owner}/{repo}.git");
     let status = std::process::Command::new("git")
         .env("GIT_SSL_NO_VERIFY", "1")
         .arg("clone")
