@@ -175,10 +175,12 @@ function GroupTreeNode({
             <div className="group-tree-note group-tree-note-error">{error}</div>
           ) : loading ? (
             <div className="group-tree-note">{t('common.loading')}</div>
-          ) : !children || children.length === 0 ? (
-            <div className="group-tree-note">{t('groups.noChildren')}</div>
-          ) : (
-            children.map((child) => (
+          ) : (() => {
+            const kids = known ?? children
+            if (kids == null || kids.length === 0) {
+              return <div className="group-tree-note">{t('groups.noChildren')}</div>
+            }
+            return kids.map((child) => (
               <GroupTreeNode
                 key={child.kind === 'group' ? `g-${child.group.id}` : `r-${child.repo.id}`}
                 node={child}
@@ -187,7 +189,7 @@ function GroupTreeNode({
                 onOpenRepo={onOpenRepo}
               />
             ))
-          )}
+          })()}
         </div>
       )}
     </Fragment>
