@@ -429,3 +429,172 @@ async fn create_group_with_parent_path() {
     // parent_id should be root-group's id
     assert_eq!(body["parent_id"], parent_id);
 }
+
+// ---------------------------------------------------------------------------
+// /api/resolve — clean URL disambiguation
+// ---------------------------------------------------------------------------
+
+async fn resolve_path(
+    app: &gita_server::App,
+    path: &str,
+    token: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    request(app, Method::GET, &format!("/api/resolve/{path}"), None, token).await
+}
+
+#[tokio::test]
+async fn resolve_personal_repo() {
+    let (app, _guard) = test_app().await;
+    let owner = register_user(&app, "res-personal").await;
+    create_user_repo(&app, &owner.token, "myproject", false).await;
+
+    let (status, body) = resolve_path(&app, "res-personal/myproject", Some(&owner.token)).await;
+    assert_eq!(status, StatusCode::OK, "resolve personal repo: {body}");
+    assert_eq!(body["kind"], "repo");
+    assert_eq!(body["owner"], "res-personal");
+    assert_eq!(body["name"], "myproject");
+    assert_eq!(body["owner_kind"], "user");
+}
+
+#[tokio::test]
+async fn resolve_group_repo() {
+    let (app, _guard) = test_app().await;
+    let owner = register_user(&app, "res-group").await;
+    create_group(&app, &owner.token, "gita").await;
+    create_group_repo(&app, "gita", &owner.token, "project-a", false).await;
+
+    let (status, body) = resolve_path(&app, "gita/project-a", Some(&owner.token)).await;
+    assert_eq!(status, StatusCode::OK, "resolve group repo: {body}");
+    assert_eq!(body["kind"], "repo");
+    assert_eq!(body["owner"], "gita");
+    assert_eq!(body["name"], "project-a");
+    assert_eq!(body["owner_kind"], "group");
+}
+
+#[tokio::test]
+async fn resolve_group_and_subgroup_full_path() {
+    let (app, _guard) = test_app().await;
+    let owner = register_user(&app, "res-sub").await;
+    create_group(&app, &owner.token, "groupa").await;
+    create_subgroup(&app, "groupa", &owner.token, "subgroupa").await;
+
+    // Top-level group.
+    let (status, body) = resolve_path(&app, "groupa", Some(&owner.token)).await;
+    assert_eq!(status, StatusCode::OK, "resolve top-level group: {body}");
+    assert_eq!(body["kind"], "group");
+    assert_eq!(body["full_path"], "groupa");
+
+    // Subgroup path — the case the SPA previously could not distinguish
+    // from a repository URL by shape alone.
+    let (status, body) = resolve_path(&app, "groupa/subgroupa", Some(&owner.token)).await;
+    assert_eq!(status, StatusCode::OK, "resolve subgroup path: {body}");
+    assert_eq!(body["kind"], "group");
+    assert_eq!(body["full_path"], "groupa/subgroupa");
+}
+
+#[tokio::test]
+async fn resolve_nested_repo_three_segments() {
+    let (app, _guard) = test_app().await;
+    let owner = register_user(&app, "res-deep").await;
+    create_group(&app, &owner.token, "groupa").await;
+    create_subgroup(&app, "groupa", &owner.token, "subgroupa").await;
+    create_group_repo(&app, "groupa/subgroupa", &owner.token, "project-b", false).await;
+
+    let (status, body) = resolve_path(&app, "groupa/subgroupa/project-b", Some(&owner.token)).await;
+    assert_eq!(status, StatusCode::OK, "resolve nested repo: {body}");
+    assert_eq!(body["kind"], "repo");
+    assert_eq!(body["owner"], "groupa/subgroupa");
+    assert_eq!(body["name"], "project-b");
+    assert_eq!(body["owner_kind"], "group");
+}
+
+#[tokio::test]
+async fn resolve_unknown_path_returns_404() {
+    let (app, _guard) = test_app().await;
+    let owner = register_user(&app, "res-404").await;
+
+    let (status, _) = resolve_path(&app, "no-such-thing", Some(&owner.token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = resolve_path(&app, "no-such-thing/child", Some(&owner.token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn resolve_single_segment_username_returns_404() {
+    let (app, _guard) = test_app().await;
+    let _user = register_user(&app, "res-plain-user").await;
+
+    // A bare username has no page: only groups are addressable by a
+    // single-segment clean URL.
+    let (status, _) = resolve_path(&app, "res-plain-user", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn resolve_private_repo_hidden_from_anonymous() {
+    let (app, _guard) = test_app().await;
+    let owner = register_user(&app, "res-private").await;
+    create_user_repo(&app, &owner.token, "secret", true).await;
+
+    // Anonymous caller: the repository must be indistinguishable from a
+    // non-existent one (no existence disclosure).
+    let (status, _) = resolve_path(&app, "res-private/secret", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The owner resolves it normally.
+    let (status, body) = resolve_path(&app, "res-private/secret", Some(&owner.token)).await;
+    assert_eq!(status, StatusCode::OK, "owner must resolve own private repo: {body}");
+    assert_eq!(body["kind"], "repo");
+}
+
+#[tokio::test]
+async fn subgroup_cannot_shadow_repo_name_in_same_namespace() {
+    let (app, _guard) = test_app().await;
+    let owner = register_user(&app, "shadow-sub").await;
+    create_group(&app, &owner.token, "groupa").await;
+    create_group_repo(&app, "groupa", &owner.token, "clash", false).await;
+
+    // A subgroup named like an existing repo in the same group would have
+    // the same clean URL; the resolver ranks repositories first, so the
+    // subgroup would be unreachable — refuse to create it.
+    let (status, body) = create_subgroup_raw(&app, "groupa", &owner.token, "clash").await;
+    assert_eq!(status, StatusCode::CONFLICT, "subgroup must not shadow repo: {body}");
+}
+
+#[tokio::test]
+async fn repo_cannot_shadow_subgroup_name_in_same_namespace() {
+    let (app, _guard) = test_app().await;
+    let owner = register_user(&app, "shadow-repo").await;
+    create_group(&app, &owner.token, "groupa").await;
+    create_subgroup(&app, "groupa", &owner.token, "clash").await;
+
+    // Mirror of the subgroup check: a repository must not take a child
+    // subgroup's clean URL either.
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/api/groups/groupa/repos",
+        Some(serde_json::json!({"name": "clash", "description": "", "default_branch": "main"})),
+        Some(&owner.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "repo must not shadow subgroup: {body}");
+}
+
+/// create_subgroup that returns the raw status (the shared helper asserts OK).
+async fn create_subgroup_raw(
+    app: &gita_server::App,
+    parent: &str,
+    owner_token: &str,
+    name: &str,
+) -> (StatusCode, serde_json::Value) {
+    request(
+        app,
+        Method::POST,
+        &format!("/api/groups/{parent}/subgroups"),
+        Some(serde_json::json!({"name": name, "description": ""})),
+        Some(owner_token),
+    )
+    .await
+}

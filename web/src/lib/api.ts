@@ -140,6 +140,17 @@ export interface Group {
   full_path: string
 }
 
+/**
+ * The result of resolving a clean URL path against the server.
+ *
+ * A clean URL is ambiguous by shape: /gita/tests may be a repository
+ * `tests` in namespace `gita` or the subgroup with full path `gita/tests`.
+ * The server resolves it deterministically — repository first, then group.
+ */
+export type ResolvedPath =
+  | { kind: 'repo'; owner: string; name: string; owner_kind: 'user' | 'group' }
+  | { kind: 'group'; full_path: string }
+
 /** Issue item as returned by the global /api/issues feed. */
 export interface GlobalIssueItem {
   id: number
@@ -536,6 +547,11 @@ export const api = {
 
   // groups
   listGroups: () => request<Group[]>('/api/groups'),
+  /** Resolve a clean URL path (owner/name, group path, nested variants). */
+  resolvePath: (path: string) =>
+    request<ResolvedPath>(
+      `/api/resolve/${path.split('/').filter(Boolean).map(encodeURIComponent).join('/')}`,
+    ),
   createGroup: (name: string, description: string, parent_path?: string) =>
     request<Group>('/api/groups', {
       method: 'POST',

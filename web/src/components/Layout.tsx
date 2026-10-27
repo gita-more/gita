@@ -1,4 +1,4 @@
-import { useState, type ReactNode, useRef, useEffect } from 'react'
+import { Fragment, useState, type ReactNode, useRef, useEffect } from 'react'
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangleIcon,
@@ -133,12 +133,14 @@ function UserMenu({ user, onClose }: { user: { username: string; email: string }
 }
 
 export function Topbar({
-  repo,
+  crumbs,
   actions,
   onToggleSidebar,
   sidebarOpen,
 }: {
-  repo?: { owner: string; name: string }
+  /** Breadcrumb path segments (e.g. ["gita", "tests", "myrepo"]); middle
+   * segments link to their group pages. Absent on top-level pages. */
+  crumbs?: string[]
   actions?: ReactNode
   onToggleSidebar?: () => void
   sidebarOpen?: boolean
@@ -184,7 +186,7 @@ export function Topbar({
         )}
         <Brand />
       </div>
-      {repo ? (
+      {crumbs && crumbs.length > 0 ? (
         <nav className="breadcrumbs" aria-label="Breadcrumb">
           <ol className="breadcrumb-list">
             <li className="breadcrumb-item">
@@ -193,14 +195,24 @@ export function Topbar({
                 <span>{t('nav.home')}</span>
               </Link>
             </li>
-            <li className="breadcrumb-sep" aria-hidden="true">/</li>
-            <li className="breadcrumb-item">
-              <a href="#" onClick={(e) => e.preventDefault()}>{repo.owner}</a>
-            </li>
-            <li className="breadcrumb-sep" aria-hidden="true">/</li>
-            <li className="breadcrumb-item current" aria-current="page">
-              {repo.name}
-            </li>
+            {crumbs.map((c, i) => {
+              const isLast = i === crumbs.length - 1
+              const href = `/${crumbs.slice(0, i + 1).join('/')}`
+              return (
+                <Fragment key={href}>
+                  <li className="breadcrumb-sep" aria-hidden="true">/</li>
+                  {isLast ? (
+                    <li className="breadcrumb-item current" aria-current="page">
+                      {c}
+                    </li>
+                  ) : (
+                    <li className="breadcrumb-item">
+                      <Link to={href}>{c}</Link>
+                    </li>
+                  )}
+                </Fragment>
+              )
+            })}
           </ol>
         </nav>
       ) : null}
@@ -326,7 +338,7 @@ export function AppLayout({
   active,
   globalActive,
   onGlobalNavigate,
-  repo,
+  crumbs,
   counts,
   children,
 }: {
@@ -334,7 +346,7 @@ export function AppLayout({
   active?: NavTarget
   globalActive?: GlobalNavTarget
   onGlobalNavigate?: (target: GlobalNavTarget) => void
-  repo?: { owner: string; name: string }
+  crumbs?: string[]
   counts?: Partial<Record<'prs' | 'issues', number>>
   children: ReactNode
 }) {
@@ -359,7 +371,7 @@ export function AppLayout({
   return (
     <>
       <Topbar
-        repo={repo}
+        crumbs={crumbs}
         onToggleSidebar={handleToggleSidebar}
         sidebarOpen={sidebarOpen}
       />

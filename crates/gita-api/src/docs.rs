@@ -801,6 +801,47 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/api/resolve/{*path}": {
+      "get": {
+        "tags": ["misc"],
+        "summary": "Resolve a clean URL path to the entity it addresses",
+        "description": "A clean URL (/owner/name) can address a repository or a group full path. Tries the path as a repository first (read access enforced), then as a group. Returns {kind: \"repo\", owner, name, owner_kind} or {kind: \"group\", full_path}; 404 when neither matches.",
+        "security": [{}, { "bearerAuth": [] }],
+        "parameters": [
+          { "name": "path", "in": "path", "required": true, "schema": { "type": "string" }, "description": "The clean URL path to resolve, e.g. gita/tests or gita/tests/myrepo" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resolved entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": { "type": "string", "enum": ["repo"] },
+                        "owner": { "type": "string" },
+                        "name": { "type": "string" },
+                        "owner_kind": { "type": "string", "enum": ["user", "group"] }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": { "type": "string", "enum": ["group"] },
+                        "full_path": { "type": "string" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": { "description": "No repository or group matches the path" }
+        }
+      }
+    },
     "/api/issues": {
       "get": {
         "tags": ["issues"],
@@ -1820,6 +1861,7 @@ mod tests {
             include_str!("routes/ssh_key.rs"),
             include_str!("routes/pages.rs"),
             include_str!("routes/misc.rs"),
+            include_str!("routes/resolve.rs"),
         ] {
             let mut idx = 0;
             while let Some(pos) = module[idx..].find(".route(") {

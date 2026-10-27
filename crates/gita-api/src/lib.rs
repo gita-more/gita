@@ -41,6 +41,7 @@ pub fn api_router(state: AppState) -> axum::Router {
         .merge(routes::search_routes())
         .merge(routes::avatar_routes())
         .merge(routes::ssh_key_routes())
+        .merge(routes::resolve_routes())
         .merge(docs::docs_routes())
         // Catch-all for unknown API paths. Must be an explicit route (not a
         // `fallback`) because the server merges this router with `web_router`,

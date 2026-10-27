@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode, useState } from 'react'
+import { createContext, useContext, useEffect, type ReactNode, useState } from 'react'
 import {
   Link,
   Navigate,
@@ -18,10 +18,23 @@ import { GroupDetail } from './components/GroupDetail'
 import { RepoDetail } from './components/RepoDetail'
 import { Settings } from './components/Settings'
 import { useAuth } from './hooks/useAuth'
-import { useI18n } from './i18n'
-import { api } from './lib/api'
+import { useErrorTranslator, useI18n } from './i18n'
+import { api, type ResolvedPath } from './lib/api'
 import { AppLayout, EmptyState } from './components/Layout'
 import { FolderIcon } from './components/Icons'
+
+/**
+ * Lets page content override the sidebar variant for the *current* pathname.
+ *
+ * The default variant is URL-shaped (two segments = repo page), but a
+ * two-segment URL can also be a subgroup path (/gita/tests) whose content is
+ * a group detail page. The content knows which it is after its API checks,
+ * so it reports back here; the override is keyed by pathname so it cannot
+ * leak into a navigation to a different page.
+ */
+const SidebarVariantContext = createContext<(o: { path: string; variant: 'global' | 'repo' }) => void>(
+  () => {},
+)
 
 /** Page-level outlet wrapper. Adds topbar + sidebar; child route renders inside. */
 function Root({ children }: { children?: ReactNode } = {}) {
@@ -32,28 +45,49 @@ function Root({ children }: { children?: ReactNode } = {}) {
   //   /:group/:repo           → group repo (owner = group full_path)
   //   /:owner                 → user profile or group detail
   // All other top-level routes (/, /groups, /issues, /settings) use the global sidebar.
-  const repoMatch = location.pathname.match(/^\/([^/]+)\/([^/]+)$/)
-  let variant: 'global' | 'repo' = 'global'
-  let repoForBreadcrumb: { owner: string; name: string } | undefined
+  const segments = location.pathname.split('/').filter(Boolean)
+  // Two or more segments default to the repo sidebar; the page content can
+  // override that (see SidebarVariantContext) once it knows what the URL
+  // addresses. Static top-level pages never show the repo sidebar.
+  const isContentPath =
+    segments.length >= 2 && !['groups', 'issues', 'settings'].includes(segments[0])
 
-  if (repoMatch) {
-    variant = 'repo'
-    repoForBreadcrumb = { owner: repoMatch[1], name: repoMatch[2] }
-  }
+  const [sidebarOverride, setSidebarOverride] = useState<{ path: string; variant: 'global' | 'repo' } | null>(null)
+  // Only honour an override made for the URL we are currently on.
+  const variant =
+    sidebarOverride && sidebarOverride.path === location.pathname
+      ? sidebarOverride.variant
+      : isContentPath
+        ? 'repo'
+        : 'global'
+  // Hierarchical breadcrumb for any content path (repo or group alike).
+  const crumbs = isContentPath ? segments : undefined
 
   return (
-    <AppLayout
-      variant={variant}
-      repo={repoForBreadcrumb}
-      onGlobalNavigate={(target) => {
-        if (target === 'projects') navigate('/')
-        else if (target === 'groups') navigate('/groups')
-        else if (target === 'issues') navigate('/issues')
-      }}
-    >
-      {children ?? <Outlet />}
-    </AppLayout>
+    <SidebarVariantContext.Provider value={setSidebarOverride}>
+      <AppLayout
+        variant={variant}
+        crumbs={crumbs}
+        onGlobalNavigate={(target) => {
+          if (target === 'projects') navigate('/')
+          else if (target === 'groups') navigate('/groups')
+          else if (target === 'issues') navigate('/issues')
+        }}
+      >
+        {children ?? <Outlet />}
+      </AppLayout>
+    </SidebarVariantContext.Provider>
   )
+}
+
+/** Declaratively pin the sidebar variant for the page rendering this component. */
+function SetSidebarVariant({ variant }: { variant: 'global' | 'repo' }) {
+  const setOverride = useContext(SidebarVariantContext)
+  const { pathname } = useLocation()
+  useEffect(() => {
+    setOverride({ path: pathname, variant })
+  }, [setOverride, pathname, variant])
+  return null
 }
 
 /** Wrap routes that require an authenticated user. */
@@ -66,77 +100,79 @@ function Protected({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
-/** Adapter: group detail by URL path (supports nested groups like groupa/subgroupa) */
-function GroupDetailContainer() {
-  const { '*': wildcard } = useParams()
-  const { owner } = useParams()
-  // Handle both /groups/:path and /:owner (legacy) routes
-  const groupPath = wildcard ?? owner ?? ''
+/**
+ * One catch-all content page for every namespace path.
+ *
+ * A clean URL is ambiguous by shape — /gita/tests may be a personal repo
+ * under a user, a repo in a group, or a subgroup path — so the server
+ * resolves it once (GET /api/resolve, repository first, then group) and
+ * this component renders whatever the answer says. The sidebar variant
+ * follows the resolved kind, not the URL shape.
+ */
+function PathPage() {
+  const { '*': rawPath = '' } = useParams()
+  const path = rawPath.replace(/\/+$/, '')
   const navigate = useNavigate()
-  return (
-    <GroupDetail
-      group={groupPath}
-      onOpenRepo={(_owner, repoName) => navigate(`/${groupPath}/${repoName}`)}
-    />
-  )
-}
-
-/** Adapter: smart repo detail that detects if owner is group or user */
-function SmartRepoDetailContainer() {
-  const params = useParams()
-  const navigate = useNavigate()
-  const owner = params.owner ?? ''
-  const repo = params.repo ?? ''
-  const [repoKind, setRepoKind] = useState<'group' | 'personal' | 'subgroup' | 'loading'>('loading')
+  const translateError = useErrorTranslator()
+  const [resolved, setResolved] = useState<ResolvedPath | null>(null)
+  const [failed, setFailed] = useState('')
 
   useEffect(() => {
-    async function detectType() {
-      try {
-        // First check if owner is a group
-        const groupRes = await api.getGroup(owner)
-        // If owner is a group, check if repo is a subgroup
-        const subgroups = groupRes.subgroups || []
-        const isSubgroup = subgroups.some((sg) => sg.name === repo)
-        if (isSubgroup) {
-          setRepoKind('subgroup')
-        } else {
-          setRepoKind('group')
-        }
-      } catch {
-        setRepoKind('personal')
-      }
+    let cancelled = false
+    setResolved(null)
+    setFailed('')
+    api
+      .resolvePath(path)
+      .then((r) => {
+        if (!cancelled) setResolved(r)
+      })
+      .catch((err) => {
+        if (!cancelled) setFailed(translateError(err))
+      })
+    return () => {
+      cancelled = true
     }
-    if (owner) detectType()
-  }, [owner, repo])
+  }, [path, translateError])
 
-  if (repoKind === 'loading') {
+  if (failed) {
+    return <NotFound />
+  }
+
+  if (!resolved) {
+    // Root (the route layout) is already mounted above; do not nest another.
     return (
-      <Root>
-        <div className="auth-page" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}>
-          Loading...
-        </div>
-      </Root>
+      <div
+        className="auth-page"
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}
+      >
+        Loading...
+      </div>
     )
   }
 
-  // If it's a subgroup, render GroupDetail instead
-  if (repoKind === 'subgroup') {
+  if (resolved.kind === 'group') {
     return (
-      <GroupDetail
-        group={`${owner}/${repo}`}
-        onOpenRepo={(_owner, repoName) => navigate(`/${owner}/${repo}/${repoName}`)}
-      />
+      <>
+        <SetSidebarVariant variant="global" />
+        <GroupDetail
+          group={resolved.full_path}
+          onOpenRepo={(owner, name) => navigate(`/${owner}/${name}`)}
+        />
+      </>
     )
   }
 
   return (
-    <RepoDetail
-      owner={owner}
-      name={repo}
-      repoKind={repoKind}
-      groupName={repoKind === 'group' ? owner : undefined}
-      onBack={() => navigate(`/${owner}`)}
-    />
+    <>
+      <SetSidebarVariant variant="repo" />
+      <RepoDetail
+        owner={resolved.owner}
+        name={resolved.name}
+        repoKind={resolved.owner_kind === 'group' ? 'group' : 'personal'}
+        groupName={resolved.owner_kind === 'group' ? resolved.owner : undefined}
+        onBack={() => navigate(resolved.owner_kind === 'group' ? `/${resolved.owner}` : '/')}
+      />
+    </>
   )
 }
 
@@ -218,12 +254,14 @@ export default function App() {
       <Route element={<Protected><Root /></Protected>}>
         <Route path="/" element={<Projects />} />
         <Route path="/groups" element={<Groups />} />
-        <Route path="/groups/*" element={<GroupDetailContainer />} />
         <Route path="/issues" element={<Issues />} />
         <Route path="/settings" element={<SettingsRoute />} />
-        <Route path="/:owner/:repo" element={<SmartRepoDetailContainer />} />
-        <Route path="/:owner" element={<GroupDetailContainer />} />
-        <Route path="*" element={<NotFound />} />
+        {/* One catch-all for every namespace path (personal repo, group
+            repo, nested-group repo, group detail): the server resolves the
+            URL's ambiguity once via /api/resolve. Unknown paths render the
+            404 page from inside PathPage. Static routes above outrank the
+            splat in React Router's ranking. */}
+        <Route path="/*" element={<PathPage />} />
       </Route>
     </Routes>
   )

@@ -568,6 +568,15 @@ List the tools exposed to MCP clients
 - 无需认证
 - 响应码：`200`
 
+### `GET /api/resolve/{*path}`
+
+Resolve a clean URL path to the entity it addresses
+
+A clean URL (/owner/name) can address a repository or a group full path. Tries the path as a repository first (read access enforced), then as a group. Returns {kind: "repo", owner, name, owner_kind} or {kind: "group", full_path}; 404 when neither matches.
+
+- 需要认证
+- 响应码：`200`, `404`
+
 ### `POST /api/users/me/avatar`
 
 Upload the current user's avatar image

@@ -386,6 +386,21 @@ async fn create_subgroup(
     }
     let description = req.description.unwrap_or_default();
 
+    // A subgroup and a repository in the same namespace cannot share a
+    // name: their clean URLs would be identical, and the URL resolver
+    // ranks repositories first, so the subgroup would be unreachable
+    // through its clean URL.
+    if state
+        .db
+        .get_repository_by_name(&g.full_path, &name)
+        .await?
+        .is_some()
+    {
+        return Err(ApiError::Conflict(
+            "a repository with this name already exists in this group".into(),
+        ));
+    }
+
     let group = state
         .db
         .create_group(&name, &description, user.id, Some(g.id))
@@ -434,7 +449,7 @@ async fn create_group_repo(
     let is_private = req.is_private.unwrap_or(false);
     let default_branch = req.default_branch.unwrap_or_else(|| "main".to_string());
 
-    // Group repos use `owner_name = group full_path` for uniqueness.
+    // Group repos use `owner_name = group full path` for uniqueness.
     if state
         .db
         .get_repository_by_name(&g.full_path, &name)
@@ -442,6 +457,19 @@ async fn create_group_repo(
         .is_some()
     {
         return Err(ApiError::Conflict("repository already exists".into()));
+    }
+
+    // Mirror of the subgroup check in `create_subgroup`: a repository must
+    // not shadow a child subgroup's clean URL.
+    if state
+        .db
+        .get_group_by_full_path(&format!("{}/{}", g.full_path, name))
+        .await?
+        .is_some()
+    {
+        return Err(ApiError::Conflict(
+            "a subgroup with this name already exists in this group".into(),
+        ));
     }
 
     // The group namespace is written as part of the insert, so the
