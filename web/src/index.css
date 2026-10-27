@@ -2233,3 +2233,100 @@ select {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* GitLab-style expandable group tree */
+.group-tree {
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-canvas);
+  overflow: hidden;
+}
+.group-tree > :first-child {
+  border-top: none;
+}
+.group-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 14px 9px 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+.group-tree-row:hover {
+  background: var(--bg-hover);
+}
+.group-tree-toggle {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.group-tree-toggle:hover {
+  color: var(--fg-default);
+  background: var(--bg-active);
+}
+.group-tree-toggle-empty {
+  cursor: default;
+}
+.group-tree-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--fg-muted);
+}
+.group-tree-link {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg-default);
+  cursor: pointer;
+}
+.group-tree-link:hover {
+  color: var(--fg-accent);
+  text-decoration: underline;
+}
+.group-tree-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.group-tree-meta {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.group-tree-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.group-tree-children {
+  margin-left: 20px;
+  border-left: 1px solid var(--border-default);
+}
+.group-tree-note {
+  padding: 8px 12px 8px 38px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border-subtle);
+}
+.group-tree-note-error {
+  color: var(--fg-danger);
+}

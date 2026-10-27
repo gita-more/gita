@@ -99,6 +99,9 @@ export const messages = {
     subgroupDescription: '描述（可选）',
     subgroupDescriptionPlaceholder: '子群组描述…',
     subgroups: '子群组',
+    expand: '展开',
+    collapse: '收起',
+    noChildren: '没有子群组或项目',
   },
   issues: {
     title: 'Issues',

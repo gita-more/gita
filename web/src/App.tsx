@@ -68,12 +68,15 @@ function Protected({ children }: { children: React.ReactNode }) {
 
 /** Adapter: group detail by URL path (supports nested groups like groupa/subgroupa) */
 function GroupDetailContainer() {
+  const { '*': wildcard } = useParams()
   const { owner } = useParams()
+  // Handle both /groups/:path and /:owner (legacy) routes
+  const groupPath = wildcard ?? owner ?? ''
   const navigate = useNavigate()
   return (
     <GroupDetail
-      group={owner ?? ''}
-      onOpenRepo={(_owner, repoName) => navigate(`/${owner}/${repoName}`)}
+      group={groupPath}
+      onOpenRepo={(_owner, repoName) => navigate(`/${groupPath}/${repoName}`)}
     />
   )
 }
@@ -197,6 +200,7 @@ export default function App() {
       <Route element={<Protected><Root /></Protected>}>
         <Route path="/" element={<Projects />} />
         <Route path="/groups" element={<Groups />} />
+        <Route path="/groups/*" element={<GroupDetailContainer />} />
         <Route path="/issues" element={<Issues />} />
         <Route path="/settings" element={<SettingsRoute />} />
         <Route path="/:owner/:repo" element={<SmartRepoDetailContainer />} />

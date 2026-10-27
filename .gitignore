@@ -23,6 +23,7 @@ config/gita.toml
 *.swp
 .DS_Store
 tmp
+log
 
 # Playwright
 /test-results

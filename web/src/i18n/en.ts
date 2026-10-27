@@ -99,6 +99,9 @@ export const messages = {
     subgroupDescription: 'Description (optional)',
     subgroupDescriptionPlaceholder: 'Subgroup description…',
     subgroups: 'Subgroups',
+    expand: 'Expand',
+    collapse: 'Collapse',
+    noChildren: 'No subgroups or projects',
   },
   issues: {
     title: 'Issues',

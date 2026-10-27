@@ -1,6 +1,7 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, type Group } from '../lib/api'
+import { GroupTree, type GroupTreeChild } from './GroupTree'
 import {
   PageHeader,
   Alert,
@@ -38,6 +39,25 @@ export function Groups({
   useEffect(() => {
     void load()
   }, [load])
+
+  // Build the hierarchy client-side from the flat group list. A group whose
+  // parent is not in the list (e.g. the user is only a member of a nested
+  // subgroup) is treated as a root so it stays visible.
+  const tree = useMemo(() => {
+    const byId = new Map(groups.map((g) => [g.id, g]))
+    const byParent = new Map<number | null, Group[]>()
+    for (const g of groups) {
+      const key = g.parent_id !== null && byId.has(g.parent_id) ? g.parent_id : null
+      byParent.set(key, [...(byParent.get(key) ?? []), g])
+    }
+    const roots: GroupTreeChild[] = (byParent.get(null) ?? []).map((g) => ({
+      kind: 'group' as const,
+      group: g,
+    }))
+    const childrenOf = (id: number): GroupTreeChild[] =>
+      (byParent.get(id) ?? []).map((g) => ({ kind: 'group' as const, group: g }))
+    return { roots, childrenOf }
+  }, [groups])
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault()
@@ -124,21 +144,11 @@ export function Groups({
           }
         />
       ) : (
-        <div className="repo-grid">
-          {groups.map((g) => (
-            <button key={g.id} className="repo-card" onClick={() => openGroup(g.full_path)}>
-              <div className="repo-card-top">
-                <span className="repo-card-icon">
-                  <FolderIcon size={18} />
-                </span>
-              </div>
-              <div className="repo-card-body">
-                <div className="repo-card-name">{g.full_path}</div>
-                <div className="repo-card-desc">{g.description || t('common.noDescription')}</div>
-              </div>
-            </button>
-          ))}
-        </div>
+        <GroupTree
+          nodes={tree.roots}
+          getChildren={(g) => tree.childrenOf(g.id)}
+          onOpenGroup={openGroup}
+        />
       )}
     </>
   )

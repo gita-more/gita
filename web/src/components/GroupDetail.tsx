@@ -1,18 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, type Group, type Repository } from '../lib/api'
+import { GroupTree, type GroupTreeChild } from './GroupTree'
 import {
   PageHeader,
   Alert,
   EmptyState,
-  StatusLabel,
 } from './Layout'
-import { BookIcon, FolderIcon, PlusIcon, GitBranchIcon } from './Icons'
+import { FolderIcon, PlusIcon } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
-
-function repoStatus(repo: Repository): 'open' | 'merged' | 'closed' {
-  return repo.is_private ? 'merged' : 'open'
-}
 
 export function GroupDetail({
   group,
@@ -213,29 +209,6 @@ export function GroupDetail({
         </form>
       )}
 
-      {subgroups.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: '#8b949e' }}>
-            {t('groups.subgroups')}
-          </h3>
-          <div className="repo-grid">
-            {subgroups.map((sg) => (
-              <button key={sg.id} className="repo-card" onClick={() => navigate(`/groups/${sg.full_path}`)}>
-                <div className="repo-card-top">
-                  <span className="repo-card-icon">
-                    <FolderIcon size={18} />
-                  </span>
-                </div>
-                <div className="repo-card-body">
-                  <div className="repo-card-name">{sg.name}</div>
-                  <div className="repo-card-desc">{sg.description || t('common.noDescription')}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       {repos.length === 0 && subgroups.length === 0 ? (
         <EmptyState
           icon={<FolderIcon size={22} />}
@@ -243,33 +216,21 @@ export function GroupDetail({
           description={t('groups.emptyReposDescription')}
         />
       ) : (
-        <div className="repo-grid">
-          {repos.map((repo) => (
-            <button
-              key={repo.id}
-              className="repo-card"
-              onClick={() => onOpenRepo(repo.owner, repo.name)}
-            >
-              <div className="repo-card-top">
-                <span className="repo-card-icon">
-                  <BookIcon size={18} />
-                </span>
-                <StatusLabel status={repoStatus(repo)} />
-              </div>
-              <div>
-                <div className="repo-card-name">{repo.full_name}</div>
-                <div className="repo-card-desc">{repo.description || t('common.noDescription')}</div>
-              </div>
-              <div className="repo-card-meta">
-                <span className="meta-item">
-                  <GitBranchIcon size={14} />
-                  {repo.default_branch}
-                </span>
-                <span className="meta-item">{repo.is_private ? t('projects.private') : t('projects.public')}</span>
-              </div>
-            </button>
-          ))}
-        </div>
+        <GroupTree
+          nodes={[
+            ...subgroups.map((sg): GroupTreeChild => ({ kind: 'group', group: sg })),
+            ...repos.map((r): GroupTreeChild => ({ kind: 'repo', repo: r })),
+          ]}
+          getChildren={async (g) => {
+            const res = await api.getGroup(g.full_path)
+            return [
+              ...res.subgroups.map((sg): GroupTreeChild => ({ kind: 'group', group: sg })),
+              ...res.repos.map((r): GroupTreeChild => ({ kind: 'repo', repo: r })),
+            ]
+          }}
+          onOpenGroup={(path) => navigate(`/groups/${path}`)}
+          onOpenRepo={onOpenRepo}
+        />
       )}
     </>
   )
