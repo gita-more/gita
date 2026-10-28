@@ -1584,6 +1584,8 @@ dependencies = [
  "gita-git",
  "gita-pipeline",
  "serde_json",
+ "tempfile",
+ "tokio",
  "tracing",
 ]
 
