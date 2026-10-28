@@ -104,6 +104,52 @@ fn split_suffix<'p>(path: &'p str, sep: &str) -> Option<(&'p str, &'p str)> {
     path.rsplit_once(sep)
 }
 
+/// The sub-resources addressed by a trailing path segment.
+///
+/// A repository may be *named* after one of these (`dir`, `file`, `tree`,
+/// …), so a suffix only wins when the repository it points at really
+/// exists — see [`existing_repo`].
+const REPO_SUBRESOURCE_SUFFIXES: &[&str] = &[
+    "/dir", "/tree", "/file", "/commits", "/branches", "/tags", "/star", "/hooks",
+];
+
+/// Resolve the repository a path prefix addresses, if such a repository
+/// exists.
+///
+/// This is used only to *disambiguate* a request path, never to
+/// authorize: the chosen interpretation is handed to the regular
+/// handler, which applies the normal access checks.
+///
+/// The check matters because a path is ambiguous. `alice/dir` may mean
+/// "the directory listing of repository `alice`" — which cannot exist,
+/// since `alice` is not a repository — or "the repository `dir` of user
+/// `alice`", which can. Resolving against the database tells the two
+/// apart, so a repository named `dir`, `file`, `tree` or `hooks` stays
+/// reachable.
+async fn existing_repo(
+    state: &AppState,
+    repo_path: &str,
+) -> ApiResult<Option<(String, String)>> {
+    let Ok((owner, name)) = parse_owner_repo(repo_path) else {
+        // A single segment cannot be `owner/repo` — there is no repository
+        // to point at, so the path must name the repository itself.
+        return Ok(None);
+    };
+    existing_repo_by_name(state, &owner, &name).await
+}
+
+/// Like [`existing_repo`], but with the owner and name already split.
+async fn existing_repo_by_name(
+    state: &AppState,
+    owner: &str,
+    name: &str,
+) -> ApiResult<Option<(String, String)>> {
+    let Some(repo) = state.db.get_repository_by_name(owner, name).await? else {
+        return Ok(None);
+    };
+    Ok(Some((repo.owner_name, repo.name)))
+}
+
 /// Split `{owner}/{repo}/{marker}/...` at the first known sub-resource
 /// marker segment (`prs`, `issues`, `pipelines`, `runs`, `pages`).
 /// Returns `(owner, repo, marker, rest)`; `owner` may be a nested group
@@ -323,99 +369,117 @@ async fn repo_get_dispatcher(
     // the bare `/commits` listing so the sha segment is not swallowed.
     if let Some((repo_path, sha)) = split_suffix(&path, "/commits/") {
         if !sha.is_empty() {
-            let (owner, repo) = parse_owner_repo(repo_path)?;
-            let res = get_commit(&state, &user, &owner, &repo, sha).await?;
-            return Ok(res.into_response());
+            if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+                let res = get_commit(&state, &user, &owner, &repo, sha).await?;
+                return Ok(res.into_response());
+            }
         }
     }
-    if let Some(repo_path) = path.strip_suffix("/dir") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = get_dir(
-            &state,
-            &user,
-            &owner,
-            &repo,
-            q.get("ref").cloned(),
-            q.get("path").cloned(),
-        )
-        .await?;
-        return Ok(res.into_response());
-    }
-    if let Some(repo_path) = path.strip_suffix("/tree") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = get_tree(
-            &state,
-            &user,
-            &owner,
-            &repo,
-            q.get("ref").cloned(),
-            q.get("path").cloned(),
-        )
-        .await?;
-        return Ok(res.into_response());
-    }
-    if let Some(repo_path) = path.strip_suffix("/file") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = get_file(
-            &state,
-            &user,
-            &owner,
-            &repo,
-            q.get("ref").cloned(),
-            q.get("path").cloned(),
-        )
-        .await?;
-        return Ok(res.into_response());
-    }
-    if let Some(repo_path) = path.strip_suffix("/commits") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let limit = q.get("limit").and_then(|v| v.parse::<usize>().ok());
-        let res = list_commits(&state, &user, &owner, &repo, q.get("ref").cloned(), limit).await?;
-        return Ok(res.into_response());
-    }
-    if let Some(repo_path) = path.strip_suffix("/branches") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = list_branches(&state, &user, &owner, &repo).await?;
-        return Ok(res.into_response());
-    }
-    if let Some(repo_path) = path.strip_suffix("/tags") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = list_tags(&state, &user, &owner, &repo).await?;
-        return Ok(res.into_response());
-    }
-    if let Some(repo_path) = path.strip_suffix("/star") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = get_star(&state, &user, &owner, &repo).await?;
-        return Ok(res.into_response());
-    }
-    if let Some(repo_path) = path.strip_suffix("/hooks") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = list_hooks(&state, &user, &owner, &repo).await?;
-        return Ok(res.into_response());
+    // Sub-resources addressed by a trailing segment (`/dir`, `/tree`,
+    // `/file`, `/commits`, `/branches`, `/tags`, `/star`, `/hooks`).
+    //
+    // A repository may be *named* after one of these, so the suffix is
+    // only honoured when the repository it points at exists; otherwise
+    // the whole path names the repository itself.
+    for suffix in REPO_SUBRESOURCE_SUFFIXES {
+        let Some(repo_path) = path.strip_suffix(suffix) else {
+            continue;
+        };
+        let Some((owner, repo)) = existing_repo(&state, repo_path).await? else {
+            continue;
+        };
+        let res: axum::response::Response = match *suffix {
+            "/dir" => {
+                get_dir(
+                    &state,
+                    &user,
+                    &owner,
+                    &repo,
+                    q.get("ref").cloned(),
+                    q.get("path").cloned(),
+                )
+                .await?
+                .into_response()
+            }
+            "/tree" => {
+                get_tree(
+                    &state,
+                    &user,
+                    &owner,
+                    &repo,
+                    q.get("ref").cloned(),
+                    q.get("path").cloned(),
+                )
+                .await?
+                .into_response()
+            }
+            "/file" => {
+                get_file(
+                    &state,
+                    &user,
+                    &owner,
+                    &repo,
+                    q.get("ref").cloned(),
+                    q.get("path").cloned(),
+                )
+                .await?
+                .into_response()
+            }
+            "/commits" => {
+                let limit = q.get("limit").and_then(|v| v.parse::<usize>().ok());
+                list_commits(&state, &user, &owner, &repo, q.get("ref").cloned(), limit)
+                    .await?
+                    .into_response()
+            }
+            "/branches" => list_branches(&state, &user, &owner, &repo)
+                .await?
+                .into_response(),
+            "/tags" => list_tags(&state, &user, &owner, &repo)
+                .await?
+                .into_response(),
+            "/star" => get_star(&state, &user, &owner, &repo)
+                .await?
+                .into_response(),
+            "/hooks" => list_hooks(&state, &user, &owner, &repo)
+                .await?
+                .into_response(),
+            _ => unreachable!("REPO_SUBRESOURCE_SUFFIXES and this match are in sync"),
+        };
+        return Ok(res);
     }
     // Sub-resources owned by the pr/issue/pipeline/pages modules: PRs,
     // issues, pipelines/runs and Pages. Their markers are matched on the
     // *first* occurrence so nested group owners resolve correctly.
+    //
+    // As above, a repository named after a marker (`prs`, `issues`, …)
+    // must stay reachable: the marker interpretation only wins when the
+    // repository it points at exists.
     if let Some((owner, repo, marker, rest)) = split_repo_subpath(&path) {
-        let res = match marker {
-            "prs" => crate::routes::pr::get_dispatch(&state, &user, &owner, &repo, &rest, &q).await?,
-            "issues" => {
-                crate::routes::issue::get_dispatch(&state, &user, &owner, &repo, &rest, &q)
+        if let Some((owner, repo)) = existing_repo_by_name(&state, &owner, &repo).await? {
+            let res = match marker {
+                "prs" => {
+                    crate::routes::pr::get_dispatch(&state, &user, &owner, &repo, &rest, &q).await?
+                }
+                "issues" => {
+                    crate::routes::issue::get_dispatch(&state, &user, &owner, &repo, &rest, &q)
+                        .await?
+                }
+                "pipelines" | "runs" => {
+                    crate::routes::pipeline::get_dispatch(
+                        &state, &user, &owner, &repo, marker, &rest, &q,
+                    )
                     .await?
-            }
-            "pipelines" | "runs" => {
-                crate::routes::pipeline::get_dispatch(&state, &user, &owner, &repo, marker, &rest, &q)
-                    .await?
-            }
-            "pages" => {
-                let auth = user
-                    .0
-                    .ok_or_else(|| ApiError::Unauthorized("authentication required".into()))?;
-                crate::routes::pages::get_dispatch(&state, &auth, &owner, &repo, &rest).await?
-            }
-            _ => unreachable!("split_repo_subpath only yields known markers"),
-        };
-        return Ok(res);
+                }
+                "pages" => {
+                    let auth = user
+                        .0
+                        .ok_or_else(|| ApiError::Unauthorized("authentication required".into()))?;
+                    crate::routes::pages::get_dispatch(&state, &auth, &owner, &repo, &rest).await?
+                }
+                _ => unreachable!("split_repo_subpath only yields known markers"),
+            };
+            return Ok(res);
+        }
     }
     let (owner, repo) = parse_owner_repo(&path)?;
     let res = get_repo(&state, &user, &owner, &repo).await?;
@@ -429,41 +493,52 @@ async fn repo_post_dispatcher(
     Path(path): Path<String>,
     body: Bytes,
 ) -> ApiResult<axum::response::Response> {
+    // Each suffix names a sub-resource of a repository. A repository may
+    // itself be named after a sub-resource, so the suffix is only honoured
+    // when the repository it points at exists; otherwise the path names
+    // the repository and there is no sub-resource to act on (404 below).
     if let Some(repo_path) = path.strip_suffix("/fork") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        // The fork's body is optional; an empty body means "default name".
-        let req: Option<ForkRequest> = if body.is_empty() {
-            None
-        } else {
-            Some(serde_json::from_slice(&body)
-                .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?)
-        };
-        let res = post_fork(&state, &user, &owner, &repo, req).await?;
-        return Ok(res.into_response());
+        if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+            // The fork's body is optional; an empty body means "default name".
+            let req: Option<ForkRequest> = if body.is_empty() {
+                None
+            } else {
+                Some(serde_json::from_slice(&body)
+                    .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?)
+            };
+            let res = post_fork(&state, &user, &owner, &repo, req).await?;
+            return Ok(res.into_response());
+        }
     }
     if let Some(repo_path) = path.strip_suffix("/hooks") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let req: CreateHookRequest = serde_json::from_slice(&body)
-            .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
-        let res = create_hook(&state, &user, &owner, &repo, req).await?;
-        return Ok(res.into_response());
+        if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+            let req: CreateHookRequest = serde_json::from_slice(&body)
+                .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
+            let res = create_hook(&state, &user, &owner, &repo, req).await?;
+            return Ok(res.into_response());
+        }
     }
     if let Some(repo_path) = path.strip_suffix("/branches") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let req: CreateBranchRequest = serde_json::from_slice(&body)
-            .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
-        let res = create_branch(&state, &user, &owner, &repo, req).await?;
-        return Ok(res.into_response());
+        if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+            let req: CreateBranchRequest = serde_json::from_slice(&body)
+                .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
+            let res = create_branch(&state, &user, &owner, &repo, req).await?;
+            return Ok(res.into_response());
+        }
     }
     if let Some(repo_path) = path.strip_suffix("/tags") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let req: CreateTagRequest = serde_json::from_slice(&body)
-            .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
-        let res = create_tag(&state, &user, &owner, &repo, req).await?;
-        return Ok(res.into_response());
+        if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+            let req: CreateTagRequest = serde_json::from_slice(&body)
+                .map_err(|e| ApiError::BadRequest(format!("invalid request body: {e}")))?;
+            let res = create_tag(&state, &user, &owner, &repo, req).await?;
+            return Ok(res.into_response());
+        }
     }
     // Sub-resources owned by the pr/issue/pipeline modules.
     if let Some((owner, repo, marker, rest)) = split_repo_subpath(&path) {
+        let Some((owner, repo)) = existing_repo_by_name(&state, &owner, &repo).await? else {
+            return Err(ApiError::NotFound("endpoint not found".into()));
+        };
         let res = match marker {
             "prs" => crate::routes::pr::post_dispatch(&state, &user, &owner, &repo, &rest, &body).await?,
             "issues" => {
@@ -489,13 +564,17 @@ async fn repo_put_dispatcher(
     body: Bytes,
 ) -> ApiResult<axum::response::Response> {
     if let Some(repo_path) = path.strip_suffix("/star") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = put_star(&state, &user, &owner, &repo).await?;
-        return Ok(res.into_response());
+        if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+            let res = put_star(&state, &user, &owner, &repo).await?;
+            return Ok(res.into_response());
+        }
     }
     // Pages is owned by the pages module.
     if let Some((owner, repo, marker, rest)) = split_repo_subpath(&path) {
         if marker == "pages" {
+            let Some((owner, repo)) = existing_repo_by_name(&state, &owner, &repo).await? else {
+                return Err(ApiError::NotFound("endpoint not found".into()));
+            };
             let res = crate::routes::pages::put_dispatch(&state, &user, &owner, &repo, &rest, &body)
                 .await?;
             return Ok(res);
@@ -525,31 +604,38 @@ async fn repo_delete_dispatcher(
     Path(path): Path<String>,
 ) -> ApiResult<axum::response::Response> {
     if let Some((repo_path, id)) = split_suffix(&path, "/hooks/") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let id: i64 = id
-            .parse()
-            .map_err(|_| ApiError::BadRequest("invalid webhook id".into()))?;
-        let res = delete_hook(&state, &user, &owner, &repo, id).await?;
-        return Ok(res.into_response());
+        if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+            let id: i64 = id
+                .parse()
+                .map_err(|_| ApiError::BadRequest("invalid webhook id".into()))?;
+            let res = delete_hook(&state, &user, &owner, &repo, id).await?;
+            return Ok(res.into_response());
+        }
     }
     if let Some((repo_path, branch)) = split_suffix(&path, "/branches/") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = delete_branch(&state, &user, &owner, &repo, branch).await?;
-        return Ok(res.into_response());
+        if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+            let res = delete_branch(&state, &user, &owner, &repo, branch).await?;
+            return Ok(res.into_response());
+        }
     }
     if let Some((repo_path, tag)) = split_suffix(&path, "/tags/") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = delete_tag(&state, &user, &owner, &repo, tag).await?;
-        return Ok(res.into_response());
+        if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+            let res = delete_tag(&state, &user, &owner, &repo, tag).await?;
+            return Ok(res.into_response());
+        }
     }
     if let Some(repo_path) = path.strip_suffix("/star") {
-        let (owner, repo) = parse_owner_repo(repo_path)?;
-        let res = delete_star(&state, &user, &owner, &repo).await?;
-        return Ok(res.into_response());
+        if let Some((owner, repo)) = existing_repo(&state, repo_path).await? {
+            let res = delete_star(&state, &user, &owner, &repo).await?;
+            return Ok(res.into_response());
+        }
     }
     // Pages is owned by the pages module.
     if let Some((owner, repo, marker, rest)) = split_repo_subpath(&path) {
         if marker == "pages" {
+            let Some((owner, repo)) = existing_repo_by_name(&state, &owner, &repo).await? else {
+                return Err(ApiError::NotFound("endpoint not found".into()));
+            };
             let res =
                 crate::routes::pages::delete_dispatch(&state, &user, &owner, &repo, &rest).await?;
             return Ok(res);
