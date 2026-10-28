@@ -406,24 +406,29 @@ async fn e2e_keyring_local() {
     // Keyring requires a running Secret Service (D-Bus on Linux). In CI or
     // headless environments it is not available, so we skip gracefully
     // rather than failing.
+    //
+    // It can also *block* instead of failing: a locked Secret Service waits
+    // for an unlock agent that will never come, and the kernel keyring
+    // backend waits in `request_key()` for a user keyring. The probe
+    // therefore runs on a worker thread with a deadline.
     let url = "http://127.0.0.1:1/keyring-test";
-    match keyring::Entry::new("gita", url) {
-        Ok(entry) => {
-            match entry.set_password("keyring-test-token") {
-                Ok(()) => {
-                    let got = entry.get_password().expect("keyring read should succeed");
-                    assert_eq!(got, "keyring-test-token");
-                    let _ = entry.delete_credential();
-                }
-                Err(_) => {
-                    // No Secret Service available — skip.
-                    eprintln!("warning: keyring not available, skipping keyring test");
-                }
-            }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = keyring::Entry::new("gita", url).and_then(|entry| {
+            entry.set_password("keyring-test-token")?;
+            let got = entry.get_password()?;
+            let _ = entry.delete_credential();
+            Ok(got)
+        });
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(Ok(got)) => assert_eq!(got, "keyring-test-token"),
+        Ok(Err(e)) => {
+            eprintln!("warning: keyring not available, skipping keyring test: {e}");
         }
         Err(_) => {
-            // No Secret Service available — skip.
-            eprintln!("warning: keyring not available, skipping keyring test");
+            eprintln!("warning: keyring call did not return, skipping keyring test");
         }
     }
 }

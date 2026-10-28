@@ -44,10 +44,17 @@ pub fn gita_bin() -> PathBuf {
 }
 
 /// Run `gita` with the given args and `GITA_TOKEN` set, capturing output.
+///
+/// `GITA_DISABLE_KEYRING=1` is set for every invocation: the CLI stores
+/// the token in the OS keyring after a successful register/login, and on
+/// Linux that store can block indefinitely (a locked Secret Service, or a
+/// kernel keyring with no user keyring). The tests only ever care about
+/// the token they pass in, so the keyring is switched off entirely.
 pub fn gita(port: u16, token: &str, args: &[&str]) -> std::process::Output {
     let mut cmd = AssertCmd::new(gita_bin());
     cmd.env("GITA_URL", format!("http://127.0.0.1:{port}"))
-        .env("GITA_TOKEN", token);
+        .env("GITA_TOKEN", token)
+        .env("GITA_DISABLE_KEYRING", "1");
     for a in args {
         cmd.arg(a);
     }

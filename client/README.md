@@ -163,6 +163,7 @@ Every command prints a table by default. Pass `--json` for pretty-printed JSON
 | `GITA_URL` | Server base URL (overrides config file) |
 | `GITA_TOKEN` | Bearer token (overrides keyring) |
 | `GITA_PASSWORD` | Password for login (alternative to prompting) |
+| `GITA_DISABLE_KEYRING` | Never touch the OS keyring (see below) |
 
 ## Keyring
 
@@ -170,10 +171,25 @@ Credentials live in the OS keyring under service `gita`, keyed by server URL
 (account). On Linux this uses the Secret Service API (D-Bus) via the `keyring`
 crate — no C dependencies. Nothing is ever written to disk in plaintext.
 
+Every keyring call is bounded by a 3-second deadline. On Linux the keyring can
+*block* rather than fail: a locked Secret Service waits for an unlock agent
+that will never arrive in a headless session, and the kernel keyring backend
+waits in `request_key()` for a user keyring that `pam_keyinit` never created.
+The CLI treats the keyring as best-effort, so a blocked call is abandoned
+after the deadline and the command continues with a warning instead of hanging
+forever.
+
+Set `GITA_DISABLE_KEYRING=1` to skip the keyring entirely — no token is read
+from it and nothing is written to it:
+
+```bash
+GITA_DISABLE_KEYRING=1 ./target/debug/gita repo list
+```
+
 ## CI
 
 GitHub Actions builds `gita-client` in `.github/workflows/ci.yml` and ships the
 release binary via `.github/workflows/release.yml`. Integration tests live in
-`integration/cli/tests/gita_cli.rs` and boot a real `gita_server::App` against
-Postgres, driving the `gita` binary with `GITA_TOKEN` (keyring is never touched
-in CI).
+`integration/cli/tests/` and boot a real `gita_server::App` against
+Postgres, driving the `gita` binary with `GITA_TOKEN` and
+`GITA_DISABLE_KEYRING=1` (the keyring is never touched in CI).

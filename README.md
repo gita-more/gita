@@ -157,6 +157,10 @@ Token resolution order: `GITA_TOKEN` env > OS keyring (per server URL) > none.
 Server URL resolution: `GITA_URL` env > `~/.config/gita/config.toml` >
 `http://127.0.0.1:3000`.
 
+Keyring access is bounded by a 3-second deadline — on Linux the keyring can
+block forever in a headless session — and `GITA_DISABLE_KEYRING=1` turns it off
+entirely. See [client/README.md](client/README.md#keyring).
+
 ### Common commands
 
 ```bash
