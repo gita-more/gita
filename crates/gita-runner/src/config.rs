@@ -68,3 +68,50 @@ impl RunnerConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> RunnerConfig {
+        RunnerConfig {
+            server_db_url: "postgres://localhost/gita".to_string(),
+            server_base_url: "http://localhost:3100".to_string(),
+            runner_token: "runner-token".to_string(),
+            runner_name: "runner-1".to_string(),
+            work_dir: PathBuf::from("/tmp/gita-ci-work"),
+            poll_interval_secs: 2,
+            claim_lease_secs: 300,
+            concurrent_jobs: 1,
+            job_timeout_secs: 3600,
+        }
+    }
+
+    #[test]
+    fn the_poll_interval_and_the_lease_follow_the_configured_seconds() {
+        let mut c = config();
+        assert_eq!(c.poll_interval(), Duration::from_secs(2));
+        assert_eq!(c.claim_lease(), Duration::from_secs(300));
+
+        c.poll_interval_secs = 7;
+        c.claim_lease_secs = 11;
+        assert_eq!(c.poll_interval(), Duration::from_secs(7));
+        assert_eq!(c.claim_lease(), Duration::from_secs(11));
+    }
+
+    /// A job script is arbitrary shell from a pushed file, so the timeout
+    /// is the only thing between a `sleep infinity` and a runner pinned
+    /// forever. Zero disables it — deliberately, but it has to be an
+    /// explicit choice.
+    #[test]
+    fn a_zero_job_timeout_disables_the_limit() {
+        let mut c = config();
+        assert_eq!(c.job_timeout(), Some(Duration::from_secs(3600)));
+
+        c.job_timeout_secs = 0;
+        assert_eq!(c.job_timeout(), None);
+
+        c.job_timeout_secs = 30;
+        assert_eq!(c.job_timeout(), Some(Duration::from_secs(30)));
+    }
+}
