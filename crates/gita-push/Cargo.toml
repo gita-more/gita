@@ -14,5 +14,9 @@ gita-pipeline = { path = "../gita-pipeline" }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true }
+
 [lints]
 workspace = true
