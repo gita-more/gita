@@ -8,6 +8,7 @@ import {
   useLocation,
   useNavigate,
   useParams,
+  useSearchParams,
 } from 'react-router-dom'
 import { LoginPage } from './components/LoginPage'
 import { InitPage } from './components/InitPage'
@@ -16,6 +17,7 @@ import { Groups } from './components/Groups'
 import { Issues } from './components/Issues'
 import { GroupDetail } from './components/GroupDetail'
 import { RepoDetail } from './components/RepoDetail'
+import { RepoSettings } from './components/RepoSettings'
 import { Settings } from './components/Settings'
 import { useAuth } from './hooks/useAuth'
 import { useErrorTranslator, useI18n } from './i18n'
@@ -112,17 +114,26 @@ function Protected({ children }: { children: React.ReactNode }) {
 function PathPage() {
   const { '*': rawPath = '' } = useParams()
   const path = rawPath.replace(/\/+$/, '')
+  // Normalize: collapse any repeated `/settings` segments so
+  // `/owner/repo/settings/settings/...` becomes `/owner/repo/settings`.
+  const normPath = path.replace(/(^|\/)settings(\/settings)*$/, '/settings')
+  // `/owner/repo/settings` is the repository settings page: the repo path is
+  // everything before the trailing "settings" segment.
+  const isRepoSettings = normPath.endsWith('/settings')
+  const repoPath = isRepoSettings ? normPath.slice(0, -'/settings'.length) : normPath
   const navigate = useNavigate()
   const translateError = useErrorTranslator()
   const [resolved, setResolved] = useState<ResolvedPath | null>(null)
   const [failed, setFailed] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const section = searchParams.get('section')
 
   useEffect(() => {
     let cancelled = false
     setResolved(null)
     setFailed('')
     api
-      .resolvePath(path)
+      .resolvePath(repoPath)
       .then((r) => {
         if (!cancelled) setResolved(r)
       })
@@ -132,7 +143,7 @@ function PathPage() {
     return () => {
       cancelled = true
     }
-  }, [path, translateError])
+  }, [repoPath, translateError])
 
   if (failed) {
     return <NotFound />
@@ -157,6 +168,21 @@ function PathPage() {
         <GroupDetail
           group={resolved.full_path}
           onOpenRepo={(owner, name) => navigate(`/${owner}/${name}`)}
+        />
+      </>
+    )
+  }
+
+  if (isRepoSettings) {
+    return (
+      <>
+        <SetSidebarVariant variant="repo" />
+        <RepoSettings
+          owner={resolved.owner}
+          name={resolved.name}
+          section={section}
+          onSectionChange={(next) => setSearchParams({ section: next }, { replace: true })}
+          onBack={() => navigate(`/${resolved.owner}/${resolved.name}`)}
         />
       </>
     )

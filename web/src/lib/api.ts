@@ -341,6 +341,21 @@ export const api = {
     }),
   deleteRepo: (owner: string, name: string) =>
     request<{ message: string }>(`/api/repos/${owner}/${name}`, { method: 'DELETE' }),
+  updateRepo: (
+    owner: string,
+    name: string,
+    patch: {
+      description?: string
+      is_private?: boolean
+      new_name?: string
+      /** Move the repository to another namespace (username or group). */
+      new_owner?: string
+    },
+  ) =>
+    request<Repository>(`/api/repos/${owner}/${name}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
   getStar: (owner: string, name: string) =>
     request<{ starred: boolean; count: number }>(`/api/repos/${owner}/${name}/star`),
   starRepo: (owner: string, name: string) =>

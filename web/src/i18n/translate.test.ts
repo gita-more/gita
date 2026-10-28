@@ -88,6 +88,30 @@ describe('zh / en dictionary parity', () => {
     return out
   }
 
+  it('resolves the repository-settings keys the UI asks for', () => {
+    // Regression guard: the repoSettings dictionary once lived nested under
+    // `repo`, so `t('repoSettings.general')` silently rendered the raw key.
+    for (const key of [
+      'repoSettings.title',
+      'repoSettings.general',
+      'repoSettings.branches',
+      'repoSettings.tags',
+      'repoSettings.pages',
+      'repoSettings.save',
+      'repoSettings.danger',
+      'repoSettings.deleteRepo',
+      'repo.ref.default',
+      'repo.code.goToFiles',
+      'repoSettings.cloneUrlsHint',
+      'repoSettings.moveTo',
+      'repoSettings.moveRepo',
+      'repoSettings.moveRepoConfirm',
+    ]) {
+      expect(translate('zh', key), `zh ${key}`).not.toBe(key)
+      expect(translate('en', key), `en ${key}`).not.toBe(key)
+    }
+  })
+
   it('every leaf key in zh also exists in en', () => {
     const zhKeys = collectKeys(zh)
     const enKeys = collectKeys(en)

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   api,
   type Commit,
@@ -36,11 +36,12 @@ import { relativeTime } from '../lib/reltime'
 import { EmptyRepoWelcome } from './EmptyRepoWelcome'
 import { CloneDropdown } from './CloneDropdown'
 import { ReadmePanel } from './ReadmePanel'
+import { BranchSelector } from './BranchSelector'
 import { PipelinesPanel } from './PipelinesPanel'
 import { PagesPanel } from './PagesPanel'
 
-type Tab = 'files' | 'commits' | 'prs' | 'issues' | 'pipelines' | 'settings'
-const VALID_TABS: Tab[] = ['files', 'commits', 'prs', 'issues', 'pipelines', 'settings']
+type Tab = 'files' | 'commits' | 'prs' | 'issues' | 'pipelines' | 'pages'
+const VALID_TABS: Tab[] = ['files', 'commits', 'prs', 'issues', 'pipelines', 'pages']
 
 export function RepoDetail({
   owner,
@@ -57,6 +58,7 @@ export function RepoDetail({
 }) {
   const { t } = useI18n()
   const translateError = useErrorTranslator()
+  const navigate = useNavigate()
   // Tab is owned by the URL: ?tab=files|commits|prs|issues. Default "files".
   // The Sidebar writes ?tab=<key> with replace=true; RepoDetail reads it back.
   const [searchParams] = useSearchParams()
@@ -79,7 +81,6 @@ export function RepoDetail({
   const [issues, setIssues] = useState<Issue[]>([])
   const [pipelines, setPipelines] = useState<Pipeline[]>([])
   const [error, setError] = useState('')
-  const [showRefs, setShowRefs] = useState(false)
   const [tags, setTags] = useState<string[]>([])
   const [starred, setStarred] = useState(false)
   const [starCount, setStarCount] = useState(0)
@@ -259,31 +260,25 @@ export function RepoDetail({
               <StarIcon size={14} />
               {starCount > 0 ? starCount : (starred ? 1 : 0)}
             </button>
-            <select className="select" value={ref} onChange={(e) => setRef(e.target.value)} title={t('projects.defaultBranch')} style={{ width: 'auto' }}>
-              {branches.map((b) => (
-                <option key={b} value={b}>{b}</option>
-              ))}
-            </select>
-            <button className="btn btn-ghost" onClick={() => setShowRefs((v) => !v)}>
+            {/* The code page uses the BranchSelector dropdown in the toolbar;
+                this select serves the other tabs (commits, ...). */}
+            {tab !== 'files' && (
+              <select className="select" value={ref} onChange={(e) => setRef(e.target.value)} title={t('projects.defaultBranch')} style={{ width: 'auto' }}>
+                {branches.map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+            )}
+            <button
+              className="btn btn-ghost"
+              onClick={() => navigate(`/${owner}/${name}/settings?section=branches`)}
+            >
               <GitBranchIcon size={14} />
-              {showRefs ? t('common.cancel') : t('repo.manageRefs')}
+              {t('repo.manageRefs')}
             </button>
           </div>
         }
       />
-
-      {showRefs && (
-        <RefsPanel
-          owner={owner}
-          name={name}
-          branches={branches}
-          tags={tags}
-          onChanged={() => {
-            void loadBranches()
-            void loadTags()
-          }}
-        />
-      )}
 
       {error && <Alert type="error">{error}</Alert>}
 
@@ -306,6 +301,7 @@ export function RepoDetail({
           tags={tags}
           latestCommit={commits[0] ?? null}
           commitCount={commits.length}
+          onSelectRef={setRef}
         />
       )}
       {tab === 'commits' && <CommitsPanel commits={commits} owner={owner} name={name} />}
@@ -314,7 +310,7 @@ export function RepoDetail({
       {tab === 'pipelines' && (
         <PipelinesPanel owner={owner} name={name} pipelines={pipelines} onChanged={() => void loadPipelines()} />
       )}
-      {tab === 'settings' && <PagesPanel owner={owner} name={name} />}
+      {tab === 'pages' && <PagesPanel owner={owner} name={name} />}
     </>
   )
 }
@@ -341,6 +337,7 @@ function FilesPanel({
   tags,
   latestCommit,
   commitCount,
+  onSelectRef,
 }: {
   path: string
   setPath: (p: string) => void
@@ -359,6 +356,7 @@ function FilesPanel({
   tags: string[]
   latestCommit: Commit | null
   commitCount: number
+  onSelectRef: (ref: string) => void
 }) {
   const { t } = useI18n()
   const setSearchParams = useSearchParams()[1]
@@ -401,8 +399,17 @@ function FilesPanel({
 
   return (
     <div className="file-browser">
-      {/* Toolbar row: counts, go-to-file, clone dropdown — GitHub layout. */}
+      {/* Toolbar row: branch selector, counts, go-to-file, clone dropdown. */}
       <div className="code-toolbar">
+        <BranchSelector
+          owner={owner}
+          name={name}
+          rev={rev}
+          branches={branches}
+          tags={tags}
+          defaultBranch={repoData?.default_branch ?? branches[0] ?? rev}
+          onSelect={onSelectRef}
+        />
         <span className="code-toolbar-counts">
           <span className="count-chip" title={t('repo.code.branchesCount', { n: branches.length })}>
             <GitBranchIcon size={14} />
@@ -1323,134 +1330,3 @@ function CommentSection({
 // Branches / Tags management panel
 // ---------------------------------------------------------------------------
 
-function RefsPanel({
-  owner,
-  name,
-  branches,
-  tags,
-  onChanged,
-}: {
-  owner: string
-  name: string
-  branches: string[]
-  tags: string[]
-  onChanged: () => void
-}) {
-  const { t } = useI18n()
-  const translateError = useErrorTranslator()
-  const [branchName, setBranchName] = useState('')
-  const [branchRef, setBranchRef] = useState('')
-  const [tagName, setTagName] = useState('')
-  const [tagRef, setTagRef] = useState('')
-  const [error, setError] = useState('')
-
-  async function createBranch() {
-    setError('')
-    try {
-      await api.createBranch(owner, name, branchName, branchRef || undefined)
-      setBranchName('')
-      setBranchRef('')
-      onChanged()
-    } catch (err) {
-      setError(translateError(err))
-    }
-  }
-
-  async function deleteBranch(branch: string) {
-    setError('')
-    try {
-      await api.deleteBranch(owner, name, branch)
-      onChanged()
-    } catch (err) {
-      setError(translateError(err))
-    }
-  }
-
-  async function createTag() {
-    setError('')
-    try {
-      await api.createTag(owner, name, tagName, tagRef || undefined)
-      setTagName('')
-      setTagRef('')
-      onChanged()
-    } catch (err) {
-      setError(translateError(err))
-    }
-  }
-
-  async function deleteTag(tag: string) {
-    setError('')
-    try {
-      await api.deleteTag(owner, name, tag)
-      onChanged()
-    } catch (err) {
-      setError(translateError(err))
-    }
-  }
-
-  return (
-    <div className="refs-panel">
-      {error && <Alert type="error">{error}</Alert>}
-      <div className="refs-column">
-        <h4>{t('repo.branchesTitle')}</h4>
-        <div className="refs-create">
-          <input
-            className="input"
-            placeholder={t('repo.createBranchPlaceholder')}
-            value={branchName}
-            onChange={(e) => setBranchName(e.target.value)}
-          />
-          <input
-            className="input"
-            placeholder={t('repo.refFromPlaceholder')}
-            value={branchRef}
-            onChange={(e) => setBranchRef(e.target.value)}
-          />
-          <button className="btn btn-primary btn-sm" disabled={!branchName.trim()} onClick={() => void createBranch()}>
-            {t('repo.createBranchBtn')}
-          </button>
-        </div>
-        <ul className="refs-list">
-          {branches.map((b) => (
-            <li key={b}>
-              <span className="refs-name"><GitBranchIcon size={13} />{b}</span>
-              <button className="btn btn-ghost btn-xs" title={t('repo.deleteBranchTitle')} onClick={() => void deleteBranch(b)}>
-                {t('repo.deleteBranchTitle')}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div className="refs-column">
-        <h4>{t('repo.tagsTitle')}</h4>
-        <div className="refs-create">
-          <input
-            className="input"
-            placeholder={t('repo.createTagPlaceholder')}
-            value={tagName}
-            onChange={(e) => setTagName(e.target.value)}
-          />
-          <input
-            className="input"
-            placeholder={t('repo.refFromPlaceholder')}
-            value={tagRef}
-            onChange={(e) => setTagRef(e.target.value)}
-          />
-          <button className="btn btn-primary btn-sm" disabled={!tagName.trim()} onClick={() => void createTag()}>
-            {t('repo.createTagBtn')}
-          </button>
-        </div>
-        <ul className="refs-list">
-          {tags.map((tag) => (
-            <li key={tag}>
-              <span className="refs-name">🏷 {tag}</span>
-              <button className="btn btn-ghost btn-xs" title={t('repo.deleteTagTitle')} onClick={() => void deleteTag(tag)}>
-                {t('repo.deleteTagTitle')}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </div>
-  )
-}

@@ -43,6 +43,7 @@ export type NavTarget =
   | 'prs'
   | 'issues'
   | 'pipelines'
+  | 'pages'
   | 'settings'
 
 /** Top-level navigation targets shown on the global (home) sidebar. */
@@ -60,7 +61,8 @@ const SIDEBAR_NAV: { key: NavTarget; labelKey: string; icon: typeof HomeIcon; co
   { key: 'prs', labelKey: 'nav.prs', icon: GitPullRequestIcon, countKey: 'prs' },
   { key: 'issues', labelKey: 'nav.issues', icon: CircleDotIcon, countKey: 'issues' },
   { key: 'pipelines', labelKey: 'nav.pipelines', icon: RocketIcon },
-  { key: 'settings', labelKey: 'nav.pages', icon: GlobeIcon },
+  { key: 'pages', labelKey: 'nav.pages', icon: GlobeIcon },
+  { key: 'settings', labelKey: 'nav.settings', icon: SettingsIcon },
 ]
 
 export function Brand({ compact = false }: { compact?: boolean }) {
@@ -300,18 +302,33 @@ export function Sidebar({
             // Use ?tab= as the repo source-of-truth (RepoDetail reads it via
             // useSearchParams). Sidebar reads the current value to highlight.
             const currentTab = searchParams.get('tab') || 'files'
+            // The settings page is its own route (/{owner}/{repo}/settings),
+            // not a tab of the repository page.
+            const isSettingsRoute = location.pathname.endsWith('/settings')
             const isActive = active === item.key
               ? true
-              : (item.key === 'files' && currentTab === 'files') ||
-                (item.key === 'commits' && currentTab === 'commits') ||
-                (item.key === 'prs' && currentTab === 'prs') ||
-                (item.key === 'issues' && currentTab === 'issues') ||
-                (item.key === 'pipelines' && currentTab === 'pipelines')
+              : item.key === 'settings'
+                ? isSettingsRoute
+                : (item.key === 'files' && currentTab === 'files') ||
+                  (item.key === 'commits' && currentTab === 'commits') ||
+                  (item.key === 'prs' && currentTab === 'prs') ||
+                  (item.key === 'issues' && currentTab === 'issues') ||
+                  (item.key === 'pipelines' && currentTab === 'pipelines') ||
+                  (item.key === 'pages' && currentTab === 'pages')
             return (
               <button
                 key={item.key}
                 className={`sidebar-link${isActive ? ' active' : ''}`}
                 onClick={() => {
+                  if (item.key === 'settings') {
+                    // Absolute path: the settings page is a route of its own.
+                    // Don't append when already there — that would pile up
+                    // `/settings/settings/...` segments.
+                    if (!location.pathname.replace(/\/+$/, '').endsWith('/settings')) {
+                      navigate(`${location.pathname.replace(/\/+$/, '')}/settings`)
+                    }
+                    return
+                  }
                   // Repo tabs are owned by the URL (?tab=...); use the
                   // absolute pathname to be robust against relative-search
                   // resolution differences and replace so switching tabs
