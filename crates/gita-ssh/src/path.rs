@@ -48,6 +48,11 @@ pub(crate) fn parse_git_command(command: &str) -> Option<(&'static str, String)>
         .strip_prefix('\'')
         .and_then(|p| p.strip_suffix('\''))
         .unwrap_or(path);
+    // An empty path cannot name a repository; refuse it here rather than
+    // letting it travel further as `Some("")`.
+    if path.is_empty() {
+        return None;
+    }
     Some((
         match verb {
             "upload-pack" => "upload-pack",

@@ -113,4 +113,45 @@ mod tests {
         assert!(resolve_repo_path(&root, "a\\b\\c.git").is_none());
         assert!(resolve_repo_path(&root, "C:/x.git").is_none());
     }
+
+    #[test]
+    fn resolve_repo_path_allows_ordinary_name_characters() {
+        let root = PathBuf::from("/data/repos");
+
+        // Dots, dashes and underscores in owner and repo names are fine —
+        // as long as no segment contains `..` as a traversal.
+        assert_eq!(
+            resolve_repo_path(&root, "alice.smith/my_repo-v2.git"),
+            Some(root.join("alice.smith").join("my_repo-v2.git"))
+        );
+        // A `..` anywhere inside a segment is refused, not just as a
+        // whole segment.
+        assert!(resolve_repo_path(&root, "a..b/c.git").is_none());
+    }
+
+    #[test]
+    fn parse_git_command_rejects_everything_but_the_two_git_verbs() {
+        // `git-upload-archive` would serve arbitrary trees — it must not
+        // slip through as "close enough" to upload-pack.
+        assert_eq!(parse_git_command("git-upload-archive 'a/b.git'"), None);
+        // A shell, an arbitrary command, or the space-separated verb form.
+        assert_eq!(parse_git_command("shell"), None);
+        assert_eq!(parse_git_command("rm -rf /"), None);
+        assert_eq!(parse_git_command("git upload-pack 'a/b.git'"), None);
+        // An empty path cannot name a repository.
+        assert_eq!(parse_git_command("git-upload-pack ''"), None);
+    }
+
+    #[test]
+    fn parse_git_command_tolerates_whitespace_around_the_path() {
+        assert_eq!(
+            parse_git_command("  git-receive-pack 'owner/repo.git'  \n"),
+            Some(("receive-pack", "owner/repo.git".to_string()))
+        );
+        // Unquoted paths with surrounding whitespace are trimmed.
+        assert_eq!(
+            parse_git_command("git-upload-pack   owner/repo.git  "),
+            Some(("upload-pack", "owner/repo.git".to_string()))
+        );
+    }
 }
