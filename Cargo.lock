@@ -1686,6 +1686,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gita-workflow"
+version = "0.0.1"
+dependencies = [
+ "globset",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+]
+
+[[package]]
 name = "gix"
 version = "0.89.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

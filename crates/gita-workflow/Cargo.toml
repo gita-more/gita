@@ -1,0 +1,17 @@
+[package]
+name = "gita-workflow"
+description = "GitHub-Actions-style workflow parser for gita's in-repo CI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+indexmap = { version = "2", features = ["serde"] }
+thiserror = { workspace = true }
+globset = "0.4"
+
+[lints]
+workspace = true

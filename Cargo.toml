@@ -12,6 +12,7 @@ members = [
     "crates/gita-server",
     "crates/gita-web",
     "crates/gita-runner",
+    "crates/gita-workflow",
     "crates/gita-ssh",
     "client",
     "integration/cli",
