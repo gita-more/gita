@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, type ReactNode, useState } from 'react'
+import { useEffect, type ReactNode, useState } from 'react'
 import {
   Link,
   Navigate,
@@ -21,119 +21,32 @@ import { RepoSettings } from './components/RepoSettings'
 import { Settings } from './components/Settings'
 import { useAuth } from './hooks/useAuth'
 import { useErrorTranslator, useI18n } from './i18n'
-import { api, type ResolvedPath } from './lib/api'
+import { api, type ResolvedPath, type Repository } from './lib/api'
 import { AppLayout, EmptyState } from './components/Layout'
 import { FolderIcon } from './components/Icons'
 
-/**
- * Lets page content override the sidebar variant for the *current* pathname.
- *
- * The default variant is URL-shaped (two segments = repo page), but a
- * two-segment URL can also be a subgroup path (/gita/tests) whose content is
- * a group detail page. The content knows which it is after its API checks,
- * so it reports back here; the override is keyed by pathname so it cannot
- * leak into a navigation to a different page.
- */
-const SidebarVariantContext = createContext<(o: { path: string; variant: 'global' | 'repo' }) => void>(
-  () => {},
-)
+// ---------------------------------------------------------------------------
+// RepoLayout: the shell for all repo-scoped routes (/owner/repo/*).
+// It resolves the repo once, provides breadcrumbs, and renders the outlet
+// (RepoDetail for tabs, RepoSettings for settings).
+// ---------------------------------------------------------------------------
 
-/** Page-level outlet wrapper. Adds topbar + sidebar; child route renders inside. */
-function Root({ children }: { children?: ReactNode } = {}) {
-  const location = useLocation()
-  const navigate = useNavigate()
-  // Routes that show the repository sidebar:
-  //   /:owner/:repo           → personal repo (owner = username)
-  //   /:group/:repo           → group repo (owner = group full_path)
-  //   /:owner                 → user profile or group detail
-  // All other top-level routes (/, /groups, /issues, /settings) use the global sidebar.
-  const segments = location.pathname.split('/').filter(Boolean)
-  // Two or more segments default to the repo sidebar; the page content can
-  // override that (see SidebarVariantContext) once it knows what the URL
-  // addresses. Static top-level pages never show the repo sidebar.
-  const isContentPath =
-    segments.length >= 2 && !['groups', 'issues', 'settings'].includes(segments[0])
-
-  const [sidebarOverride, setSidebarOverride] = useState<{ path: string; variant: 'global' | 'repo' } | null>(null)
-  // Only honour an override made for the URL we are currently on.
-  const variant =
-    sidebarOverride && sidebarOverride.path === location.pathname
-      ? sidebarOverride.variant
-      : isContentPath
-        ? 'repo'
-        : 'global'
-  // Hierarchical breadcrumb for any content path (repo or group alike).
-  const crumbs = isContentPath ? segments : undefined
-
-  return (
-    <SidebarVariantContext.Provider value={setSidebarOverride}>
-      <AppLayout
-        variant={variant}
-        crumbs={crumbs}
-        onGlobalNavigate={(target) => {
-          if (target === 'projects') navigate('/')
-          else if (target === 'groups') navigate('/groups')
-          else if (target === 'issues') navigate('/issues')
-        }}
-      >
-        {children ?? <Outlet />}
-      </AppLayout>
-    </SidebarVariantContext.Provider>
-  )
-}
-
-/** Declaratively pin the sidebar variant for the page rendering this component. */
-function SetSidebarVariant({ variant }: { variant: 'global' | 'repo' }) {
-  const setOverride = useContext(SidebarVariantContext)
-  const { pathname } = useLocation()
-  useEffect(() => {
-    setOverride({ path: pathname, variant })
-  }, [setOverride, pathname, variant])
-  return null
-}
-
-/** Wrap routes that require an authenticated user. */
-function Protected({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth()
-  const location = useLocation()
-  if (!user) {
-    return <Navigate to="/login" state={{ from: location.pathname }} replace />
-  }
-  return <>{children}</>
-}
-
-/**
- * One catch-all content page for every namespace path.
- *
- * A clean URL is ambiguous by shape — /gita/tests may be a personal repo
- * under a user, a repo in a group, or a subgroup path — so the server
- * resolves it once (GET /api/resolve, repository first, then group) and
- * this component renders whatever the answer says. The sidebar variant
- * follows the resolved kind, not the URL shape.
- */
-function PathPage() {
-  const { '*': rawPath = '' } = useParams()
-  const path = rawPath.replace(/\/+$/, '')
-  // Normalize: collapse any repeated `/settings` segments so
-  // `/owner/repo/settings/settings/...` becomes `/owner/repo/settings`.
-  const normPath = path.replace(/(^|\/)settings(\/settings)*$/, '/settings')
-  // `/owner/repo/settings` is the repository settings page: the repo path is
-  // everything before the trailing "settings" segment.
-  const isRepoSettings = normPath.endsWith('/settings')
-  const repoPath = isRepoSettings ? normPath.slice(0, -'/settings'.length) : normPath
+function RepoLayout() {
+  const { owner, repo } = useParams<{ owner: string; repo: string }>()
   const navigate = useNavigate()
   const translateError = useErrorTranslator()
   const [resolved, setResolved] = useState<ResolvedPath | null>(null)
   const [failed, setFailed] = useState('')
-  const [searchParams, setSearchParams] = useSearchParams()
-  const section = searchParams.get('section')
+  const { search } = useLocation()
 
   useEffect(() => {
+    if (!owner || !repo) return
     let cancelled = false
     setResolved(null)
     setFailed('')
+
     api
-      .resolvePath(repoPath)
+      .resolvePath(`${owner}/${repo}`)
       .then((r) => {
         if (!cancelled) setResolved(r)
       })
@@ -143,14 +56,22 @@ function PathPage() {
     return () => {
       cancelled = true
     }
-  }, [repoPath, translateError])
+  }, [owner, repo, translateError])
+
+  // Any repo-tab query means the user wants the repo detail page, not settings.
+  // Redirect to the repo root with that tab.
+  const tab = new URLSearchParams(search).get('tab')
+  const REPO_TABS = ['files', 'commits', 'prs', 'issues', 'pipelines', 'pages']
+  if (tab && REPO_TABS.includes(tab)) {
+    navigate(`/${owner}/${repo}?tab=${tab}`, { replace: true })
+    return null
+  }
 
   if (failed) {
     return <NotFound />
   }
 
   if (!resolved) {
-    // Root (the route layout) is already mounted above; do not nest another.
     return (
       <div
         className="auth-page"
@@ -161,45 +82,159 @@ function PathPage() {
     )
   }
 
-  if (resolved.kind === 'group') {
-    return (
-      <>
-        <SetSidebarVariant variant="global" />
-        <GroupDetail
-          group={resolved.full_path}
-          onOpenRepo={(owner, name) => navigate(`/${owner}/${name}`)}
-        />
-      </>
-    )
+  // Build breadcrumbs: ["", owner, repo]
+  const crumbs = ['', owner!, repo!]
+
+  return (
+    <AppLayout variant="repo" crumbs={crumbs}>
+      <Outlet />
+    </AppLayout>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// RepoContentLayout: wraps the repo detail tabs (files, commits, etc.).
+// ---------------------------------------------------------------------------
+
+function RepoContentLayout() {
+  const { owner, repo } = useParams<{ owner: string; repo: string }>()
+  const translateError = useErrorTranslator()
+  const [repoData, setRepoData] = useState<Repository | null>(null)
+  const [failed, setFailed] = useState('')
+
+  useEffect(() => {
+    if (!owner || !repo) return
+    let cancelled = false
+    api
+      .getRepo(owner, repo)
+      .then((r) => {
+        if (!cancelled) setRepoData(r)
+      })
+      .catch((err) => {
+        if (!cancelled) setFailed(translateError(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [owner, repo, translateError])
+
+  if (failed) {
+    return <NotFound />
   }
 
-  if (isRepoSettings) {
+  if (!repoData) {
     return (
-      <>
-        <SetSidebarVariant variant="repo" />
-        <RepoSettings
-          owner={resolved.owner}
-          name={resolved.name}
-          section={section}
-          onSectionChange={(next) => setSearchParams({ section: next }, { replace: true })}
-          onBack={() => navigate(`/${resolved.owner}/${resolved.name}`)}
-        />
-      </>
+      <div
+        className="auth-page"
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}
+      >
+        Loading...
+      </div>
     )
   }
 
   return (
     <>
-      <SetSidebarVariant variant="repo" />
       <RepoDetail
-        owner={resolved.owner}
-        name={resolved.name}
-        repoKind={resolved.owner_kind === 'group' ? 'group' : 'personal'}
-        groupName={resolved.owner_kind === 'group' ? resolved.owner : undefined}
-        onBack={() => navigate(resolved.owner_kind === 'group' ? `/${resolved.owner}` : '/')}
+        owner={owner!}
+        name={repo!}
+        repoData={repoData}
+        onBack={() => window.history.back()}
       />
     </>
   )
+}
+
+// ---------------------------------------------------------------------------
+// RepoSettingsLayout: wraps the repo settings page.
+// ---------------------------------------------------------------------------
+
+function RepoSettingsLayout() {
+  const { owner, repo } = useParams<{ owner: string; repo: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const translateError = useErrorTranslator()
+  const [repoData, setRepoData] = useState<Repository | null>(null)
+  const [failed, setFailed] = useState('')
+
+  useEffect(() => {
+    if (!owner || !repo) return
+    let cancelled = false
+    api
+      .getRepo(owner, repo)
+      .then((r) => {
+        if (!cancelled) setRepoData(r)
+      })
+      .catch((err) => {
+        if (!cancelled) setFailed(translateError(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [owner, repo, translateError])
+
+  if (failed) {
+    return <NotFound />
+  }
+
+  if (!repoData) {
+    return (
+      <div
+        className="auth-page"
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}
+      >
+        Loading...
+      </div>
+    )
+  }
+
+  const section = searchParams.get('section')
+
+  return (
+    <>
+      <RepoSettings
+        owner={owner!}
+        name={repo!}
+        section={section}
+        onSectionChange={(next) => setSearchParams({ section: next }, { replace: true })}
+        onBack={() => window.history.back()}
+      />
+    </>
+  )
+}
+
+/** Page-level outlet wrapper. Adds topbar + sidebar; child route renders inside. */
+function Root({ children }: { children?: ReactNode } = {}) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const segments = location.pathname.split('/').filter(Boolean)
+  const isContentPath =
+    segments.length >= 2 && !['groups', 'issues', 'settings'].includes(segments[0])
+  const variant = isContentPath ? 'repo' : 'global'
+  const crumbs = isContentPath ? segments : undefined
+
+  return (
+    <AppLayout
+      variant={variant}
+      crumbs={crumbs}
+      onGlobalNavigate={(target) => {
+        if (target === 'projects') navigate('/')
+        else if (target === 'groups') navigate('/groups')
+        else if (target === 'issues') navigate('/issues')
+      }}
+    >
+      {children ?? <Outlet />}
+    </AppLayout>
+  )
+}
+
+/** Wrap routes that require an authenticated user. */
+function Protected({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth()
+  const location = useLocation()
+  if (!user) {
+    return <Navigate to="/login" state={{ from: location.pathname }} replace />
+  }
+  return <>{children}</>
 }
 
 /** Settings page — no props; navigate from inside the page via Link/useNavigate. */
@@ -245,10 +280,6 @@ export default function App() {
     api.initialized().then(({ initialized }) => setInitialized(initialized)).catch(() => setInitialized(false))
   }, [])
 
-  useEffect(() => {
-    // No-op: the Protected wrapper handles it. Hook reserved for future use.
-  }, [])
-
   if (initialized === null) {
     return (
       <div className="auth-page" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#0d1117' }}>
@@ -282,12 +313,25 @@ export default function App() {
         <Route path="/groups" element={<Groups />} />
         <Route path="/issues" element={<Issues />} />
         <Route path="/settings" element={<SettingsRoute />} />
-        {/* One catch-all for every namespace path (personal repo, group
-            repo, nested-group repo, group detail): the server resolves the
-            URL's ambiguity once via /api/resolve. Unknown paths render the
-            404 page from inside PathPage. Static routes above outrank the
-            splat in React Router's ranking. */}
-        <Route path="/*" element={<PathPage />} />
+
+        {/* Group detail: /:group */}
+        <Route path="/:group" element={<GroupDetail />} />
+
+        {/* Repository routes: /:owner/:repo/* */}
+        <Route path="/:owner/:repo" element={<RepoLayout />}>
+          {/* Repo detail tabs: /:owner/:repo?tab=... */}
+          <Route index element={<RepoContentLayout />} />
+          <Route path=":tab(files|commits|prs|issues|pipelines|pages)" element={<RepoContentLayout />} />
+          {/* Repo settings: /:owner/:repo/settings[?section=...] */}
+          <Route path="settings" element={<RepoSettingsLayout />} />
+        </Route>
+
+        {/* Group repos: /:group/:repo/* */}
+        <Route path="/:group/:repo" element={<RepoLayout />}>
+          <Route index element={<RepoContentLayout />} />
+          <Route path=":tab(files|commits|prs|issues|pipelines|pages)" element={<RepoContentLayout />} />
+          <Route path="settings" element={<RepoSettingsLayout />} />
+        </Route>
       </Route>
     </Routes>
   )

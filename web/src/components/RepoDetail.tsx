@@ -49,12 +49,14 @@ export function RepoDetail({
   onBack,
   repoKind,
   groupName,
+  repoData,
 }: {
   owner: string
   name: string
   onBack: () => void
   repoKind?: 'personal' | 'group'
   groupName?: string
+  repoData?: Repository | null
 }) {
   const { t } = useI18n()
   const translateError = useErrorTranslator()
@@ -84,13 +86,13 @@ export function RepoDetail({
   const [tags, setTags] = useState<string[]>([])
   const [starred, setStarred] = useState(false)
   const [starCount, setStarCount] = useState(0)
-  // Repository data including clone URLs
-  const [repoData, setRepoData] = useState<Repository | null>(null)
+  // Repository data including clone URLs comes from props (repoData)
+  // const [repoData, setRepoData] = useState<Repository | null>(null)
 
   const loadRepo = useCallback(async () => {
     try {
-      const res = await api.getRepo(owner, name)
-      setRepoData(res)
+      await api.getRepo(owner, name)
+      // Prop repoData is passed from parent; we don't need local state here
     } catch (err) {
       setError(translateError(err))
     }
@@ -295,7 +297,7 @@ export function RepoDetail({
           name={name}
           repoKind={repoKind}
           groupName={groupName}
-          repoData={repoData}
+          repoData={repoData ?? null}
           rev={ref}
           branches={branches}
           tags={tags}
@@ -435,7 +437,7 @@ function FilesPanel({
           name={name}
           repoKind={repoKind}
           groupName={groupName}
-          repoData={repoData}
+          repoData={repoData ?? null}
         />
       </div>
 

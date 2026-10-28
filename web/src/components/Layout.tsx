@@ -1,5 +1,5 @@
 import { Fragment, useState, type ReactNode, useRef, useEffect } from 'react'
-import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import {
   AlertTriangleIcon,
   BookIcon,
@@ -259,17 +259,23 @@ export function Sidebar({
   const location = useLocation()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
+  const params = useParams<{ owner?: string; repo?: string; group?: string }>()
 
   // For the global sidebar, prefer the URL pathname over the deprecated
   // globalActive/onGlobalNavigate props (kept for backwards compatibility).
   const activeKey = (() => {
     if (variant !== 'global') return null
     const p = location.pathname
-    if (p === '/' ) return 'projects'
+    if (p === '/') return 'projects'
     if (p.startsWith('/groups')) return 'groups'
     if (p.startsWith('/issues')) return 'issues'
     return globalActive ?? null
   })()
+
+  // Derive the repo root from route params (owner/repo or group/repo).
+  const repoRoot = params.owner && params.repo
+    ? `/${params.owner}/${params.repo}`
+    : undefined
 
   return (
     <aside className="sidebar">
@@ -304,7 +310,9 @@ export function Sidebar({
             const currentTab = searchParams.get('tab') || 'files'
             // The settings page is its own route (/{owner}/{repo}/settings),
             // not a tab of the repository page.
-            const isSettingsRoute = location.pathname.endsWith('/settings')
+            const isSettingsRoute = repoRoot
+              ? location.pathname === `${repoRoot}/settings`
+              : location.pathname.endsWith('/settings')
             const isActive = active === item.key
               ? true
               : item.key === 'settings'
@@ -321,19 +329,15 @@ export function Sidebar({
                 className={`sidebar-link${isActive ? ' active' : ''}`}
                 onClick={() => {
                   if (item.key === 'settings') {
-                    // Absolute path: the settings page is a route of its own.
-                    // Don't append when already there — that would pile up
-                    // `/settings/settings/...` segments.
-                    if (!location.pathname.replace(/\/+$/, '').endsWith('/settings')) {
-                      navigate(`${location.pathname.replace(/\/+$/, '')}/settings`)
-                    }
+                    const base = repoRoot ?? location.pathname.replace(/\/+$/, '').replace(/\/settings$/, '')
+                    navigate(`${base}/settings`)
                     return
                   }
-                  // Repo tabs are owned by the URL (?tab=...); use the
-                  // absolute pathname to be robust against relative-search
-                  // resolution differences and replace so switching tabs
-                  // doesn't pollute history.
-                  navigate(`${location.pathname}?tab=${item.key}`, { replace: true })
+                  // Repo tabs are owned by the URL (?tab=...). Always use
+                  // repoRoot as the base so we never accidentally append to
+                  // /settings or any other sub-path.
+                  const base = repoRoot ?? location.pathname.replace(/\/+$/, '').replace(/\/settings$/, '')
+                  navigate(`${base}?tab=${item.key}`, { replace: true })
                 }}
                 title={t(item.labelKey)}
               >

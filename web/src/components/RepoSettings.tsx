@@ -316,7 +316,6 @@ export function RepoSettings({
                     <code>{cloneHttps}</code>
                     {cloneSsh && <code>{cloneSsh}</code>}
                   </div>
-                  <p className="settings-hint">{t('repoSettings.cloneUrlsHint')}</p>
                 </div>
               )}
 

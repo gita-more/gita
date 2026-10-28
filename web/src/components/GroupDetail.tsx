@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { api, type Group, type Repository } from '../lib/api'
 import { GroupTree, type GroupTreeChild } from './GroupTree'
 import {
@@ -10,16 +10,12 @@ import {
 import { FolderIcon, PlusIcon } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
 
-export function GroupDetail({
-  group,
-  onOpenRepo,
-}: {
-  group: string
-  onOpenRepo: (owner: string, name: string) => void
-}) {
+export function GroupDetail() {
   const { t } = useI18n()
   const translateError = useErrorTranslator()
   const navigate = useNavigate()
+  const params = useParams<{ group: string }>()
+  const group = params.group!
   const [groupInfo, setGroupInfo] = useState<Group | null>(null)
   const [repos, setRepos] = useState<Repository[]>([])
   const [subgroups, setSubgroups] = useState<Group[]>([])
@@ -67,7 +63,7 @@ export function GroupDetail({
       setRepoName('')
       setRepoDescription('')
       setRepoBranch('main')
-      onOpenRepo(repo.owner, repo.name)
+      navigate(`/${repo.owner}/${repo.name}`)
     } catch (err) {
       setRepoError(translateError(err))
     } finally {
@@ -229,7 +225,7 @@ export function GroupDetail({
             ]
           }}
           onOpenGroup={(path) => navigate(`/${path}`)}
-          onOpenRepo={onOpenRepo}
+          onOpenRepo={(owner, name) => navigate(`/${owner}/${name}`)}
         />
       )}
     </>
