@@ -99,6 +99,91 @@ jobs:
         run: npm run build
         working-directory: web
 
+  web-e2e:
+    name: Web E2E (Playwright)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: gita
+          POSTGRES_PASSWORD: gita
+          POSTGRES_DB: gita
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -h localhost -U gita -d gita"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git libdbus-1-dev pkg-config
+
+      - name: Build the frontend
+        # The server serves `web/dist` (found relative to the checkout),
+        # so it must exist before gita-server starts.
+        run: |
+          npm ci
+          npm run build
+        working-directory: web
+
+      - name: Build the server
+        run: cargo build -p gita-server
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: integration/web
+
+      - name: Start gita-server
+        run: |
+          cat > gita-e2e.toml <<'EOF'
+          [server]
+          host = "127.0.0.1"
+          port = 3100
+          data_dir = "e2e-data"
+          database_url = "postgres://gita:gita@localhost:55432/gita"
+          jwt_secret = "ci-e2e-secret"
+          EOF
+          ./target/debug/gita-server -c gita-e2e.toml &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3100/api/health > /dev/null 2>&1; then
+              echo "gita-server is ready"
+              exit 0
+            fi
+            echo "Waiting for gita-server (attempt $i)..."
+            sleep 1
+          done
+          echo "gita-server did not become ready in time"
+          exit 1
+
+      - name: Run Playwright tests
+        run: npx playwright test
+        working-directory: integration/web
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: integration/web/test-results/
+          retention-days: 7
+
   release-build:
     name: Release build
     runs-on: ubuntu-latest
