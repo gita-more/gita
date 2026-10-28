@@ -170,7 +170,7 @@ export function BranchSelector({
                 toggle(false)
                 // "View all branches/tags" opens the repository settings.
                 navigate(
-                  `/${owner}/${name}/settings?section=${tab === 'branches' ? 'branches' : 'tags'}`,
+                  `/${owner}/${name}/settings/${tab === 'branches' ? 'branches' : 'tags'}`,
                 )
               }}
             >

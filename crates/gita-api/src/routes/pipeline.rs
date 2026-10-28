@@ -231,10 +231,16 @@ async fn list_pipelines(
     // Find the repo + default branch.
     let repo_row =
         crate::routes::visibility::load_readable_repo(state, owner, repo, user.0.as_ref()).await?;
-    let head = state
-        .git
-        .head_sha(owner, repo, &repo_row.default_branch)
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // An empty repository has no branch refs yet — that means no pipelines,
+    // not an error (a 500 here broke the Pipelines tab for fresh repos).
+    let head = match state.git.head_sha(owner, repo, &repo_row.default_branch) {
+        Ok(sha) => sha,
+        Err(_) => {
+            return Ok(axum::Json(PipelinesResponse {
+                pipelines: Vec::new(),
+            }))
+        }
+    };
     let content = state
         .git
         // Argument order is (owner, name, reference, path) — the ref and

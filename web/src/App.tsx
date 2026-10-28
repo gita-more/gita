@@ -8,7 +8,6 @@ import {
   useLocation,
   useNavigate,
   useParams,
-  useSearchParams,
 } from 'react-router-dom'
 import { LoginPage } from './components/LoginPage'
 import { InitPage } from './components/InitPage'
@@ -21,34 +20,38 @@ import { RepoSettings } from './components/RepoSettings'
 import { Settings } from './components/Settings'
 import { useAuth } from './hooks/useAuth'
 import { useErrorTranslator, useI18n } from './i18n'
-import { api, type ResolvedPath, type Repository } from './lib/api'
+import { api, type Repository } from './lib/api'
 import { AppLayout, EmptyState } from './components/Layout'
 import { FolderIcon } from './components/Icons'
 
+/** Valid repo tab path segments (/owner/repo/:tab). */
+export const REPO_TABS = ['files', 'commits', 'prs', 'issues', 'pipelines', 'pages'] as const
+export type RepoTab = (typeof REPO_TABS)[number]
+
+/** Valid settings path sections (/owner/repo/settings/:section). */
+const SETTINGS_SECTIONS = ['general', 'branches', 'tags', 'pages'] as const
+
 // ---------------------------------------------------------------------------
-// RepoLayout: the shell for all repo-scoped routes (/owner/repo/*).
-// It resolves the repo once, provides breadcrumbs, and renders the outlet
-// (RepoDetail for tabs, RepoSettings for settings).
+// RepoLayout: chrome for all repo-scoped routes (/owner/repo/*).
+// Resolves the namespace once, renders AppLayout, children render in Outlet.
 // ---------------------------------------------------------------------------
 
 function RepoLayout() {
   const { owner, repo } = useParams<{ owner: string; repo: string }>()
-  const navigate = useNavigate()
   const translateError = useErrorTranslator()
-  const [resolved, setResolved] = useState<ResolvedPath | null>(null)
+  const [resolved, setResolved] = useState(false)
   const [failed, setFailed] = useState('')
-  const { search } = useLocation()
 
   useEffect(() => {
     if (!owner || !repo) return
     let cancelled = false
-    setResolved(null)
+    setResolved(false)
     setFailed('')
 
     api
       .resolvePath(`${owner}/${repo}`)
-      .then((r) => {
-        if (!cancelled) setResolved(r)
+      .then(() => {
+        if (!cancelled) setResolved(true)
       })
       .catch((err) => {
         if (!cancelled) setFailed(translateError(err))
@@ -57,47 +60,41 @@ function RepoLayout() {
       cancelled = true
     }
   }, [owner, repo, translateError])
-
-  // Any repo-tab query means the user wants the repo detail page, not settings.
-  // Redirect to the repo root with that tab.
-  const tab = new URLSearchParams(search).get('tab')
-  const REPO_TABS = ['files', 'commits', 'prs', 'issues', 'pipelines', 'pages']
-  if (tab && REPO_TABS.includes(tab)) {
-    navigate(`/${owner}/${repo}?tab=${tab}`, { replace: true })
-    return null
-  }
 
   if (failed) {
     return <NotFound />
   }
 
   if (!resolved) {
-    return (
-      <div
-        className="auth-page"
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}
-      >
-        Loading...
-      </div>
-    )
+    return <Loading />
   }
 
-  // Build breadcrumbs: ["", owner, repo]
-  const crumbs = ['', owner!, repo!]
-
   return (
-    <AppLayout variant="repo" crumbs={crumbs}>
+    <AppLayout variant="repo" crumbs={[owner!, repo!]}>
       <Outlet />
     </AppLayout>
   )
 }
 
+function Loading() {
+  return (
+    <div
+      className="auth-page"
+      style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}
+    >
+      Loading...
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
-// RepoContentLayout: wraps the repo detail tabs (files, commits, etc.).
+// RepoDetailPage: one of the repo tabs (files/commits/prs/issues/pipelines).
+// The index route passes tab = 'files'. Unknown tabs render 404.
 // ---------------------------------------------------------------------------
 
-function RepoContentLayout() {
-  const { owner, repo } = useParams<{ owner: string; repo: string }>()
+function RepoDetailPage() {
+  const { owner, repo, tab = 'files' } = useParams<{ owner: string; repo: string; tab: string }>()
+  const navigate = useNavigate()
   const translateError = useErrorTranslator()
   const [repoData, setRepoData] = useState<Repository | null>(null)
   const [failed, setFailed] = useState('')
@@ -105,6 +102,8 @@ function RepoContentLayout() {
   useEffect(() => {
     if (!owner || !repo) return
     let cancelled = false
+    setRepoData(null)
+    setFailed('')
     api
       .getRepo(owner, repo)
       .then((r) => {
@@ -118,40 +117,41 @@ function RepoContentLayout() {
     }
   }, [owner, repo, translateError])
 
+  if (!(REPO_TABS as readonly string[]).includes(tab)) {
+    return <NotFound />
+  }
+
   if (failed) {
     return <NotFound />
   }
 
   if (!repoData) {
-    return (
-      <div
-        className="auth-page"
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}
-      >
-        Loading...
-      </div>
-    )
+    return <Loading />
   }
 
   return (
-    <>
-      <RepoDetail
-        owner={owner!}
-        name={repo!}
-        repoData={repoData}
-        onBack={() => window.history.back()}
-      />
-    </>
+    <RepoDetail
+      owner={owner!}
+      name={repo!}
+      tab={tab as RepoTab}
+      repoData={repoData}
+      onBack={() => navigate('/')}
+    />
   )
 }
 
 // ---------------------------------------------------------------------------
-// RepoSettingsLayout: wraps the repo settings page.
+// RepoSettingsPage: the settings page (/owner/repo/settings[/section]).
+// Unknown sections render 404.
 // ---------------------------------------------------------------------------
 
-function RepoSettingsLayout() {
-  const { owner, repo } = useParams<{ owner: string; repo: string }>()
-  const [searchParams, setSearchParams] = useSearchParams()
+function RepoSettingsPage() {
+  const { owner, repo, section } = useParams<{
+    owner: string
+    repo: string
+    section: string
+  }>()
+  const navigate = useNavigate()
   const translateError = useErrorTranslator()
   const [repoData, setRepoData] = useState<Repository | null>(null)
   const [failed, setFailed] = useState('')
@@ -159,6 +159,8 @@ function RepoSettingsLayout() {
   useEffect(() => {
     if (!owner || !repo) return
     let cancelled = false
+    setRepoData(null)
+    setFailed('')
     api
       .getRepo(owner, repo)
       .then((r) => {
@@ -172,50 +174,58 @@ function RepoSettingsLayout() {
     }
   }, [owner, repo, translateError])
 
+  // /settings normalizes to /settings/general so the URL always reflects
+  // the active section. Must come after all hooks: React requires a stable
+  // hook count between renders of the same component instance.
+  if (!section) {
+    return <Navigate to={`/${owner}/${repo}/settings/general`} replace />
+  }
+
+  if (!(SETTINGS_SECTIONS as readonly string[]).includes(section)) {
+    return <NotFound />
+  }
+
   if (failed) {
     return <NotFound />
   }
 
   if (!repoData) {
-    return (
-      <div
-        className="auth-page"
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '200px' }}
-      >
-        Loading...
-      </div>
-    )
+    return <Loading />
   }
 
-  const section = searchParams.get('section')
-
   return (
-    <>
-      <RepoSettings
-        owner={owner!}
-        name={repo!}
-        section={section}
-        onSectionChange={(next) => setSearchParams({ section: next }, { replace: true })}
-        onBack={() => window.history.back()}
-      />
-    </>
+    <RepoSettings
+      owner={owner!}
+      name={repo!}
+      section={section}
+      onSectionChange={(next) => navigate(`/${owner}/${repo}/settings/${next}`)}
+      onBack={() => navigate(`/${owner}/${repo}`)}
+    />
   )
 }
 
-/** Page-level outlet wrapper. Adds topbar + sidebar; child route renders inside. */
+/** Page-level layout route for global pages only (/, /groups, /issues,
+ * /settings, and single-segment group paths like /gita). Repo routes
+ * (/owner/repo/*) skip this layout — RepoLayout provides its own AppLayout,
+ * so wrapping them here would render the chrome twice.
+ */
 function Root({ children }: { children?: ReactNode } = {}) {
   const location = useLocation()
   const navigate = useNavigate()
   const segments = location.pathname.split('/').filter(Boolean)
-  const isContentPath =
-    segments.length >= 2 && !['groups', 'issues', 'settings'].includes(segments[0])
-  const variant = isContentPath ? 'repo' : 'global'
-  const crumbs = isContentPath ? segments : undefined
+  // Global pages have at most one path segment; anything deeper is a repo
+  // (or repo sub-page) owned by RepoLayout.
+  const isGlobalPage = segments.length <= 1
+
+  if (!isGlobalPage) {
+    // Repo route: the nested RepoLayout renders the chrome. Pass through.
+    return <>{children ?? <Outlet />}</>
+  }
 
   return (
     <AppLayout
-      variant={variant}
-      crumbs={crumbs}
+      variant="global"
+      crumbs={segments.length > 0 ? segments : undefined}
       onGlobalNavigate={(target) => {
         if (target === 'projects') navigate('/')
         else if (target === 'groups') navigate('/groups')
@@ -314,23 +324,18 @@ export default function App() {
         <Route path="/issues" element={<Issues />} />
         <Route path="/settings" element={<SettingsRoute />} />
 
-        {/* Group detail: /:group */}
+        {/* Group detail: /:group (single segment) */}
         <Route path="/:group" element={<GroupDetail />} />
 
-        {/* Repository routes: /:owner/:repo/* */}
+        {/* Repository routes: /:owner/:repo/*. RepoLayout renders the
+            chrome (resolve + AppLayout); children render in its Outlet. */}
         <Route path="/:owner/:repo" element={<RepoLayout />}>
-          {/* Repo detail tabs: /:owner/:repo?tab=... */}
-          <Route index element={<RepoContentLayout />} />
-          <Route path=":tab(files|commits|prs|issues|pipelines|pages)" element={<RepoContentLayout />} />
-          {/* Repo settings: /:owner/:repo/settings[?section=...] */}
-          <Route path="settings" element={<RepoSettingsLayout />} />
-        </Route>
-
-        {/* Group repos: /:group/:repo/* */}
-        <Route path="/:group/:repo" element={<RepoLayout />}>
-          <Route index element={<RepoContentLayout />} />
-          <Route path=":tab(files|commits|prs|issues|pipelines|pages)" element={<RepoContentLayout />} />
-          <Route path="settings" element={<RepoSettingsLayout />} />
+          {/* Repo detail tabs as path segments; the index route is "files". */}
+          <Route index element={<RepoDetailPage />} />
+          <Route path=":tab" element={<RepoDetailPage />} />
+          {/* Repo settings: /owner/repo/settings[/section] */}
+          <Route path="settings" element={<RepoSettingsPage />} />
+          <Route path="settings/:section" element={<RepoSettingsPage />} />
         </Route>
       </Route>
     </Routes>

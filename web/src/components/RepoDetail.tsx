@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import {
   api,
   type Commit,
@@ -41,11 +41,11 @@ import { PipelinesPanel } from './PipelinesPanel'
 import { PagesPanel } from './PagesPanel'
 
 type Tab = 'files' | 'commits' | 'prs' | 'issues' | 'pipelines' | 'pages'
-const VALID_TABS: Tab[] = ['files', 'commits', 'prs', 'issues', 'pipelines', 'pages']
 
 export function RepoDetail({
   owner,
   name,
+  tab = 'files',
   onBack,
   repoKind,
   groupName,
@@ -53,6 +53,8 @@ export function RepoDetail({
 }: {
   owner: string
   name: string
+  /** Active tab — a URL path segment resolved by the router. */
+  tab?: Tab
   onBack: () => void
   repoKind?: 'personal' | 'group'
   groupName?: string
@@ -61,16 +63,6 @@ export function RepoDetail({
   const { t } = useI18n()
   const translateError = useErrorTranslator()
   const navigate = useNavigate()
-  // Tab is owned by the URL: ?tab=files|commits|prs|issues. Default "files".
-  // The Sidebar writes ?tab=<key> with replace=true; RepoDetail reads it back.
-  const [searchParams] = useSearchParams()
-  const tabFromUrl = searchParams.get('tab')
-  const tab: Tab = (VALID_TABS as string[]).includes(tabFromUrl ?? '')
-    ? (tabFromUrl as Tab)
-    : 'files'
-  // When the tab changes, ensure the file preview is cleared if we land on files.
-  // (Mounted on tab transition rather than via a setter; URL is the source of truth.)
-  void tab
 
   const [path, setPath] = useState('')
   const [ref, setRef] = useState('main')
@@ -273,7 +265,7 @@ export function RepoDetail({
             )}
             <button
               className="btn btn-ghost"
-              onClick={() => navigate(`/${owner}/${name}/settings?section=branches`)}
+              onClick={() => navigate(`/${owner}/${name}/settings/branches`)}
             >
               <GitBranchIcon size={14} />
               {t('repo.manageRefs')}
@@ -361,7 +353,7 @@ function FilesPanel({
   onSelectRef: (ref: string) => void
 }) {
   const { t } = useI18n()
-  const setSearchParams = useSearchParams()[1]
+  const navigate = useNavigate()
   const [filter, setFilter] = useState('')
   const parts = path.split('/').filter(Boolean)
 
@@ -396,7 +388,7 @@ function FilesPanel({
     tree.find((e) => e.kind === 'blob' && /^readme(\.(md|markdown|txt))?$/i.test(e.name)) ?? null
 
   function goCommits() {
-    setSearchParams({ tab: 'commits' })
+    navigate(`/${owner}/${name}/commits`)
   }
 
   return (

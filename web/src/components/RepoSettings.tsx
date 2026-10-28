@@ -22,7 +22,7 @@ function SectionIcon({ section }: { section: Section }) {
  * Repository settings page (`/{owner}/{repo}/settings`).
  *
  * Sections: general (name/description/visibility, danger zone), branches,
- * tags and Pages. The section is picked from `?section=` so links can deep
+ * tags and Pages. The section is a URL path segment (/settings/branches)
  * into one of them (e.g. "View all branches").
  */
 export function RepoSettings({
@@ -136,7 +136,7 @@ export function RepoSettings({
       setSaved(true)
       // A rename moves the repository: follow it to the new URL.
       if (res.name !== name) {
-        navigate(`/${owner}/${res.name}/settings?section=${active}`, { replace: true })
+        navigate(`/${owner}/${res.name}/settings/${active}`, { replace: true })
       }
     } catch (err) {
       setError(translateError(err))

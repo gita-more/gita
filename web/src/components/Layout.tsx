@@ -1,5 +1,5 @@
 import { Fragment, useState, type ReactNode, useRef, useEffect } from 'react'
-import { Link, useLocation, useNavigate, useSearchParams, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   AlertTriangleIcon,
   BookIcon,
@@ -258,8 +258,7 @@ export function Sidebar({
   const { t } = useI18n()
   const location = useLocation()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
-  const params = useParams<{ owner?: string; repo?: string; group?: string }>()
+  const params = useParams<{ owner?: string; repo?: string; group?: string; tab?: string }>()
 
   // For the global sidebar, prefer the URL pathname over the deprecated
   // globalActive/onGlobalNavigate props (kept for backwards compatibility).
@@ -305,39 +304,36 @@ export function Sidebar({
         {variant === 'repo' &&
           SIDEBAR_NAV.map((item) => {
             const Icon = item.icon
-            // Use ?tab= as the repo source-of-truth (RepoDetail reads it via
-            // useSearchParams). Sidebar reads the current value to highlight.
-            const currentTab = searchParams.get('tab') || 'files'
-            // The settings page is its own route (/{owner}/{repo}/settings),
-            // not a tab of the repository page.
+            // Tab is a URL path segment (/owner/repo/issues); the index
+            // route (no segment) is the "files" tab.
+            const currentTab = params.tab ?? 'files'
+            // The settings page is its own route subtree
+            // (/{owner}/{repo}/settings[/section]).
             const isSettingsRoute = repoRoot
-              ? location.pathname === `${repoRoot}/settings`
-              : location.pathname.endsWith('/settings')
+              ? location.pathname.startsWith(`${repoRoot}/settings`)
+              : false
             const isActive = active === item.key
               ? true
               : item.key === 'settings'
                 ? isSettingsRoute
-                : (item.key === 'files' && currentTab === 'files') ||
-                  (item.key === 'commits' && currentTab === 'commits') ||
-                  (item.key === 'prs' && currentTab === 'prs') ||
-                  (item.key === 'issues' && currentTab === 'issues') ||
-                  (item.key === 'pipelines' && currentTab === 'pipelines') ||
-                  (item.key === 'pages' && currentTab === 'pages')
+                : !isSettingsRoute && currentTab === item.key
             return (
               <button
                 key={item.key}
                 className={`sidebar-link${isActive ? ' active' : ''}`}
                 onClick={() => {
+                  // The repo sidebar only renders inside RepoLayout, so
+                  // repoRoot (from route params) is always defined.
+                  if (!repoRoot) return
                   if (item.key === 'settings') {
-                    const base = repoRoot ?? location.pathname.replace(/\/+$/, '').replace(/\/settings$/, '')
-                    navigate(`${base}/settings`)
+                    navigate(`${repoRoot}/settings`)
                     return
                   }
-                  // Repo tabs are owned by the URL (?tab=...). Always use
-                  // repoRoot as the base so we never accidentally append to
-                  // /settings or any other sub-path.
-                  const base = repoRoot ?? location.pathname.replace(/\/+$/, '').replace(/\/settings$/, '')
-                  navigate(`${base}?tab=${item.key}`, { replace: true })
+                  if (item.key === 'files') {
+                    navigate(repoRoot)
+                    return
+                  }
+                  navigate(`${repoRoot}/${item.key}`)
                 }}
                 title={t(item.labelKey)}
               >
