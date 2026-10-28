@@ -1599,6 +1599,7 @@ dependencies = [
  "gita-core",
  "gita-db",
  "gita-pipeline",
+ "gita-workflow",
  "serde",
  "serde_json",
  "serde_yaml",

@@ -34,5 +34,5 @@ pub use expand::expand;
 pub use parse::parse_workflow;
 pub use types::{
     Matrix, MatrixAxis, Permission, RunOn, Step, Trigger, TriggerEvent, Workflow, WorkflowError,
-    WorkflowJob, WorkflowSpec,
+    WorkflowJob, WorkflowJobInstance, WorkflowSpec,
 };

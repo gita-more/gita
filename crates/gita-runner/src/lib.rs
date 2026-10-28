@@ -10,6 +10,7 @@ pub mod claim;
 pub mod config;
 pub mod executor;
 pub mod registry;
+pub mod workflow_exec;
 pub mod workspace;
 
 use crate::claim::claim_one_run;

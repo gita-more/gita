@@ -19,6 +19,7 @@ sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono"] }
 gita-core = { path = "../gita-core" }
 gita-db = { path = "../gita-db" }
 gita-pipeline = { path = "../gita-pipeline" }
+gita-workflow = { path = "../gita-workflow" }
 
 [dev-dependencies]
 tempfile = "3"
