@@ -11,6 +11,7 @@ pub mod config;
 pub mod executor;
 pub mod registry;
 pub mod workflow_exec;
+pub mod workflow_pipeline;
 pub mod workspace;
 
 use crate::claim::claim_one_run;
