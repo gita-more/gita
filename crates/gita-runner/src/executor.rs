@@ -1,8 +1,9 @@
 //! Pipeline execution: clone, parse YAML, run jobs, collect logs.
 
+use crate::clone::{prepare_run_repo, resolve_repo_owner_name, CloneOutcome};
 use crate::config::RunnerConfig;
 use crate::registry::JobRegistry;
-use crate::workspace::{clone_url, job_work_dir, run_work_dir};
+use crate::workspace::{job_work_dir, run_work_dir};
 use anyhow::Context;
 use chrono::Utc;
 use gita_db::{Db, PipelineRunRow};
@@ -37,142 +38,17 @@ pub async fn execute_pipeline(
         .await
         .with_context(|| format!("create work dir {}", work_dir.display()))?;
 
-    // Clone the repo (owner is the repo's owner from repo_id; the run
-    // row stores ref + head_sha but not owner/name — resolve them).
-    // We read owner/repo from the DB via repo_id.
-    let (owner, repo_name) = match get_repo_owner_name(db, run).await? {
-        Some(v) => v,
-        None => {
-            // Repo was deleted while the run was queued — fail the run.
+    // Prepare the checkout. The clone/checkout logic is shared with the
+    // workflow executor so both paths check out exactly the commit the
+    // run names.
+    let repo_dir = match prepare_run_repo(db, config, run).await? {
+        CloneOutcome::Ready(dir) => dir,
+        CloneOutcome::Failed(reason) => {
+            tracing::warn!("pipeline checkout failed: {reason}");
             db.update_pipeline_run_status(run.id, "failed").await?;
             return Ok(());
         }
     };
-
-    let repo_dir = work_dir.join("repo");
-    let url = clone_url(config, &owner, &repo_name);
-
-    // If the repo is already present (e.g. a prior run left it, or an
-    // integration test pre-cloned it), skip the network clone.
-    if !repo_dir.join(".git").exists() {
-        // The run stores the full ref (`refs/heads/main`), but `git clone
-        // --branch` wants a short branch name — it does not strip the
-        // prefix, and `refs/heads/main` fails with "Remote branch not
-        // found". Clone by short name, then check out the exact commit the
-        // run was created for, so a run tests what it says it tests even
-        // if the branch has moved on since.
-        let short_branch = run
-            .ref_name
-            .strip_prefix("refs/heads/")
-            .unwrap_or(&run.ref_name);
-        // Pipe the child's output rather than inheriting it: a clone that
-        // fails should have its error surfaced in the log, not swallowed
-        // into the runner's own stdout.
-        let clone_output = Command::new("git")
-            .arg("clone")
-            .arg("--depth")
-            .arg("1")
-            .arg("--branch")
-            .arg(&short_branch)
-            .arg(&url)
-            .arg(&repo_dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("git clone")?;
-
-        if !clone_output.status.success() {
-            // Branch may not exist anymore or ref is deleted; mark run failed.
-            db.update_pipeline_run_status(run.id, "failed").await?;
-            return Ok(());
-        }
-
-        // Check out the exact commit the run was created for. The clone
-        // fetched the branch tip, which may have moved on since the run was
-        // queued — the run would then execute a different commit than the
-        // one it reports. A shallow clone may not contain the SHA at all,
-        // so fetch it explicitly first.
-        if !run.head_sha.is_empty() {
-            // Fetch the exact commit. A shallow clone only contains the
-            // branch tip, so the commit the run was created for has to be
-            // fetched explicitly — and the fetch also deepens the history
-            // enough for `checkout --detach` to succeed (checking out a
-            // commit whose parent is missing fails even though the commit
-            // object itself is present).
-            //
-            // A non-shallow clone (e.g. from a `file://` remote, where
-            // git ignores `--depth`) already has the commit; the fetch
-            // then fails harmlessly, which is why the result is not
-            // treated as fatal on its own.
-            let fetch_status = Command::new("git")
-                .arg("-C")
-                .arg(&repo_dir)
-                .arg("fetch")
-                .arg("--depth")
-                .arg("1")
-                .arg("origin")
-                .arg(&run.head_sha)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .status()
-                .await
-                .context("git fetch")?;
-            let have_commit = Command::new("git")
-                .arg("-C")
-                .arg(&repo_dir)
-                .arg("cat-file")
-                .arg("-e")
-                .arg(&format!("{}^{{commit}}", run.head_sha))
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .status()
-                .await
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if fetch_status.success() || have_commit {
-                let co = Command::new("git")
-                    .arg("-C")
-                    .arg(&repo_dir)
-                    .arg("checkout")
-                    .arg("--detach")
-                    .arg(&run.head_sha)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .output()
-                    .await
-                    .context("git checkout")?;
-                let checkout_status = co.status;
-                if !checkout_status.success() {}
-                if !checkout_status.success() {
-                    // The run records `head_sha`, but the working tree is
-                    // not at that commit. Running anyway would make the
-                    // run report one commit while executing another.
-                    tracing::warn!(
-                        "checkout of {} failed; failing the run rather than                          executing a different commit",
-                        run.head_sha
-                    );
-                    db.update_pipeline_run_status(run.id, "failed").await?;
-                    return Ok(());
-                }
-            } else {
-                // The commit is no longer reachable (force-pushed away).
-                // Falling back to the branch tip would make the run report
-                // `head_sha` while executing something else — fail the run
-                // instead so the mismatch is visible.
-                tracing::warn!(
-                    "fetch of {} failed; failing the run rather than                      executing the branch tip instead",
-                    run.head_sha
-                );
-                db.update_pipeline_run_status(run.id, "failed").await?;
-                return Ok(());
-            }
-        }
-    }
 
     // Read .gita-ci.yml at the clone.
     let yaml_path = repo_dir.join(".gita-ci.yml");
@@ -271,7 +147,7 @@ async fn run_job(
 
     // The repository's owner/name, for the job's environment. The run row
     // carries only `repo_id`.
-    let repo_label = match get_repo_owner_name(db, run).await? {
+    let repo_label = match resolve_repo_owner_name(db, run).await? {
         Some((owner, repo_name)) => format!("{owner}/{repo_name}"),
         None => String::new(),
     };
@@ -567,14 +443,4 @@ async fn make_job_worktree(
         return None;
     }
     Some(job_dir.to_path_buf())
-}
-
-/// Resolve (owner, repo) for a run from the repositories table.
-async fn get_repo_owner_name(
-    db: &Db,
-    run: &PipelineRunRow,
-) -> anyhow::Result<Option<(String, String)>> {
-    // The repositories table has owner_name + name; fetch by repo_id.
-    let repo = db.get_repository(run.repo_id).await?;
-    Ok(repo.map(|r| (r.owner_name, r.name)))
 }

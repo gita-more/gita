@@ -27,10 +27,12 @@
 //! expansion can be unit-tested without a server or database.
 
 pub mod expand;
+pub mod expression;
 pub mod parse;
 pub mod types;
 
 pub use expand::expand;
+pub use expression::{evaluate, EvalContext, Evaluated};
 pub use parse::parse_workflow;
 pub use types::{
     Matrix, MatrixAxis, Permission, RunOn, Step, Trigger, TriggerEvent, Workflow, WorkflowError,

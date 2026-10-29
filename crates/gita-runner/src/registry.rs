@@ -64,7 +64,7 @@ impl JobRegistry {
             return 0;
         };
         let mut killed = 0;
-        for (_, h) in map.iter_mut() {
+        for h in map.values_mut() {
             if h.child.start_kill().is_ok() {
                 killed += 1;
             }

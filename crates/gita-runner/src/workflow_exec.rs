@@ -127,6 +127,15 @@ pub async fn execute_workflow_job(
             step_env.insert(k.clone(), v.clone());
         }
 
+        // Substitute `${{ ... }}` expressions before the command reaches
+        // the shell. A raw `${{ matrix.os }}` is a syntax error in bash,
+        // so a matrix job would fail on its first step without this.
+        let eval_ctx = gita_workflow::EvalContext {
+            matrix: job_instance.matrix.clone(),
+            env: step_env.clone(),
+        };
+        let run_cmd = gita_workflow::evaluate(&run_cmd, &eval_ctx);
+
         // Resolve working directory.
         let cwd = match &step.working_directory {
             Some(rel) => repo_dir.join(rel),
@@ -430,5 +439,45 @@ mod tests {
         let res = execute_workflow_job(&job, dir.path(), 1, &registry, sink.clone()).await;
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("not implemented"));
+    }
+
+    /// A matrix value reaches the step as a substituted value, not as the
+    /// literal `${{ matrix.os }}` — which bash would reject as a syntax
+    /// error.
+    #[tokio::test]
+    async fn matrix_expressions_are_substituted_before_the_shell_sees_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = JobRegistry::new();
+        let sink_inner = Arc::new(VecLogSink::default());
+        let sink: Arc<dyn LogSink> = sink_inner.clone();
+
+        let mut job = make_job(vec![step("echo running-on-${{ matrix.os }}")]);
+        job.matrix = BTreeMap::from_iter([(
+            "os".to_string(),
+            serde_json::Value::String("ubuntu".to_string()),
+        )]);
+
+        let res = execute_workflow_job(&job, dir.path(), 1, &registry, sink.clone())
+            .await
+            .unwrap();
+        assert!(
+            res.success,
+            "the step should not fail on an unresolved expression"
+        );
+
+        let lines = sink_inner.0.lock().unwrap();
+        let text: String = lines
+            .iter()
+            .filter(|(_, _, s, _)| s == "stdout")
+            .map(|(_, _, _, l)| l.as_str())
+            .collect();
+        assert!(
+            text.contains("running-on-ubuntu"),
+            "the matrix value should be substituted; output: {text}"
+        );
+        assert!(
+            !text.contains("${{"),
+            "no expression should survive into the shell; output: {text}"
+        );
     }
 }

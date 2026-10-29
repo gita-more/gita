@@ -6,7 +6,6 @@ use std::path::PathBuf;
 /// Layout:
 ///   <work_dir>/ci-work/<run_id>/repo/        # bare clone of the repo at head_sha
 ///   <work_dir>/ci-work/<run_id>/<job_name>/  # per-job workspace (copy of repo)
-
 pub fn run_work_dir(config: &RunnerConfig, run_id: i64) -> PathBuf {
     config.work_dir.join("ci-work").join(run_id.to_string())
 }
