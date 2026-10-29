@@ -16,7 +16,7 @@ use axum::http::{Method, StatusCode};
 use common::{register_user, request, test_app};
 
 /// 创建群组
-async fn create_group(app: &gita_server::App, owner_token: &str, name: &str) {
+async fn create_group(app: &gita_admin::App, owner_token: &str, name: &str) {
     let (status, body) = request(
         app,
         Method::POST,
@@ -29,7 +29,7 @@ async fn create_group(app: &gita_server::App, owner_token: &str, name: &str) {
 }
 
 /// 创建子群组
-async fn create_subgroup(app: &gita_server::App, parent: &str, owner_token: &str, name: &str) {
+async fn create_subgroup(app: &gita_admin::App, parent: &str, owner_token: &str, name: &str) {
     let (status, body) = request(
         app,
         Method::POST,
@@ -43,7 +43,7 @@ async fn create_subgroup(app: &gita_server::App, parent: &str, owner_token: &str
 
 /// 在群组下创建仓库
 async fn create_group_repo(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     group: &str,
     token: &str,
     name: &str,
@@ -70,27 +70,27 @@ async fn create_group_repo(
 }
 
 /// 获取群组详情
-async fn get_group(app: &gita_server::App, path: &str, token: Option<&str>) -> (StatusCode, serde_json::Value) {
+async fn get_group(app: &gita_admin::App, path: &str, token: Option<&str>) -> (StatusCode, serde_json::Value) {
     request(app, Method::GET, &format!("/api/groups/{path}"), None, token).await
 }
 
 /// 获取仓库详情（新的 REST 路径）
-async fn get_repo(app: &gita_server::App, owner: &str, name: &str, token: Option<&str>) -> (StatusCode, serde_json::Value) {
+async fn get_repo(app: &gita_admin::App, owner: &str, name: &str, token: Option<&str>) -> (StatusCode, serde_json::Value) {
     request(app, Method::GET, &format!("/api/repos/{owner}/{name}"), None, token).await
 }
 
 /// 列出群组仓库
-async fn list_group_repos(app: &gita_server::App, path: &str, token: Option<&str>) -> (StatusCode, serde_json::Value) {
+async fn list_group_repos(app: &gita_admin::App, path: &str, token: Option<&str>) -> (StatusCode, serde_json::Value) {
     request(app, Method::GET, &format!("/api/groups/{path}/repos"), None, token).await
 }
 
 /// 列出子群组
-async fn list_subgroups(app: &gita_server::App, path: &str, token: Option<&str>) -> (StatusCode, serde_json::Value) {
+async fn list_subgroups(app: &gita_admin::App, path: &str, token: Option<&str>) -> (StatusCode, serde_json::Value) {
     request(app, Method::GET, &format!("/api/groups/{path}/subgroups"), None, token).await
 }
 
 /// 创建用户个人仓库
-async fn create_user_repo(app: &gita_server::App, token: &str, name: &str, is_private: bool) {
+async fn create_user_repo(app: &gita_admin::App, token: &str, name: &str, is_private: bool) {
     let (status, body) = request(
         app,
         Method::POST,
@@ -435,7 +435,7 @@ async fn create_group_with_parent_path() {
 // ---------------------------------------------------------------------------
 
 async fn resolve_path(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     path: &str,
     token: Option<&str>,
 ) -> (StatusCode, serde_json::Value) {
@@ -584,7 +584,7 @@ async fn repo_cannot_shadow_subgroup_name_in_same_namespace() {
 
 /// create_subgroup that returns the raw status (the shared helper asserts OK).
 async fn create_subgroup_raw(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     parent: &str,
     owner_token: &str,
     name: &str,

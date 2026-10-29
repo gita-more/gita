@@ -1,6 +1,6 @@
 //! Shared helpers for API integration tests.
 //!
-//! `test_app()` boots a real `gita_server::App` against a Postgres
+//! `test_app()` boots a real `gita_admin::App` against a Postgres
 //! instance and returns the app plus a teardown guard. Tests should bind
 //! the guard (e.g. `let _guard = guard;`) so cleanup fires at end of scope.
 //!
@@ -16,7 +16,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use gita_server::Config;
+use gita_admin::Config;
 use gita_db::Db;
 
 /// Database URL for integration tests. Override via `GITA_TEST_DATABASE_URL`.
@@ -72,7 +72,7 @@ impl Drop for TestAppGuard {
 }
 
 /// Build a fresh `App` with an isolated per-test Postgres schema.
-pub async fn test_app() -> (gita_server::App, TestAppGuard) {
+pub async fn test_app() -> (gita_admin::App, TestAppGuard) {
     let tmp = tempfile::TempDir::new().unwrap();
     let schema = format!(
         "gita_it_{}_{}",
@@ -98,7 +98,7 @@ pub async fn test_app() -> (gita_server::App, TestAppGuard) {
     config.server.database_url = base_url.clone();
     config.server.database_schema = Some(schema.clone());
 
-    let app = gita_server::App::build(config).await.unwrap();
+    let app = gita_admin::App::build(config).await.unwrap();
 
     let guard = TestAppGuard {
         base_url,
@@ -110,7 +110,7 @@ pub async fn test_app() -> (gita_server::App, TestAppGuard) {
 
 /// Like [`test_app`], but with `allow_insecure_password_reset` enabled so
 /// the password-reset response carries the token.
-pub async fn test_app_with_insecure_password_reset() -> (gita_server::App, TestAppGuard) {
+pub async fn test_app_with_insecure_password_reset() -> (gita_admin::App, TestAppGuard) {
     let tmp = tempfile::TempDir::new().unwrap();
     let schema = format!(
         "gita_it_{}_{}",
@@ -137,7 +137,7 @@ pub async fn test_app_with_insecure_password_reset() -> (gita_server::App, TestA
     config.server.database_schema = Some(schema.clone());
     config.server.allow_insecure_password_reset = true;
 
-    let app = gita_server::App::build(config).await.unwrap();
+    let app = gita_admin::App::build(config).await.unwrap();
 
     let guard = TestAppGuard {
         base_url,
@@ -154,7 +154,7 @@ pub struct AuthedUser {
 }
 
 /// Register a user via the App's HTTP layer and return a bearer token.
-pub async fn register_user(app: &gita_server::App, username: &str) -> AuthedUser {
+pub async fn register_user(app: &gita_admin::App, username: &str) -> AuthedUser {
     use tower::ServiceExt;
     let body = serde_json::json!({
         "username": username,
@@ -186,7 +186,7 @@ pub async fn register_user(app: &gita_server::App, username: &str) -> AuthedUser
 /// Create a repository for an authenticated user and return its `owner/name`.
 ///
 /// Optional parameters: `description`, `default_branch`, `is_private`.
-pub async fn create_repo(app: &gita_server::App, token: &str, name: &str) -> String {
+pub async fn create_repo(app: &gita_admin::App, token: &str, name: &str) -> String {
     create_repo_with(app, token, name, None).await
 }
 
@@ -194,7 +194,7 @@ pub async fn create_repo(app: &gita_server::App, token: &str, name: &str) -> Str
 ///
 /// The options may carry `description`, `default_branch` and `is_private`.
 pub async fn create_repo_with(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     token: &str,
     name: &str,
     opts: Option<serde_json::Value>,
@@ -242,7 +242,7 @@ pub async fn create_repo_with(
 ///
 /// Creates an isolated work tree under `data_dir/.work-<rand>`, commits a
 /// README + an extra file, then pushes to origin/main.
-pub fn push_initial_commit(app: &gita_server::App, owner: &str, name: &str) {
+pub fn push_initial_commit(app: &gita_admin::App, owner: &str, name: &str) {
     let bare = app
         .data_dir
         .join("repos")
@@ -318,7 +318,7 @@ pub async fn cleanup_test_schemas() {
 /// Helper used by individual test files to issue an HTTP request via the
 /// App's router. Returns `(status_code, json_value)`.
 pub async fn request(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     method: axum::http::Method,
     uri: &str,
     body: Option<serde_json::Value>,
@@ -349,7 +349,7 @@ pub async fn request(
 /// responses, which are HTML/binary and would be silently nulled by
 /// `request`'s JSON parsing.
 pub async fn request_bytes(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     method: axum::http::Method,
     uri: &str,
     token: Option<&str>,
@@ -373,7 +373,7 @@ pub async fn request_bytes(
 /// Unlike `push_initial_commit`, this supports nested paths and binary
 /// content, and leaves `push_initial_commit` untouched for the other suites.
 pub fn push_files(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     owner: &str,
     name: &str,
     files: &[(&str, &[u8])],
@@ -451,7 +451,7 @@ pub fn push_files(
 
 /// Configure Pages for a repository via the API and return the response.
 pub async fn set_pages(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     token: &str,
     owner: &str,
     name: &str,
@@ -496,7 +496,7 @@ pub fn generate_client_key(dir: &Path) -> (std::path::PathBuf, String) {
 }
 
 /// Start the embedded SSH server for an App and return its port.
-pub async fn start_ssh(app: &gita_server::App) -> u16 {
+pub async fn start_ssh(app: &gita_admin::App) -> u16 {
     let host_key_path = app.data_dir.join("ssh_host_ed25519_key");
     let host_key = gita_ssh::load_or_create_host_key(&host_key_path).unwrap();
     let cfg = gita_ssh::SshServerConfig {
@@ -514,7 +514,7 @@ pub async fn start_ssh(app: &gita_server::App) -> u16 {
 // CI pipeline helpers
 // ---------------------------------------------------------------------------
 
-pub fn push_ci_yml(app: &gita_server::App, owner: &str, name: &str, yaml: &str) {
+pub fn push_ci_yml(app: &gita_admin::App, owner: &str, name: &str, yaml: &str) {
     let bare = app
         .data_dir
         .join("repos")

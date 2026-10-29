@@ -1,6 +1,6 @@
 //! End-to-end integration tests for the `gita` CLI client.
 //!
-//! Boots a real `gita_server::App` against Postgres, starts it on an
+//! Boots a real `gita_admin::App` against Postgres, starts it on an
 //! ephemeral port, then drives the `target/debug/gita` binary via
 //! `assert_cmd`. Authentication is injected through the `GITA_TOKEN`
 //! environment variable so the OS keyring is never touched in CI.
@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use assert_cmd::Command as AssertCmd;
-use gita_server::Config;
+use gita_admin::Config;
 use sqlx::PgPool;
 pub use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -176,9 +176,9 @@ impl Server {
     }
 }
 
-/// Boot a real `gita_server::App` with an isolated Postgres schema.
+/// Boot a real `gita_admin::App` with an isolated Postgres schema.
 pub async fn test_app(
-) -> Result<(gita_server::App, TestAppGuard), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(gita_admin::App, TestAppGuard), Box<dyn std::error::Error + Send + Sync>> {
     let tmp = TempDir::new()?;
     let schema = format!(
         "gita_it_{}_{}",
@@ -201,7 +201,7 @@ pub async fn test_app(
     config.server.database_url = base_url.clone();
     config.server.database_schema = Some(schema.clone());
     config.server.allow_insecure_password_reset = true;
-    let app = gita_server::App::build(config).await?;
+    let app = gita_admin::App::build(config).await?;
     let guard = TestAppGuard {
         _base_url: base_url,
         _schema: schema,

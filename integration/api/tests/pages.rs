@@ -1,6 +1,6 @@
 //! End-to-end tests for GitHub-Pages-style static site serving.
 //!
-//! These boot a real `gita_server::App` (real Postgres schema, real bare
+//! These boot a real `gita_admin::App` (real Postgres schema, real bare
 //! repos) and exercise the whole path: configure Pages via the API, push
 //! real files, then fetch them over HTTP.
 //!
@@ -11,7 +11,7 @@
 //! (empty 404 body) directly instead.
 
 use axum::http::{Method, StatusCode};
-use gita_server::App;
+use gita_admin::App;
 
 mod common;
 use common::*;

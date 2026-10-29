@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-gita-server = { path = "../../crates/gita-server" }
+gita-admin = { path = "../../crates/gita-admin" }
 
 [dev-dependencies]
 assert_cmd = "2"

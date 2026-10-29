@@ -16,7 +16,7 @@ use common::{create_repo, register_user, request, test_app};
 /// needs hundreds of rows, and 205 HTTP round trips would dominate the
 /// suite's runtime. One issue still goes through the HTTP API, so the
 /// row shape the endpoint writes is what the list reads.
-async fn create_issues(app: &gita_server::App, token: &str, owner: &str, name: &str, count: usize) {
+async fn create_issues(app: &gita_admin::App, token: &str, owner: &str, name: &str, count: usize) {
     let (status, body) = request(
         app,
         Method::POST,

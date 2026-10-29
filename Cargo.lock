@@ -1384,6 +1384,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "gita"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "gita-client",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
+name = "gita-admin"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "dotenvy",
+ "gita-api",
+ "gita-ci",
+ "gita-client",
+ "gita-core",
+ "gita-db",
+ "gita-events",
+ "gita-git",
+ "gita-http",
+ "gita-push",
+ "gita-runner",
+ "gita-ssh",
+ "gita-web",
+ "gita-workflow",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "gita-api"
 version = "0.0.1"
 dependencies = [
@@ -1417,14 +1472,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "gita-ci"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "gita-api",
+ "gita-core",
+ "gita-db",
+ "gita-workflow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+]
+
+[[package]]
+name = "gita-ci-agent"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "gita-workflow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "gita-client"
 version = "0.0.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
- "clap",
- "dotenvy",
  "keyring",
  "reqwest",
  "serde",
@@ -1527,11 +1612,11 @@ dependencies = [
  "axum",
  "chrono",
  "futures-util",
+ "gita-admin",
  "gita-api",
  "gita-core",
  "gita-db",
  "gita-runner",
- "gita-server",
  "gita-ssh",
  "http-body-util",
  "rand 0.8.8",
@@ -1550,7 +1635,7 @@ dependencies = [
  "assert_cmd",
  "axum",
  "clap",
- "gita-server",
+ "gita-admin",
  "keyring",
  "predicates",
  "rand 0.8.8",
@@ -1578,11 +1663,13 @@ dependencies = [
 name = "gita-push"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "gita-core",
  "gita-db",
  "gita-events",
  "gita-git",
  "gita-pipeline",
+ "gita-workflow",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1606,40 +1693,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "gita-server"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "dotenvy",
- "gita-api",
- "gita-core",
- "gita-db",
- "gita-events",
- "gita-git",
- "gita-http",
- "gita-ssh",
- "gita-web",
- "hex",
- "hmac 0.12.1",
- "rand 0.8.8",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "tower",
- "tower-http",
  "tracing",
  "tracing-subscriber",
 ]

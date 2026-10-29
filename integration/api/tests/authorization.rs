@@ -21,7 +21,7 @@ use axum::http::StatusCode;
 use common::{create_repo, push_initial_commit, register_user, request, test_app};
 
 /// Create a private repository owned by `owner` and return its full name.
-async fn private_repo(app: &gita_server::App, _owner: &str, token: &str, name: &str) -> String {
+async fn private_repo(app: &gita_admin::App, _owner: &str, token: &str, name: &str) -> String {
     use tower::ServiceExt;
     let body = serde_json::json!({
         "name": name,

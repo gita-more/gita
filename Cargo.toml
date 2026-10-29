@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/gita",
+    "crates/gita-admin",
+    "crates/gita-client",
     "crates/gita-core",
     "crates/gita-db",
     "crates/gita-pipeline",
@@ -9,12 +12,12 @@ members = [
     "crates/gita-events",
     "crates/gita-http",
     "crates/gita-api",
-    "crates/gita-server",
     "crates/gita-web",
     "crates/gita-runner",
-    "crates/gita-workflow",
     "crates/gita-ssh",
-    "client",
+    "crates/gita-ci",
+    "crates/gita-workflow",
+    "crates/gita-ci-agent",
     "integration/cli",
     "integration/api",
 ]
@@ -74,8 +77,9 @@ sha2 = "0.10"
 # cli
 # `keyring` uses platform-specific backends (Linux Secret Service, macOS
 # Keychain, Windows Credential Manager). The workspace dep keeps
-# default-features off and no backend enabled; `client/Cargo.toml` selects
-# the backend per target so cross-compilation for release matrices works.
+# default-features off and no backend enabled; `crates/gita-client/Cargo.toml`
+# selects the backend per target so cross-compilation for release matrices
+# works.
 keyring = { version = "3", default-features = false }
 url = "2.5"
 

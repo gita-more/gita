@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-gita-server = { path = "../../crates/gita-server" }
+gita-admin = { path = "../../crates/gita-admin" }
 gita-api = { path = "../../crates/gita-api" }
 gita-db = { path = "../../crates/gita-db" }
 gita-core = { path = "../../crates/gita-core" }

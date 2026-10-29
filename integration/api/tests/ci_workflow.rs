@@ -15,7 +15,7 @@ use std::process::Command;
 use common::push_files;
 
 /// A runner config rooted in a unique temp directory.
-fn runner_config(app: &gita_server::App, tag: &str) -> RunnerConfig {
+fn runner_config(app: &gita_admin::App, tag: &str) -> RunnerConfig {
     RunnerConfig {
         server_db_url: common::test_db_url(),
         server_base_url: format!("file://{}", app.data_dir.join("repos").display()),
@@ -41,7 +41,7 @@ fn runner_config(app: &gita_server::App, tag: &str) -> RunnerConfig {
 ///
 /// Returns the run id.
 async fn run_workflow(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     owner: &str,
     repo: &str,
     workflow_path: &str,
@@ -453,7 +453,7 @@ jobs:
 /// writes straight into the bare repository would never exercise the
 /// workflow discovery this file is about.
 async fn http_push(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     owner: &str,
     repo: &str,
     token: &str,

@@ -33,7 +33,7 @@ fn generate_client_key(dir: &Path) -> (std::path::PathBuf, String) {
 }
 
 /// Start the embedded SSH server for an App and return its port.
-async fn start_ssh(app: &gita_server::App) -> u16 {
+async fn start_ssh(app: &gita_admin::App) -> u16 {
     let host_key_path = app.data_dir.join("ssh_host_ed25519_key");
     let host_key = gita_ssh::load_or_create_host_key(&host_key_path).unwrap();
     let cfg = gita_ssh::SshServerConfig {

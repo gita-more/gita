@@ -21,7 +21,7 @@ use axum::http::{Method, StatusCode};
 use common::{register_user, request, test_app};
 
 /// Create a group owned by `owner` and return its name.
-async fn create_group(app: &gita_server::App, _owner: &str, token: &str, name: &str) {
+async fn create_group(app: &gita_admin::App, _owner: &str, token: &str, name: &str) {
     let (status, body) = request(
         app,
         Method::POST,
@@ -35,7 +35,7 @@ async fn create_group(app: &gita_server::App, _owner: &str, token: &str, name: &
 
 /// Add `username` to the group with the given role.
 async fn add_member(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     group: &str,
     owner_token: &str,
     username: &str,
@@ -54,7 +54,7 @@ async fn add_member(
 
 /// Create a repository inside the group.
 async fn create_group_repo(
-    app: &gita_server::App,
+    app: &gita_admin::App,
     group: &str,
     token: &str,
     name: &str,

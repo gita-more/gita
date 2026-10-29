@@ -1,10 +1,10 @@
 //! Gita CLI 集成测试
 //!
 //! 通过 `assert_cmd` 调用 `gita-server` 二进制，验证命令行行为；
-//! ��时直接使用 `gita_server` 库验证配置加载与应用初始化。
+//! ��时直接使用 `gita_admin` 库验证配置加载与应用初始化。
 
 use assert_cmd::Command;
-use gita_server::{App, Args, Config};
+use gita_admin::{App, Args, Config};
 use predicates::prelude::*;
 use std::path::PathBuf;
 use tempfile::TempDir;

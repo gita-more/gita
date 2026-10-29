@@ -1,0 +1,21 @@
+[package]
+name = "gita-ci"
+description = "Shared CI library for admin CLI and orchestrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+gita-api = { path = "../gita-api" }
+gita-core = { path = "../gita-core" }
+gita-db = { path = "../gita-db" }
+gita-workflow = { path = "../gita-workflow" }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+tokio = { workspace = true }
+
+[lints]
+workspace = true
