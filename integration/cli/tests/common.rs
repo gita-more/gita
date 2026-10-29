@@ -43,6 +43,45 @@ pub fn gita_bin() -> PathBuf {
         .join("gita")
 }
 
+/// Path to the `gita-admin` binary.
+pub fn gita_admin_bin() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .ancestors()
+        .nth(2)
+        .expect("workspace root")
+        .join("target")
+        .join("debug")
+        .join("gita-admin")
+}
+
+/// Run `gita-admin` with the given args and `GITA_TOKEN` set.
+///
+/// The admin CLI resolves its server URL and token the same way the user
+/// CLI does, so the same environment variables apply.
+pub fn gita_admin(port: u16, token: &str, args: &[&str]) -> std::process::Output {
+    let mut cmd = AssertCmd::new(gita_admin_bin());
+    cmd.env("GITA_URL", format!("http://127.0.0.1:{port}"))
+        .env("GITA_TOKEN", token)
+        .env("GITA_DISABLE_KEYRING", "1");
+    for a in args {
+        cmd.arg(a);
+    }
+    cmd.output().expect("spawn gita-admin")
+}
+
+/// Assert that a `gita-admin` invocation succeeds.
+pub fn gita_admin_ok(port: u16, token: &str, args: &[&str]) -> std::process::Output {
+    let out = gita_admin(port, token, args);
+    assert!(
+        out.status.success(),
+        "gita-admin {:?} failed:\nstderr: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
 /// Run `gita` with the given args and `GITA_TOKEN` set, capturing output.
 ///
 /// `GITA_DISABLE_KEYRING=1` is set for every invocation: the CLI stores

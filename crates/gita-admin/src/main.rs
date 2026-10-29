@@ -30,7 +30,10 @@ async fn main() -> anyhow::Result<()> {
         },
         Command::Image { cmd } => image::run(cmd).await,
         Command::Template { cmd } => template::run(cmd).await,
-        Command::Runner { cmd } => runner::run(cmd).await,
+        Command::Runner { cmd } => {
+            let config = Config::load(&args.config)?;
+            runner::run(cmd, &config).await
+        }
         Command::Users { cmd } => users::run(cmd).await,
     }
 }

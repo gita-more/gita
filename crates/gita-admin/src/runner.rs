@@ -1,16 +1,17 @@
+//! Runner registration.
+
 use anyhow::Result;
 
-pub async fn run(cmd: crate::config::RunnerCmd) -> Result<()> {
+use crate::Config;
+use crate::worker_register;
+
+pub async fn run(cmd: crate::config::RunnerCmd, config: &Config) -> Result<()> {
     match cmd {
         crate::config::RunnerCmd::Register { name, user } => {
-            register_runner(&name, &user).await
+            let token = worker_register(config, &name, &user).await?;
+            println!("runner token: {token}");
+            println!("export GITA_RUNNER_TOKEN={token}");
+            Ok(())
         }
     }
-}
-
-async fn register_runner(name: &str, user: &str) -> Result<()> {
-    // This is actually handled in main.rs worker_register
-    // Just a placeholder for CLI structure
-    println!("Runner registration is done via: gita-admin worker register --name {} --user {}", name, user);
-    Ok(())
 }

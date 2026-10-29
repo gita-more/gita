@@ -66,19 +66,19 @@ impl AppState {
         }
     }
 
-    /// Set the login rate limiter (called by `gita-server::run`).
+    /// Set the login rate limiter (called by `gita_admin::run`).
     pub fn with_login_limiter(mut self, limiter: crate::middleware::SharedLimiter) -> Self {
         self.login_limiter = Some(limiter);
         self
     }
 
-    /// Set the registration rate limiter (called by `gita-server::run`).
+    /// Set the registration rate limiter (called by `gita_admin::run`).
     pub fn with_register_limiter(mut self, limiter: crate::middleware::SharedLimiter) -> Self {
         self.register_limiter = Some(limiter);
         self
     }
 
-    /// Set the password-reset rate limiter (called by `gita-server::run`).
+    /// Set the password-reset rate limiter (called by `gita_admin::run`).
     pub fn with_password_reset_limiter(
         mut self,
         limiter: crate::middleware::SharedLimiter,

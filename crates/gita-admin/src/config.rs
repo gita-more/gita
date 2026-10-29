@@ -10,9 +10,9 @@ use tracing::warn;
 
 /// CLI arguments for gita-admin.
 #[derive(Parser, Debug)]
-#[command(name = "gita-admin", about = "Gita Admin - server & CI infrastructure")]
+#[command(name = "gita-admin", version, about = "Gita Admin - server & CI infrastructure")]
 pub struct Args {
-    #[arg(long, global = true, default_value = "gita.toml")]
+    #[arg(short = 'c', long, global = true, default_value = "gita.toml")]
     pub config: PathBuf,
 
     #[command(subcommand)]

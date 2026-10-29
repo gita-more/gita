@@ -102,7 +102,7 @@ impl Db {
             .connect(url)
             .await
             .with_context(|| format!("failed to connect to database {url}"))?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        migrate_isolated(&pool).await?;
         Ok(Self { pool })
     }
 
@@ -242,6 +242,24 @@ fn parse_event_type(s: &str) -> Option<EventType> {
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
+
+/// Run the migrations against a schema-isolated pool.
+///
+/// sqlx's migrator takes a `pg_advisory_lock` that is scoped to the
+/// *database*, not to the schema. Every schema-isolated test in the
+/// suite would therefore queue behind every other one, and a full test
+/// run spent tens of seconds waiting for the lock instead of running
+/// migrations.
+///
+/// An isolated schema has exactly one owner — the caller that created it
+/// — so the lock protects nothing here. Locking stays on for the default
+/// `public` schema, where several processes really can race.
+async fn migrate_isolated(pool: &PgPool) -> Result<()> {
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.set_locking(false);
+    migrator.run(pool).await?;
+    Ok(())
+}
 
 /// Counter ensuring every test schema gets a unique name.
 static TEST_SCHEMA_COUNTER: AtomicU32 = AtomicU32::new(0);

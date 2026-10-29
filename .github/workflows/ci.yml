@@ -63,7 +63,7 @@ jobs:
         # The CLI integration tests invoke the `gita` client binary from
         # `target/debug/gita`. `cargo test` only builds bins for its own
         # harness under target/debug/deps/, so build them explicitly.
-        run: cargo build -p gita-server -p gita-client
+        run: cargo build -p gita-admin -p gita
 
       - name: Run workspace tests
         env:
@@ -137,20 +137,20 @@ jobs:
 
       - name: Build the frontend
         # The server serves `web/dist` (found relative to the checkout),
-        # so it must exist before gita-server starts.
+        # so it must exist before gita-admin starts.
         run: |
           npm ci
           npm run build
         working-directory: web
 
-      - name: Build the server
-        run: cargo build -p gita-server
+      - name: Build the server (gita-admin)
+        run: cargo build -p gita-admin
 
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
         working-directory: integration/web
 
-      - name: Start gita-server
+      - name: Start gita-admin
         run: |
           cat > gita-e2e.toml <<'EOF'
           [server]
@@ -160,16 +160,16 @@ jobs:
           database_url = "postgres://gita:gita@localhost:55432/gita"
           jwt_secret = "ci-e2e-secret"
           EOF
-          ./target/debug/gita-server -c gita-e2e.toml &
+          ./target/debug/gita-admin -c gita-e2e.toml &
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3100/api/health > /dev/null 2>&1; then
-              echo "gita-server is ready"
+              echo "gita-admin is ready"
               exit 0
             fi
-            echo "Waiting for gita-server (attempt $i)..."
+            echo "Waiting for gita-admin (attempt $i)..."
             sleep 1
           done
-          echo "gita-server did not become ready in time"
+          echo "gita-admin did not become ready in time"
           exit 1
 
       - name: Run Playwright tests
@@ -259,4 +259,4 @@ jobs:
         run: cargo build --release
 
       - name: Verify binary
-        run: ./target/release/gita-server --version
+        run: ./target/release/gita-admin --version

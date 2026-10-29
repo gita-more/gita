@@ -60,7 +60,7 @@ jobs:
         # The CLI integration tests invoke the `gita` client binary from
         # `target/debug/gita`. `cargo test` only builds bins for its own
         # harness under target/debug/deps/, so build them explicitly.
-        run: cargo build -p gita-server -p gita-client
+        run: cargo build -p gita-admin -p gita
 
       - name: Run workspace tests
         env:
@@ -93,7 +93,6 @@ jobs:
       - name: Build release binaries
         run: |
           cargo build --release
-          cargo build --release -p gita-runner -p gita-client
 
       - name: Build web frontend
         working-directory: web
@@ -111,10 +110,8 @@ jobs:
           mkdir -p "${DIST}"
           # Server binary + web dist (deployed together; the binary resolves
           # web/dist relative to its own location).
-          cp target/release/gita-server "${DIST}/gita-server"
+          cp target/release/gita-admin "${DIST}/gita-admin"
           cp -r web/dist "${DIST}/web"
-          # Standalone CI runner binary.
-          cp target/release/gita-runner "${DIST}/gita-runner"
           # Client CLI binary.
           cp target/release/gita "${DIST}/gita"
           # Deployment templates.
@@ -198,7 +195,7 @@ jobs:
       - name: Build release binary
         shell: bash
         run: |
-          cargo build --release -p gita-client --target "${{ matrix.target }}"
+          cargo build --release -p gita --target "${{ matrix.target }}"
           TAG="${GITHUB_REF_NAME#v}"
           cp "target/${{ matrix.target }}/release/gita" "gita-${TAG}-${{ matrix.asset }}"
           echo "TAG=${TAG}" >> "$GITHUB_ENV"

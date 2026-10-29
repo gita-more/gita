@@ -34,7 +34,7 @@ integration/
 |---|---|---|---|
 | 单元测试（UT） | 各 crate 内 `#[cfg(test)]` 模块 | cargo test | 函数级逻辑（哈希、JWT、解析等） |
 | API 集成测试 | `integration/api/tests/` | cargo test + Postgres | REST API、CI 流水线、Pages 站点、SSH |
-| CLI 集成测试 | `integration/cli/tests/` | assert_cmd | `gita-server` 二进制 CLI、配置加载、应用装配 |
+| CLI 集成测试 | `integration/cli/tests/` | assert_cmd | `gita-admin` 二进制 CLI、配置加载、应用装配 |
 | Web E2E | `integration/web/tests/` | Playwright | 浏览器端真实 UI 行为（布局、导航、折叠、i18n） |
 
 > 单元测试内嵌在各 crate 中，随 `cargo test` 一起运行；集成测试统一收口到 `integration/`。

@@ -24,7 +24,7 @@ RUN groupadd -r gita && useradd -r -g gita -d /data -s /sbin/nologin gita
 WORKDIR /app
 
 # Copy locally built release binary
-COPY target/release/gita-server /app/gita-server
+COPY target/release/gita-admin /app/gita-admin
 
 # Copy built frontend next to the binary. The server resolves it at runtime
 # via `find_web_dist()`: <exe_dir>/web/dist — no host-specific paths needed.

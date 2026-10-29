@@ -13,8 +13,17 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Serializes the tests in this file.
+///
+/// Each of them boots a real server, which runs the whole migration set
+/// against its own schema. Run at the same time, the three servers
+/// compete for the database's DDL locks and a server that has not
+/// finished migrating cannot answer the health check — the test then
+/// fails on a slow machine rather than on a real defect.
+static SERVER_LOCK: Mutex<()> = Mutex::new(());
 
 /// The database the test server talks to.
 fn test_db_url() -> String {
@@ -145,8 +154,12 @@ impl Server {
     }
 
     /// Wait for the server to answer its health check.
+    ///
+    /// The deadline is generous: a cold server runs every migration
+    /// before it can serve anything, and the database may be busy with
+    /// the rest of the suite.
     fn wait_until_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline {
             if let Ok(resp) =
                 reqwest::blocking::get(format!("http://127.0.0.1:{}/api/health", self.port))
@@ -211,6 +224,7 @@ impl Server {
 /// The server shuts down on `SIGTERM` and says so.
 #[test]
 fn sigterm_stops_the_server_cleanly() {
+    let _guard = SERVER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut server = Server::start();
     server.terminate();
 
@@ -286,6 +300,7 @@ impl SlowReceiver {
 /// event log does not know about it.
 #[test]
 fn an_event_from_a_request_before_the_signal_survives_the_shutdown() {
+    let _guard = SERVER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut server = Server::start();
 
     // Register a user and create a repository: both publish events.
@@ -395,6 +410,7 @@ fn an_event_from_a_request_before_the_signal_survives_the_shutdown() {
 /// unmistakable: without the wait, the server is gone in milliseconds.
 #[test]
 fn the_shutdown_waits_for_a_webhook_delivery_in_flight() {
+    let _guard = SERVER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let receiver = SlowReceiver::start(Duration::from_secs(2));
     let mut server = Server::start();
 

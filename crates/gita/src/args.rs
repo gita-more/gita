@@ -1,8 +1,8 @@
 //! Command-line argument definitions.
 //!
-//! Mirrors the `Args`/`Command` split from `crates/gita-server/src/lib.rs`:
-//! top-level `Args` with a `#[command(subcommand)]`, and `Command` made of
-//! nested subcommand enums.
+//! Top-level `Args` with a `#[command(subcommand)]`, and `Command` made of
+//! nested subcommand enums. Administrator commands deliberately do not
+//! appear here: they live in the separate `gita-admin` binary.
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "gita", version, about)]
 pub struct Args {
-    /// Base URL of the gita-server (overrides GITA_URL and config).
+    /// Base URL of the gita server (overrides GITA_URL and config).
     #[arg(long, global = true, env = "GITA_URL")]
     pub url: Option<String>,
 

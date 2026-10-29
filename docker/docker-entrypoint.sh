@@ -63,4 +63,4 @@ fi
 
 # Execute the server with the generated config. The binary resolves the
 # frontend from its own location (<exe_dir>/web/dist), so no `cd` is needed.
-exec /app/gita-server -c "${CONFIG_FILE}" "$@"
+exec /app/gita-admin -c "${CONFIG_FILE}" "$@"

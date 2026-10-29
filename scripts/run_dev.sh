@@ -193,8 +193,8 @@ build_backend() {
     err "未找到 cargo，无法构建后端二进制"
     exit 1
   fi
-  if [[ ! -f target/release/gita-server ]]; then
-    err "后端二进制 target/release/gita-server 不存在，构建失败"
+  if [[ ! -f target/release/gita-admin ]]; then
+    err "后端二进制 target/release/gita-admin 不存在，构建失败"
     exit 1
   fi
   ok "后端构建完成"

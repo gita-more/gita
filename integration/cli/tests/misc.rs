@@ -445,21 +445,21 @@ async fn e2e_admin_user_management() {
     let staff_token = register_via_binary(port, "staff");
 
     // A non-admin is rejected before anything else happens.
-    let out = gita(port, &staff_token, &["admin", "list"]);
+    let out = gita_admin(port, &staff_token, &["users", "list"]);
     gita_fails(&out);
     stderr_contains(&out, "403");
 
     // The admin sees every account in the list.
-    let out = gita_ok(port, &admin_token, &["admin", "list"]);
+    let out = gita_admin_ok(port, &admin_token, &["users", "list"]);
     stdout_contains(&out, "rootadmin");
     stdout_contains(&out, "staff");
 
     // The admin creates an account for someone else.
-    let out = gita_ok(
+    let out = gita_admin_ok(
         port,
         &admin_token,
         &[
-            "admin",
+            "users",
             "create",
             "newbie",
             "--email",
@@ -471,11 +471,11 @@ async fn e2e_admin_user_management() {
     stdout_contains(&out, "newbie");
 
     // Duplicate creation is a conflict.
-    let out = gita(
+    let out = gita_admin(
         port,
         &admin_token,
         &[
-            "admin",
+            "users",
             "create",
             "newbie",
             "--email",
@@ -488,36 +488,36 @@ async fn e2e_admin_user_management() {
     stderr_contains(&out, "409");
 
     // Grant, then revoke the admin role.
-    let out = gita_ok(port, &admin_token, &["admin", "set-admin", "newbie"]);
+    let out = gita_admin_ok(port, &admin_token, &["users", "set-admin", "newbie"]);
     stdout_contains(&out, "admin: true");
-    let out = gita_ok(
+    let out = gita_admin_ok(
         port,
         &admin_token,
-        &["admin", "set-admin", "newbie", "--admin=false"],
+        &["users", "set-admin", "newbie", "--admin=false"],
     );
     stdout_contains(&out, "admin: false");
 
     // The very last admin cannot be demoted — otherwise the system would
     // be left without anyone able to manage it.
-    let out = gita(
+    let out = gita_admin(
         port,
         &admin_token,
-        &["admin", "set-admin", "rootadmin", "--admin=false"],
+        &["users", "set-admin", "rootadmin", "--admin=false"],
     );
     gita_fails(&out);
     stderr_contains(&out, "400");
 
     // An admin cannot delete their own account.
-    let out = gita(port, &admin_token, &["admin", "delete", "rootadmin"]);
+    let out = gita_admin(port, &admin_token, &["users", "delete", "rootadmin"]);
     gita_fails(&out);
     stderr_contains(&out, "400");
 
     // Reset a password without knowing the old one.
-    let out = gita_ok(
+    let out = gita_admin_ok(
         port,
         &admin_token,
         &[
-            "admin",
+            "users",
             "reset-password",
             "newbie",
             "--password",
@@ -527,9 +527,9 @@ async fn e2e_admin_user_management() {
     stdout_contains(&out, "Password reset for newbie");
 
     // Delete the account; it disappears from the list.
-    let out = gita_ok(port, &admin_token, &["admin", "delete", "newbie"]);
+    let out = gita_admin_ok(port, &admin_token, &["users", "delete", "newbie"]);
     stdout_contains(&out, "deleted");
-    let out = gita_ok(port, &admin_token, &["admin", "list"]);
+    let out = gita_admin_ok(port, &admin_token, &["users", "list"]);
     assert!(
         !String::from_utf8_lossy(&out.stdout).contains("newbie"),
         "deleted user should not appear in admin list"

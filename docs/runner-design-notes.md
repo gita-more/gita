@@ -124,7 +124,7 @@ format follows Docker's convention.
 
 ### 4. Runner registration + heartbeat + labels
 
-Today `gita-server worker register` mints a token; the runner then
+Today `gita-admin worker register` mints a token; the runner then
 just runs. Borrow GitHub's model: a `runner_registrations` table
 holds the runner's id, name, labels, last heartbeat, and current
 status (`idle` / `busy` / `offline`). The runner heartbeats every
@@ -189,7 +189,7 @@ into "production runner".
 ## Reference architecture
 
 ```
-gita-server (control plane)
+gita-admin (control plane)
   ├── pipeline_runs         (existing)
   ├── runner_registrations  (new: name, labels, last_seen, status)
   ├── artifacts             (new: blob + metadata)

@@ -1,7 +1,7 @@
-//! Gita CLI 集成测试
+//! Gita Admin CLI 集成测试
 //!
-//! 通过 `assert_cmd` 调用 `gita-server` 二进制，验证命令行行为；
-//! ��时直接使用 `gita_admin` 库验证配置加载与应用初始化。
+//! 通过 `assert_cmd` 调用 `gita-admin` 二进制，验证命令行行为；
+//! 同时直接使用 `gita_admin` 库验证配置加载与应用初始化。
 
 use assert_cmd::Command;
 use gita_admin::{App, Args, Config};
@@ -9,13 +9,13 @@ use predicates::prelude::*;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-/// Path to the gita-server binary. The standard `assert_cmd::cargo_bin`
+/// Path to the gita-admin binary. The standard `assert_cmd::cargo_bin`
 /// relies on `CARGO_BIN_EXE_<name>` being set when cargo builds an
 /// integration test, but we bind the binary through cargo's normal bin
-/// discovery (in `crates/gita-server`), not through the integration
+/// discovery (in `crates/gita-admin`), not through the integration
 /// crate, so the env var is unset. Resolve the path relative to the
 /// workspace's `target/debug/` directory instead.
-fn gita_server_bin() -> PathBuf {
+fn gita_admin_bin() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest
         .ancestors()
@@ -23,7 +23,7 @@ fn gita_server_bin() -> PathBuf {
         .expect("workspace root")
         .join("target")
         .join("debug")
-        .join("gita-server")
+        .join("gita-admin")
 }
 
 // ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ fn gita_server_bin() -> PathBuf {
 
 #[test]
 fn help_flag_shows_usage() {
-    let mut cmd = Command::new(gita_server_bin());
+    let mut cmd = Command::new(gita_admin_bin());
     cmd.arg("--help")
         .assert()
         .success()
@@ -42,7 +42,7 @@ fn help_flag_shows_usage() {
 
 #[test]
 fn version_flag_shows_version() {
-    let mut cmd = Command::new(gita_server_bin());
+    let mut cmd = Command::new(gita_admin_bin());
     cmd.arg("--version")
         .assert()
         .success()

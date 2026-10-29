@@ -50,10 +50,12 @@ crates/
 ├── gita-api     # REST API (/api/*) + OpenAPI docs
 ├── gita-pipeline # .gita-ci.yml parser and stage DAG
 ├── gita-push    # what a push does afterwards: events + CI enqueue
-├── gita-runner  # CI runner (separate binary)
+├── gita-runner  # CI runner library (driven by gita-admin)
+├── gita-workflow # GitHub-Actions-style workflow parser
 ├── gita-web     # static frontend serving
-└── gita-server  # entrypoint: config, app assembly, startup
-client/           # `gita` CLI client (top-level, see below)
+├── gita-client  # shared REST client, config and credential store (library)
+├── gita         # `gita` binary: the user CLI
+└── gita-admin   # `gita-admin` binary: server + CI infrastructure, operator CLI
 ```
 
 ## Requirements
@@ -125,15 +127,15 @@ git push -u origin main
 
 ## CLI (`gita`)
 
-Gita ships with [`client/`](client/) — a `gh`-like command-line client named
-`gita`, built as a separate workspace member (`gita-client`). It talks to the
-Gita REST API over `Authorization: Bearer <token>` and stores credentials in
-the OS keyring (never plaintext).
+Gita ships with a `gh`-like command-line client named `gita` (workspace
+member `crates/gita`, with the shared REST transport in `crates/gita-client`).
+It talks to the Gita REST API over `Authorization: Bearer <token>` and stores
+credentials in the OS keyring (never plaintext).
 
 Build it once:
 
 ```bash
-cargo build -p gita-client
+cargo build -p gita
 ```
 
 The binary lands at `target/debug/gita` (or `target/release/gita`).
@@ -159,7 +161,7 @@ Server URL resolution: `GITA_URL` env > `~/.config/gita/config.toml` >
 
 Keyring access is bounded by a 3-second deadline — on Linux the keyring can
 block forever in a headless session — and `GITA_DISABLE_KEYRING=1` turns it off
-entirely. See [client/README.md](client/README.md#keyring).
+entirely. See [crates/gita/README.md](crates/gita/README.md#keyring).
 
 ### Common commands
 
@@ -175,7 +177,8 @@ entirely. See [client/README.md](client/README.md#keyring).
 ```
 
 Use `--json` for machine-readable output (scripting friendly). See
-[`client/README.md`](client/README.md) for the full command reference.
+[`crates/gita/README.md`](crates/gita/README.md) for the full
+command reference.
 
 ### Docker deployment (optional)
 
