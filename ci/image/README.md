@@ -35,12 +35,17 @@ rcluster **不提供**"从零构建客户镜像"的工具，它只提供：
 
 ## 本目录脚本
 
-| 脚本 | 作用 |
-|------|------|
-| `build-rootfs.sh` | 从 Ubuntu cloud image 构建 gita CI rootfs（预装依赖） |
-| `register-image.sh` | 把构建好的 rootfs 登记到 rcluster（`POST /images`） |
-| `create-template.sh` | 用登记的镜像创建 rcluster VmTemplate |
-| `provision-userdata.sh` | 生成每个 CI job 的 user_data（配置 SSH/拉代码/跑测试） |
+只剩一个：`build-rootfs.sh` — 从 Ubuntu cloud image 构建 gita CI rootfs
+（预装依赖）。
+
+登记镜像、建模板、生成 user_data、VM 内 agent 都已是 Rust 实现：
+
+| 原 shell 脚本 | Rust 对应物 |
+|--------------|-------------|
+| `register-image.sh` | `gita-admin image register` |
+| `create-template.sh` | `gita-admin template create` / `template list` |
+| `provision-userdata.sh` | `gita_ci::generate_userdata` |
+| `gita-ci-agent.sh` | `crates/gita-ci-agent` 二进制 |
 
 ## 依赖栈（gita CI 需要）
 
@@ -59,20 +64,19 @@ rcluster **不提供**"从零构建客户镜像"的工具，它只提供：
 ./ci/image/build-rootfs.sh --output /path/to/ci-rootfs.ext4
 
 # 2. 登记到 rcluster
-./ci/image/register-image.sh \
+gita-admin image register \
   --control-url http://127.0.0.1:8080 \
   --pool <pool-id> \
   --path /path/to/ci-rootfs.ext4 \
   --name gita-ci-ubuntu-24.04
 
 # 3. 创建模板
-./ci/image/create-template.sh \
+gita-admin template create \
   --control-url http://127.0.0.1:8080 \
   --image gita-ci-ubuntu-24.04 \
   --cpu 4000 --memory 4G --disk 20G
 
-# 4. 每次 CI job：从模板建 VM + 注入 user_data
-./ci/image/provision-userdata.sh --commit <sha> --ssh-key <key> > userdata.yaml
+# 4. 每次 CI job：从模板建 VM + 注入 user_data（gita_ci::generate_userdata 生成）
 ```
 
 ## 说明

@@ -9,7 +9,7 @@
 #   - git / ssh / openssh-client / postgresql-client
 #   - libdbus-1-dev / pkg-config（gita-client 编译依赖）
 #   - Playwright chromium（web e2e）
-#   - 一个开机自启的 CI agent（可选，见 AGENT_SCRIPT 变量）
+#   - 一个开机自启的 CI agent（可选，--agent-script 传入）
 #
 # 镜像内容属于 gita；rcluster 只负责登记与挂载，不知道里面装了什么。
 #
@@ -18,7 +18,7 @@
 #     --output /data/gita/ci-rootfs.ext4 \
 #     --size 8G \
 #     --ubuntu-release noble \
-#     [--agent-script /path/to/ci-agent.sh]
+#     [--agent-script /path/to/gita-ci-agent]
 #
 # 依赖宿主机工具：debootstrap、qemu-user-static（构建阶段）、unsquashfs
 # =============================================================================
@@ -28,7 +28,7 @@ set -euo pipefail
 OUTPUT=""
 SIZE="8G"
 UBUNTU_RELEASE="noble"          # 24.04
-AGENT_SCRIPT=""                # 可选：CI agent 自启脚本路径
+AGENT_SCRIPT=""                # 可选：要嵌入镜像的 gita-ci-agent 可执行文件
 WORKDIR=""
 
 # ---- 解析参数 ----
@@ -180,9 +180,14 @@ chmod 700 /home/ci/.ssh
 
 # =============================================================================
 # 6. 安装开机自启的 CI agent（可选）
+#
+# --agent-script 传的是 crates/gita-ci-agent 编译出的可执行文件（CI VM 内
+# 没有 Rust 工具链，先在宿主机交叉编译，例如：
+#   cargo build --release -p gita-ci-agent --target x86_64-unknown-linux-musl
+#），脚本会把它装成 systemd 服务开机自启。
 # =============================================================================
 if [[ -n "$AGENT_SCRIPT" ]]; then
-  log "安装 CI agent 自启脚本: $AGENT_SCRIPT"
+  log "安装 CI agent: $AGENT_SCRIPT"
   install -m 0755 "$AGENT_SCRIPT" "$ROOT/usr/local/bin/gita-ci-agent"
   cat > "$ROOT/etc/systemd/system/gita-ci-agent.service" <<EOF
 [Unit]
@@ -213,4 +218,4 @@ truncate -s "$SIZE" "$OUTPUT"
 mkfs.ext4 -d "$ROOT" -F "$OUTPUT" >/dev/null
 
 log "完成: $OUTPUT"
-echo "提示: 用 rcluster register-image.sh 登记此镜像。"
+echo "提示: 用 gita-admin image register 登记此镜像。"
