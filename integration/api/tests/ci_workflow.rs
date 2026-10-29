@@ -446,3 +446,295 @@ jobs:
         .expect("git rev-parse");
     assert!(status.status.success(), "the checkout should be a git repo");
 }
+
+/// Push a commit over real HTTP git, the way a user would.
+///
+/// The receive-pack handler is what triggers the CI run, so a test that
+/// writes straight into the bare repository would never exercise the
+/// workflow discovery this file is about.
+async fn http_push(
+    app: &gita_server::App,
+    owner: &str,
+    repo: &str,
+    token: &str,
+    files: &[(&str, &str)],
+) {
+    // Serve the app's router over a real TCP listener so `git push` can
+    // talk to it over HTTP rather than through `oneshot`.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let router = app.router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    let url = format!("http://127.0.0.1:{port}/{owner}/{repo}.git");
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(&work)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    for (path, content) in files {
+        let target = work.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&target, content).unwrap();
+    }
+
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", &url]);
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "add workflow"]);
+
+    let push_url = format!("http://{owner}:{token}@127.0.0.1:{port}/{owner}/{repo}.git");
+    let push = Command::new("git")
+        .current_dir(&work)
+        .args(["push", &push_url, "main:main"])
+        .output()
+        .expect("git push must run");
+    assert!(
+        push.status.success(),
+        "git push failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&push.stdout),
+        String::from_utf8_lossy(&push.stderr)
+    );
+}
+
+/// A pushed workflow file must be discovered and enqueue a run on its own.
+///
+/// The earlier tests insert the pipeline row by hand; this one pushes the
+/// workflow over HTTP so the push handler's discovery of
+/// `.github/workflows/*.yml` is what is under test.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pushed_workflow_file_enqueues_a_run() {
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "wfpush").await;
+    common::create_repo(&app, &user.token, "wfpushrepo").await;
+
+    let yaml = r#"
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "sentinel-PUSHED-WORKFLOW"
+"#;
+
+    http_push(
+        &app,
+        "wfpush",
+        "wfpushrepo",
+        &user.token,
+        &[(".github/workflows/ci.yml", yaml)],
+    )
+    .await;
+
+    let repo_id = app
+        .db
+        .get_repository_by_name("wfpush", "wfpushrepo")
+        .await
+        .unwrap()
+        .expect("repo")
+        .id;
+
+    // The push handler creates the pipeline asynchronously.
+    let mut pipeline = None;
+    for _ in 0..50 {
+        pipeline = app
+            .db
+            .get_pipeline_by_path(repo_id, ".github/workflows/ci.yml")
+            .await
+            .unwrap();
+        if pipeline.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let pipeline = pipeline.expect(
+        "a push containing .github/workflows/ci.yml should create a pipeline; if this fails, \
+         check that the push handler scans the .github/workflows directory",
+    );
+    assert!(pipeline.content.contains("sentinel-PUSHED-WORKFLOW"));
+
+    // And a run must have been enqueued for it.
+    let mut runs = Vec::new();
+    for _ in 0..50 {
+        runs = app.db.list_pipeline_runs(pipeline.id, 10).await.unwrap();
+        if !runs.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !runs.is_empty(),
+        "the pushed workflow should have enqueued a run"
+    );
+    assert_eq!(runs[0].status, "queued");
+}
+
+/// A workflow whose branch filter does not match the pushed branch must
+/// not enqueue anything.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workflow_that_does_not_match_the_push_is_skipped() {
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "wfskip").await;
+    common::create_repo(&app, &user.token, "wfskiprepo").await;
+
+    // The workflow only wants `release-only`; the push is to `main`.
+    let yaml = r#"
+on:
+  push:
+    branches: [release-only]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+"#;
+
+    http_push(
+        &app,
+        "wfskip",
+        "wfskiprepo",
+        &user.token,
+        &[(".github/workflows/ci.yml", yaml)],
+    )
+    .await;
+
+    let repo_id = app
+        .db
+        .get_repository_by_name("wfskip", "wfskiprepo")
+        .await
+        .unwrap()
+        .expect("repo")
+        .id;
+
+    // Give the push handler time to (not) act.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+    // The workflow's configuration is recorded either way — the pipeline
+    // row remembers what the repository's CI config is. What the branch
+    // filter decides is whether a *run* is enqueued.
+    let pipeline = app
+        .db
+        .get_pipeline_by_path(repo_id, ".github/workflows/ci.yml")
+        .await
+        .unwrap()
+        .expect("the workflow configuration should still be recorded");
+
+    let runs = app.db.list_pipeline_runs(pipeline.id, 10).await.unwrap();
+    assert!(
+        runs.is_empty(),
+        "a workflow that does not match the push must not enqueue a run; got {runs:?}"
+    );
+}
+
+/// A workflow that matches the push must be runnable end to end: the
+/// run enqueued by the push handler is picked up and executed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pushed_workflow_is_executed_by_the_runner() {
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "wfexec").await;
+    common::create_repo(&app, &user.token, "wfexecrepo").await;
+
+    let yaml = r#"
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "sentinel-END-TO-END-WORKFLOW"
+"#;
+
+    http_push(
+        &app,
+        "wfexec",
+        "wfexecrepo",
+        &user.token,
+        &[(".github/workflows/ci.yml", yaml)],
+    )
+    .await;
+
+    let db = app.db.clone();
+    let repo_id = db
+        .get_repository_by_name("wfexec", "wfexecrepo")
+        .await
+        .unwrap()
+        .expect("repo")
+        .id;
+
+    // Wait for the push handler to enqueue the run.
+    let mut pipeline = None;
+    for _ in 0..50 {
+        pipeline = db
+            .get_pipeline_by_path(repo_id, ".github/workflows/ci.yml")
+            .await
+            .unwrap();
+        if pipeline.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let pipeline = pipeline.expect("the workflow should have been recorded");
+
+    let mut run_id = None;
+    for _ in 0..50 {
+        let runs = db.list_pipeline_runs(pipeline.id, 10).await.unwrap();
+        if let Some(r) = runs.first() {
+            run_id = Some(r.id);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let run_id = run_id.expect("the workflow should have enqueued a run");
+
+    // Claim and execute it as the runner would.
+    let config = runner_config(&app, "e2e");
+    std::fs::create_dir_all(&config.work_dir).unwrap();
+    let claimed = db
+        .claim_pipeline_run(&config.runner_name, 300)
+        .await
+        .unwrap()
+        .expect("the run should be claimable");
+    assert_eq!(claimed.id, run_id);
+
+    let registry = JobRegistry::new();
+    execute_workflow_run(&db, &config, &registry, &claimed)
+        .await
+        .expect("execute_workflow_run");
+
+    let run = db.get_pipeline_run(run_id).await.unwrap().unwrap();
+    assert_eq!(run.status, "success");
+
+    let jobs = db.list_jobs(run_id).await.unwrap();
+    assert_eq!(jobs.len(), 1);
+    let logs = db.list_logs_since(jobs[0].id, -1, 1000).await.unwrap();
+    let text: String = logs.iter().map(|l| l.line.clone()).collect();
+    assert!(
+        text.contains("sentinel-END-TO-END-WORKFLOW"),
+        "the pushed workflow should have run; logs: {text}"
+    );
+}

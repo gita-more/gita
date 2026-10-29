@@ -179,8 +179,22 @@ mod tests {
         git.create_repo("alice", "widgets", "main")
             .await
             .expect("create repo");
-        let sha_main = commit_to(dir.path(), "alice", "widgets", "main", "main.txt", b"main\n");
-        let sha_side = commit_to(dir.path(), "alice", "widgets", "side", "side.txt", b"side\n");
+        let sha_main = commit_to(
+            dir.path(),
+            "alice",
+            "widgets",
+            "main",
+            "main.txt",
+            b"main\n",
+        );
+        let sha_side = commit_to(
+            dir.path(),
+            "alice",
+            "widgets",
+            "side",
+            "side.txt",
+            b"side\n",
+        );
         (dir, git, sha_main, sha_side)
     }
 

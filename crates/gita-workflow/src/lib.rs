@@ -29,11 +29,13 @@
 pub mod expand;
 pub mod expression;
 pub mod parse;
+pub mod trigger;
 pub mod types;
 
 pub use expand::expand;
 pub use expression::{evaluate, EvalContext, Evaluated};
 pub use parse::parse_workflow;
+pub use trigger::{should_run_on_push, TriggerDecision, TriggerMatcher};
 pub use types::{
     Matrix, MatrixAxis, Permission, RunOn, Step, Trigger, TriggerEvent, Workflow, WorkflowError,
     WorkflowJob, WorkflowJobInstance, WorkflowSpec,
