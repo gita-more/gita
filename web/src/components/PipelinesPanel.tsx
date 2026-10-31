@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useI18n } from '../i18n'
-import { api, type Pipeline, type PipelineRun, type Job, type JobLogLine } from '../lib/api'
+import { api, type Pipeline, type PipelineRun, type Job, type JobLogLine, type RunVmInfo } from '../lib/api'
 import { PageHeader, EmptyState, StatusLabel } from './Layout'
 import { RocketIcon } from './Icons'
 
@@ -138,6 +138,7 @@ function RunDetail({
   const { t } = useI18n()
   const [run, setRun] = useState<PipelineRun | null>(null)
   const [jobs, setJobs] = useState<Job[]>([])
+  const [vms, setVms] = useState<RunVmInfo[]>([])
   const [logs, setLogs] = useState<Record<number, JobLogLine[]>>({})
 
   useEffect(() => {
@@ -146,6 +147,7 @@ function RunDetail({
       if (cancelled) return
       setRun(r.run)
       setJobs(r.jobs)
+      setVms(r.vms ?? [])
       const initial: Record<number, JobLogLine[]> = {}
       r.jobs.forEach((j) => {
         initial[j.id] = []
@@ -199,6 +201,26 @@ function RunDetail({
           </button>
         </div>
       </div>
+      {/* VM instances backing this run's vm: jobs. Absent for local
+          runs, so the block only renders when the server reports any. */}
+      {vms.length > 0 && (
+        <div className="run-vms" data-testid="run-vms">
+          <h4>{t('repo.runVmsTitle')}</h4>
+          <table className="table">
+            <tbody>
+              {vms.map((vm) => (
+                <tr key={vm.id}>
+                  <td>{vm.name}</td>
+                  <td>
+                    <span className={`vm-status vm-status-${vm.status}`}>{vm.status}</span>
+                  </td>
+                  <td>{vm.ip_address ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div className="commit-list">
         {jobs.map((job) => (
           <div key={job.id} className="commit-item">

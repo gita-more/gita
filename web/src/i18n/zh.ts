@@ -115,6 +115,7 @@ export const messages = {
     merged: '已合并',
   },
   repo: {
+    runVmsTitle: '虚拟机',
     commitsTitle: '提交历史',
     commitsSubtitle: '共 {n} 条提交',
     emptyCommitsTitle: '还没有提交',

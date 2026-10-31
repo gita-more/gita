@@ -316,10 +316,43 @@ async fn get_run(
         return Err(ApiError::NotFound("run not found".into()));
     }
     let jobs = state.db.list_jobs(run_id).await?;
+    let vms = sqlx::query_as::<_, RunVmRow>(
+        "SELECT id, name, status, node_id, ip_address, expires_at_ms
+         FROM vm_instances WHERE pipeline_run_id = $1 ORDER BY id",
+    )
+    .bind(run_id)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap_or_default();
     Ok(axum::Json(RunDetailResponse {
         run: PipelineRunResponse::from(run),
         jobs: jobs.into_iter().map(JobResponse::from).collect(),
+        vms: vms.into_iter().map(RunVmResponse::from).collect(),
     }))
+}
+
+/// Raw row shape for the run's VM instances.
+#[derive(Debug, sqlx::FromRow)]
+struct RunVmRow {
+    id: i64,
+    name: String,
+    status: String,
+    node_id: Option<i64>,
+    ip_address: Option<String>,
+    expires_at_ms: Option<i64>,
+}
+
+impl From<RunVmRow> for RunVmResponse {
+    fn from(r: RunVmRow) -> Self {
+        Self {
+            id: r.id,
+            name: r.name,
+            status: r.status,
+            node_id: r.node_id,
+            ip_address: r.ip_address,
+            expires_at_ms: r.expires_at_ms,
+        }
+    }
 }
 
 /// Manually trigger a new pipeline run from the current `.gita-ci.yml`
@@ -580,6 +613,22 @@ pub struct RunsResponse {
 pub struct RunDetailResponse {
     pub run: PipelineRunResponse,
     pub jobs: Vec<JobResponse>,
+    /// VM instances provisioned for this run's `vm:` jobs, if the server
+    /// has the VM cluster enabled. Empty for purely local runs — and for
+    /// every run on a cluster-less deployment, which is why the field is
+    /// always present but usually empty.
+    pub vms: Vec<RunVmResponse>,
+}
+
+/// One VM instance backing a job of this run.
+#[derive(Debug, Serialize)]
+pub struct RunVmResponse {
+    pub id: i64,
+    pub name: String,
+    pub status: String,
+    pub node_id: Option<i64>,
+    pub ip_address: Option<String>,
+    pub expires_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]

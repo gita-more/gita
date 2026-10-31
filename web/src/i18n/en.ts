@@ -115,6 +115,7 @@ export const messages = {
     merged: 'Merged',
   },
   repo: {
+    runVmsTitle: 'Virtual machines',
     commitsTitle: 'Commit history',
     commitsSubtitle: '{n} commits',
     emptyCommitsTitle: 'No commits yet',

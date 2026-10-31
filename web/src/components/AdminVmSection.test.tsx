@@ -58,7 +58,7 @@ function makeTemplate(overrides: Partial<Record<string, unknown>> = {}) {
       backend: 'qemu',
     },
     description: '',
-    owner: { owner_type: 'system', owner_id: 0 },
+    owner: { owner_type: 'system' as const, owner_id: 0 },
     created_at_ms: 0,
     ...overrides,
   }

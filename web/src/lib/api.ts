@@ -237,6 +237,16 @@ export interface VmInstanceInfo {
   message: string | null
 }
 
+/** A VM instance backing one job of a pipeline run. */
+export interface RunVmInfo {
+  id: number
+  name: string
+  status: string
+  node_id: number | null
+  ip_address: string | null
+  expires_at_ms: number | null
+}
+
 export interface Pipeline {
   id: number
   repo_id: number
@@ -553,7 +563,7 @@ export const api = {
       { method: 'POST' },
     ),
   getRun: (owner: string, name: string, runId: number) =>
-    request<{ run: PipelineRun; jobs: Job[] }>(
+    request<{ run: PipelineRun; jobs: Job[]; vms: RunVmInfo[] }>(
       `/api/repos/${owner}/${name}/runs/${runId}`,
     ),
   getJobLogs: (

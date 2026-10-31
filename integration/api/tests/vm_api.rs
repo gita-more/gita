@@ -309,3 +309,114 @@ async fn node_registration_is_visible_to_admins() {
         .collect();
     assert!(names.contains(&"worker-1"), "got {names:?}");
 }
+
+/// A run's detail response carries the VM instances provisioned for its
+/// `vm:` jobs — so the pipeline page can show what machine ran what.
+/// The join is by `pipeline_run_id`, and a run without VMs reports an
+/// empty list rather than omitting the field.
+#[tokio::test]
+async fn run_detail_includes_its_vm_instances() {
+    use axum::http::Method;
+    use tower::ServiceExt;
+
+    let (app, _guard) = vm_enabled_app().await;
+    let admin = common::register_admin(&app, "vmrunadmin").await;
+
+    // A run to attach VMs to.
+    let now = chrono::Utc::now().to_rfc3339();
+    let user = common::register_user(&app, "vmrunner").await;
+    let full = common::create_repo(&app, &user.token, "vmrun-repo").await;
+    let (owner, repo_name) = full.split_once('/').unwrap();
+    let repo_row = app
+        .db
+        .get_repository_by_name(&owner, &repo_name)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let pipeline_id: i64 = sqlx::query_scalar(
+        "INSERT INTO pipelines (repo_id, path, ref, ref_sha, content, created_at, updated_at)
+         VALUES ($1, '.gita-ci.yml', 'main', 'deadbeef', 'stages: [b]', $2, $2)
+         RETURNING id",
+    )
+    .bind(repo_row.id)
+    .bind(&now)
+    .fetch_one(app.db.pool())
+    .await
+    .unwrap();
+    let run_id: i64 = sqlx::query_scalar(
+        "INSERT INTO pipeline_runs (pipeline_id, repo_id, ref, head_sha, status, queued_at)
+         VALUES ($1, $2, 'main', 'deadbeef', 'running', $3)
+         RETURNING id",
+    )
+    .bind(pipeline_id)
+    .bind(repo_row.id)
+    .bind(&now)
+    .fetch_one(app.db.pool())
+    .await
+    .unwrap();
+
+    // Two VMs for this run: one running with an IP, one failed without.
+    sqlx::query(
+        "INSERT INTO vm_instances (name, owner_type, owner_id, repo_id, pipeline_run_id, spec, status, ip_address)
+         VALUES ('ci-a', 'repo', $1, $2, $3, '{}', 'running', '10.42.0.100'),
+                ('ci-b', 'repo', $1, $2, $3, '{}', 'failed', NULL)",
+    )
+    .bind(repo_row.owner_id)
+    .bind(repo_row.id)
+    .bind(run_id)
+    .execute(app.db.pool())
+    .await
+    .unwrap();
+
+    let req = axum::http::Request::builder()
+        .method(Method::GET)
+        .uri(format!("/api/repos/{owner}/{repo_name}/runs/{run_id}"))
+        .header("authorization", format!("Bearer {}", admin.token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    let vms = v["vms"].as_array().expect("detail must carry a vms array");
+    assert_eq!(vms.len(), 2, "got {v:?}");
+    let a = vms.iter().find(|vm| vm["name"] == "ci-a").unwrap();
+    assert_eq!(a["status"], "running");
+    assert_eq!(a["ip_address"], "10.42.0.100");
+    let b = vms.iter().find(|vm| vm["name"] == "ci-b").unwrap();
+    assert_eq!(b["status"], "failed");
+    assert!(b["ip_address"].is_null());
+
+    // A run with no VMs reports an empty array, not a missing field.
+    let run_id2: i64 = sqlx::query_scalar(
+        "INSERT INTO pipeline_runs (pipeline_id, repo_id, ref, head_sha, status, queued_at)
+         VALUES ($1, $2, 'main', 'deadbeef', 'running', $3)
+         RETURNING id",
+    )
+    .bind(pipeline_id)
+    .bind(repo_row.id)
+    .bind(&now)
+    .fetch_one(app.db.pool())
+    .await
+    .unwrap();
+    let req = axum::http::Request::builder()
+        .method(Method::GET)
+        .uri(format!("/api/repos/{owner}/{repo_name}/runs/{run_id2}"))
+        .header("authorization", format!("Bearer {}", admin.token))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.router().oneshot(req).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        v["vms"].as_array().map(|a| a.len()),
+        Some(0),
+        "a local run must report an empty vms list, got {v:?}"
+    );
+}
