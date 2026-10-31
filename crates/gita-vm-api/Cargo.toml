@@ -1,0 +1,18 @@
+[package]
+name = "gita-vm-api"
+description = "Shared VM types for gita VM cluster management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+chrono = { workspace = true, features = ["serde"] }
+gita-core = { path = "../gita-core" }
+thiserror = { workspace = true }
+utoipa = { version = "6", features = ["axum_extras"] }
+
+[lints]
+workspace = true
