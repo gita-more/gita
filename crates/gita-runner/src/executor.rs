@@ -136,6 +136,39 @@ async fn run_job(
         .insert_job(run.id, &job.name, &job.stage, &job.needs, &job.script)
         .await?;
 
+    // A `vm:` job runs inside a cluster virtual machine: the runner only
+    // provisions the VM and watches; the agent inside the VM reports
+    // running/success/failed through the agent endpoints. The runner
+    // must not mark the job running here — the agent owns those
+    // transitions while a VM exists.
+    if let Some(vm) = &job.vm {
+        let script = job.script.join("\n");
+        let outcome =
+            crate::vm_exec::run_job_in_vm(db, config, run, job_id, vm, &script).await?;
+        return Ok(match outcome {
+            crate::vm_exec::VmJobOutcome::Success => {
+                // The agent already finished the row; the caller expects
+                // the run-level status to move on.
+                true
+            }
+            crate::vm_exec::VmJobOutcome::Canceled => {
+                // The row is already 'canceled'; don't touch it.
+                false
+            }
+            // Infrastructure failures and timeouts are job failures —
+            // but only if the agent didn't settle the row first
+            // (update_job_status overwrites unconditionally, and the
+            // agent may legitimately have written 'failed' already; a
+            // repeated 'failed' is the same outcome either way).
+            crate::vm_exec::VmJobOutcome::Failed
+            | crate::vm_exec::VmJobOutcome::TimedOut
+            | crate::vm_exec::VmJobOutcome::InfrastructureError => {
+                db.update_job_status(job_id, "failed", None).await?;
+                false
+            }
+        });
+    }
+
     db.update_job_status(job_id, "running", None).await?;
 
     // Create the job workspace (a fresh clone in a per-job dir).

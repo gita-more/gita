@@ -8,6 +8,8 @@ pub mod control;
 pub mod node;
 
 pub use ci::{VmCluster, CiVmHelper, CreateVmOptions, VmResult};
+pub use gita_vm_api::VmSpecOverrides;
+pub use gita_vm_core::now_ms;
 pub use control::ControlClient;
 pub use node::NodeManager;
 

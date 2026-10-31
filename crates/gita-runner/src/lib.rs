@@ -20,6 +20,7 @@ pub mod executor;
 pub mod registry;
 pub mod workflow_exec;
 pub mod workflow_pipeline;
+pub mod vm_exec;
 pub mod workflow_run;
 pub mod workspace;
 

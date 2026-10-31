@@ -48,6 +48,7 @@ pub mod types;
 
 pub use types::{
     JobPlan, ParsedJob, PipelineParseError, PipelineSpec, TriggerDecision, TriggerRule, Triggers,
+    VmJob,
 };
 
 pub use expand::expand;
