@@ -1,0 +1,23 @@
+[package]
+name = "gita-vm-store"
+description = "PostgreSQL storage implementation for gita-vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gita-vm-api = { path = "../gita-vm-api" }
+gita-vm-core = { path = "../gita-vm-core" }
+gita-db = { path = "../gita-db" }
+async-trait = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono", "uuid", "json", "macros"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
