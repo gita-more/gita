@@ -150,6 +150,9 @@ pub struct ServerConfig {
     /// transport, where an operator reads the token out of the response.
     #[serde(default)]
     pub allow_insecure_password_reset: bool,
+    /// VM 集群管理（控制面 + 节点 + CI 调度）。
+    #[serde(default)]
+    pub vm: VmConfig,
 }
 
 /// Configuration for the embedded SSH server (Git over SSH).
@@ -200,6 +203,66 @@ fn default_pages_enabled() -> bool {
     true
 }
 
+/// VM 集群管理配置。
+///
+/// 关闭时（默认）gita 不启动 VM 控制面，`/api/v1/vm/*` 路由不注册。
+/// 打开后 gita 自己就是 VM 集群的控制面：CI 任务可以直接调度到集群的
+/// 虚拟机上跑，不再依赖外部的集群管理系统。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmConfig {
+    /// 总开关。关掉时既不注册路由也不启动后台循环。
+    #[serde(default = "default_vm_enabled")]
+    pub enabled: bool,
+    /// VM 数据目录（镜像、快照、节点工作目录）。
+    #[serde(default)]
+    pub data_dir: Option<PathBuf>,
+    /// 节点代理使用的 API key（访问 /api/v1/vm/internal/* ）。
+    ///
+    /// 为空时内部接口只要求存在非空 key——仅适合本地开发。生产环境
+    /// 必须配置一个强随机值，否则任何能访问该端口的人都能注册节点、
+    /// 领取并执行操作。
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// reconcile 循环间隔（秒）：把待创建的 VM 调度到节点上。
+    #[serde(default = "default_vm_reconcile_interval")]
+    pub reconcile_interval_secs: u64,
+    /// 节点负载超过该比例就不再往这个节点调度。
+    #[serde(default = "default_vm_overload_ratio")]
+    pub overload_ratio: f64,
+    /// 节点心跳超时（秒）：超过这个时间没有心跳就判定节点下线。
+    #[serde(default = "default_vm_heartbeat_timeout")]
+    pub heartbeat_timeout_secs: u64,
+}
+
+fn default_vm_enabled() -> bool {
+    false
+}
+
+fn default_vm_reconcile_interval() -> u64 {
+    5
+}
+
+fn default_vm_overload_ratio() -> f64 {
+    0.8
+}
+
+fn default_vm_heartbeat_timeout() -> u64 {
+    30
+}
+
+impl Default for VmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            data_dir: None,
+            api_key: None,
+            reconcile_interval_secs: default_vm_reconcile_interval(),
+            overload_ratio: default_vm_overload_ratio(),
+            heartbeat_timeout_secs: default_vm_heartbeat_timeout(),
+        }
+    }
+}
+
 pub(crate) const REGISTER_RATE_PER_SECOND: u32 = 1;
 pub(crate) const REGISTER_RATE_BURST: u32 = 3;
 
@@ -226,6 +289,7 @@ impl Default for ServerConfig {
             pages_enabled: default_pages_enabled(),
             pages_url_prefix: String::new(),
             allow_insecure_password_reset: false,
+            vm: VmConfig::default(),
         }
     }
 }
@@ -341,6 +405,52 @@ impl Config {
                 .and_then(|v| v.as_bool())
             {
                 config.server.allow_insecure_password_reset = v;
+            }
+
+            // VM 集群配置。同样的坑：`enabled` 必须按 key 是否存在来读，
+            // 默认值是 false，合并 defaulted 结构体无法区分「没写」和
+            // 「显式写成 false」。
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("vm"))
+                .and_then(|v| v.get("enabled"))
+                .and_then(|v| v.as_bool())
+            {
+                config.server.vm.enabled = v;
+            }
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("vm"))
+                .and_then(|v| v.get("data_dir"))
+                .and_then(|v| v.as_str())
+            {
+                config.server.vm.data_dir = Some(PathBuf::from(v));
+            }
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("vm"))
+                .and_then(|v| v.get("api_key"))
+                .and_then(|v| v.as_str())
+            {
+                config.server.vm.api_key = Some(v.to_string());
+            }
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("vm"))
+                .and_then(|v| v.get("reconcile_interval_secs"))
+                .and_then(|v| v.as_integer().map(|i| i as u64))
+            {
+                config.server.vm.reconcile_interval_secs = v;
+            }
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("vm"))
+                .and_then(|v| v.get("overload_ratio"))
+                .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+            {
+                config.server.vm.overload_ratio = v;
+            }
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("vm"))
+                .and_then(|v| v.get("heartbeat_timeout_secs"))
+                .and_then(|v| v.as_integer().map(|i| i as u64))
+            {
+                config.server.vm.heartbeat_timeout_secs = v;
             }
         } else {
             warn!("config file {} not found, using defaults", path.display());
@@ -631,6 +741,94 @@ mod tests {
              outside the [server] table ({server_at}..{ssh_at}) — TOML scopes keys to \
              the most recent table header, so it would be read as \
              server.ssh.allow_insecure_password_reset and silently ignored"
+        );
+    }
+
+    /// The VM section must load from the config file.
+    ///
+    /// Regression test: the VM block was merged into the defaulted
+    /// `ServerConfig` struct, which cannot distinguish "the key was absent"
+    /// from "the key was explicitly set to the default value". `enabled`
+    /// defaults to `false`, so reading it from the defaulted struct would
+    /// make `enabled = true` in the file a no-op — the control plane would
+    /// silently never start.
+    #[test]
+    fn config_load_merges_vm_section() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [server]
+            host = "0.0.0.0"
+
+            [server.vm]
+            enabled = true
+            data_dir = "/var/lib/gita/vm"
+            api_key = "secret-key"
+            reconcile_interval_secs = 10
+            overload_ratio = 0.7
+            heartbeat_timeout_secs = 45
+            "#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(config.server.vm.enabled, "vm.enabled must be honored");
+        assert_eq!(
+            config.server.vm.data_dir,
+            Some(PathBuf::from("/var/lib/gita/vm"))
+        );
+        assert_eq!(config.server.vm.api_key.as_deref(), Some("secret-key"));
+        assert_eq!(config.server.vm.reconcile_interval_secs, 10);
+        assert!((config.server.vm.overload_ratio - 0.7).abs() < 1e-9);
+        assert_eq!(config.server.vm.heartbeat_timeout_secs, 45);
+    }
+
+    /// The VM switch must be switchable in **both** directions.
+    #[test]
+    fn config_vm_enabled_can_be_turned_off_explicitly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
+
+        // Absent -> default (off).
+        std::fs::write(&path, "[server]
+").unwrap();
+        assert!(!Config::load(&path).unwrap().server.vm.enabled);
+
+        // Explicitly on.
+        std::fs::write(&path, "[server]
+[server.vm]
+enabled = true
+").unwrap();
+        assert!(Config::load(&path).unwrap().server.vm.enabled);
+
+        // Explicitly off again — this is the case that reading the value
+        // out of the defaulted struct would get wrong.
+        std::fs::write(&path, "[server]
+[server.vm]
+enabled = false
+").unwrap();
+        assert!(!Config::load(&path).unwrap().server.vm.enabled);
+    }
+
+    /// A VM key placed after another table header lands in the wrong table
+    /// and is silently ignored — the same TOML scoping trap the Pages
+    /// flags have. The example config is parsed by the real loader here so
+    /// the two cannot drift apart.
+    #[test]
+    fn example_config_keeps_vm_keys_under_the_vm_table() {
+        let example =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/config.example.toml");
+        let text = std::fs::read_to_string(&example)
+            .unwrap_or_else(|e| panic!("read {}: {e}", example.display()));
+        let raw: toml::Value = toml::from_str(&text).expect("example config should be valid TOML");
+        let vm = raw
+            .get("server")
+            .and_then(|s| s.get("vm"))
+            .expect("example config should document [server.vm]");
+        assert!(
+            vm.get("enabled").is_some(),
+            "vm.enabled must live under [server.vm]"
         );
     }
 

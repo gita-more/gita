@@ -33,6 +33,29 @@ pages_enabled = true
 # caller both enumerate accounts and take them over.
 # allow_insecure_password_reset = true
 
+# VM cluster management. When enabled, gita runs the VM control plane
+# itself: CI jobs can be scheduled onto virtual machines that gita
+# manages, and the /api/v1/vm/* endpoints become available.
+#
+# Off by default. Turn it on only when you have node agents ready to
+# register with this server.
+[server.vm]
+enabled = false
+# Where VM images, snapshots and node working directories live.
+# Defaults to <data_dir>/vm.
+# data_dir = "data/vm"
+# API key for node agents (they call /api/v1/vm/internal/*).
+# Set a strong random value in production: anyone holding it can
+# register a node and receive operations to execute.
+# api_key = "change-me"
+# How often the control plane reconciles pending VMs onto nodes.
+reconcile_interval_secs = 5
+# A node whose load exceeds this ratio is not given new VMs.
+overload_ratio = 0.8
+# A node that has not sent a heartbeat within this many seconds is
+# considered offline.
+heartbeat_timeout_secs = 30
+
 [server.ssh]
 # Embedded SSH server for Git over SSH (clone/push via git@host:owner/repo.git).
 # Disabled by default; set to true to enable.

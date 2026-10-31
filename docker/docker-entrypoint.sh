@@ -41,6 +41,16 @@ pages_url_prefix = "${GITA_SERVER_PAGES_URL_PREFIX:-}"
 # any account whose name they can guess.
 allow_insecure_password_reset = ${GITA_SERVER_ALLOW_INSECURE_PASSWORD_RESET:-false}
 
+# VM cluster management. Same TOML scoping rule as above: these belong
+# to [server.vm], and must not be emitted after [server.ssh].
+[server.vm]
+enabled = ${GITA_SERVER_VM_ENABLED:-false}
+data_dir = "${GITA_SERVER_VM_DATA_DIR:-/data/vm}"
+api_key = "${GITA_SERVER_VM_API_KEY:-}"
+reconcile_interval_secs = ${GITA_SERVER_VM_RECONCILE_INTERVAL_SECS:-5}
+overload_ratio = ${GITA_SERVER_VM_OVERLOAD_RATIO:-0.8}
+heartbeat_timeout_secs = ${GITA_SERVER_VM_HEARTBEAT_TIMEOUT_SECS:-30}
+
 [server.ssh]
 enabled = ${ssh_enabled}
 host = "${GITA_SERVER_SSH_HOST:-0.0.0.0}"
