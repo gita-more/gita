@@ -1,0 +1,40 @@
+[package]
+name = "gita-vm-control"
+description = "VM control plane: REST API, reconciliation loops, node management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gita_vm_control"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gita-vm-control"
+path = "src/main.rs"
+
+[dependencies]
+gita-vm-api = { path = "../gita-vm-api" }
+gita-vm-core = { path = "../gita-vm-core" }
+gita-vm-store = { path = "../gita-vm-store" }
+gita-vm-obs = { path = "../gita-vm-obs" }
+gita-db = { path = "../gita-db" }
+gita-core = { path = "../gita-core" }
+gita-events = { path = "../gita-events" }
+axum = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+utoipa = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+
+[lints]
+workspace = true
