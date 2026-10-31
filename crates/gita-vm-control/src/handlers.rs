@@ -1,5 +1,6 @@
 //! 对外 REST API handlers：/api/v1/vm/*
 
+use crate::auth::{ApiAuthError, VmUser};
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -37,6 +38,14 @@ impl From<gita_vm_core::Error> for ApiError {
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+/// 把鉴权错误映射成 API 错误（401/403 语义保持不变）
+fn auth_err(e: ApiAuthError) -> ApiError {
+    match e {
+        ApiAuthError::Unauthorized(m) => ApiError(StatusCode::UNAUTHORIZED, m),
+        ApiAuthError::Forbidden(m) => ApiError(StatusCode::FORBIDDEN, m),
+    }
+}
 
 // ===== 请求/响应体 =====
 
@@ -109,8 +118,11 @@ async fn list_templates(State(state): State<AppState>) -> ApiResult<Json<serde_j
 
 async fn create_template(
     State(state): State<AppState>,
+    user: VmUser,
     Json(req): Json<CreateTemplateRequest>,
 ) -> ApiResult<impl IntoResponse> {
+    // 模板是集群级资源：只有系统管理员能建。
+    user.require_admin().map_err(auth_err)?;
     let now = gita_vm_core::now_ms();
     let tmpl = VmTemplate {
         id: gita_vm_api::ids::TemplateId(0),
@@ -155,8 +167,10 @@ async fn get_template(
 
 async fn delete_template(
     State(state): State<AppState>,
+    user: VmUser,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
+    user.require_admin().map_err(auth_err)?;
     state
         .repo
         .delete_template(gita_vm_api::ids::TemplateId(id))
@@ -185,8 +199,10 @@ async fn get_vm(
 
 async fn delete_vm(
     State(state): State<AppState>,
+    user: VmUser,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
+    user.require_admin().map_err(auth_err)?;
     let vm_id = gita_vm_api::ids::VmId(id);
     let vm = state
         .repo
@@ -235,7 +251,7 @@ async fn list_quotas(State(state): State<AppState>) -> ApiResult<Json<serde_json
 }
 
 /// 路由表
-pub fn router(state: AppState) -> Router<AppState> {
+pub fn router() -> Router<AppState> {
     Router::new()
         .route("/healthz", get(healthz))
         // templates
@@ -251,5 +267,4 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/images", get(list_images))
         // quotas
         .route("/quotas", get(list_quotas))
-        .with_state(state)
 }

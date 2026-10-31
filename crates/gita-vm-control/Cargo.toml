@@ -20,6 +20,7 @@ gita-vm-store = { path = "../gita-vm-store" }
 gita-vm-obs = { path = "../gita-vm-obs" }
 gita-db = { path = "../gita-db" }
 gita-core = { path = "../gita-core" }
+gita-api = { path = "../gita-api" }
 gita-events = { path = "../gita-events" }
 axum = { workspace = true }
 tokio = { workspace = true }

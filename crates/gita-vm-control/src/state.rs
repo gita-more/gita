@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::auth::VmAuth;
 use gita_vm_api::Event;
 use gita_vm_core::Repository;
 use gita_vm_obs::MetricsRegistry;
@@ -74,11 +75,16 @@ pub struct AppState {
     pub started_at_ms: i64,
     /// 长轮询状态：节点 ID → 待下发操作队列 + 唤醒器
     pub poll_state: Arc<Mutex<std::collections::HashMap<String, gita_vm_api::operation::Operation>>>,
+    /// 鉴权上下文。
+    ///
+    /// 必填：控制面永远带鉴权运行，不存在"未接入鉴权"这条路径——
+    /// 否则一个漏配的部署就会把 VM 管理接口裸奔在公网上。
+    pub auth: VmAuth,
 }
 
 impl AppState {
-    /// 用给定的存储后端与参数构造状态
-    pub fn new(repo: Arc<dyn Repository>, config: ControlConfig) -> Self {
+    /// 用给定的存储后端、参数与鉴权上下文构造状态
+    pub fn new(repo: Arc<dyn Repository>, config: ControlConfig, auth: VmAuth) -> Self {
         let (tx, _rx) = broadcast::channel(1024);
         let http = reqwest::Client::builder()
             .timeout(config.agent_timeout)
@@ -93,12 +99,8 @@ impl AppState {
             seq: Arc::new(AtomicU64::new(0)),
             started_at_ms: now_ms(),
             poll_state: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            auth,
         }
-    }
-
-    /// 使用默认参数构造状态（测试用）
-    pub fn with_repo(repo: Arc<dyn Repository>) -> Self {
-        AppState::new(repo, ControlConfig::default())
     }
 
     /// 分配下一个事件序号
@@ -134,4 +136,15 @@ pub fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+#[cfg(test)]
+mod compile_checks {
+    use super::*;
+
+    fn assert_send_sync<T: Send + Sync + Clone + 'static>() {}
+
+    #[test]
+    fn app_state_is_send_sync_clone() {
+        assert_send_sync::<AppState>();
+    }
 }

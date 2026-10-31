@@ -19,11 +19,13 @@ use tower_http::trace::TraceLayer;
 
 /// 构建完整的 HTTP 路由
 pub fn build_router(state: AppState) -> Router {
-    let api = handlers::router(state.clone())
-        .merge(internal::router(state.clone()))
+    // 子路由保持 `Router<AppState>`，这样鉴权中间件才能拿到 state；
+    // 整个 /api/v1/vm 前缀共用同一层鉴权。
+    let api = handlers::router()
+        .merge(internal::router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            auth::require_vm_api_key,
+            auth::require_vm_auth,
         ));
 
     Router::new()

@@ -178,11 +178,10 @@ async fn report_operation(
     Json(json!({"ok": true}))
 }
 
-pub fn router(state: AppState) -> Router<AppState> {
+pub fn router() -> Router<AppState> {
     Router::new()
         .route("/internal/nodes", post(register_node))
         .route("/internal/nodes/{id}/heartbeat", post(node_heartbeat))
         .route("/internal/nodes/{id}/operations/next", get(next_operations))
         .route("/internal/nodes/{id}/operations/report", post(report_operation))
-        .with_state(state)
 }
