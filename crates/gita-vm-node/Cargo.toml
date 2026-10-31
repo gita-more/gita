@@ -1,0 +1,33 @@
+[package]
+name = "gita-vm-node"
+description = "VM node agent: runs on hypervisors, executes operations via VMM drivers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gita_vm_node"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gita-vm-node"
+path = "src/main.rs"
+
+[dependencies]
+gita-vm-api = { path = "../gita-vm-api" }
+gita-vm-core = { path = "../gita-vm-core" }
+gita-vm-driver-vmm = { path = "../gita-vm-driver-vmm" }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
