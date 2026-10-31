@@ -40,6 +40,7 @@ pub fn api_router(state: AppState) -> axum::Router {
         .merge(routes::misc_routes())
         .merge(routes::search_routes())
         .merge(routes::avatar_routes())
+        .merge(routes::ci_agent_routes())
         .merge(routes::ssh_key_routes())
         .merge(routes::resolve_routes())
         .merge(docs::docs_routes())

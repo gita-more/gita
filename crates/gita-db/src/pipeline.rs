@@ -420,6 +420,81 @@ impl Db {
         rows.iter().map(row_to_job).collect()
     }
 
+    /// Record the hash of a VM job's agent token.
+    ///
+    /// Only set for jobs that will execute inside a cluster VM; local jobs
+    /// stay `NULL` and the agent callback rejects them.
+    pub async fn set_job_agent_token(&self, id: i64, token_hash: &str) -> Result<()> {
+        sqlx::query("UPDATE jobs SET agent_token = $2 WHERE id = $1")
+            .bind(id)
+            .bind(token_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Verify a VM agent's bearer token for `job_id`.
+    ///
+    /// Returns true when the job exists, has an agent token, and the hash
+    /// matches. The token is checked against the stored SHA-256 — the
+    /// plaintext only ever existed in the VM's user data.
+    pub async fn verify_job_agent_token(&self, id: i64, token: &str) -> Result<bool> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT agent_token FROM jobs WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some(Some(stored)) = row.map(|r| r.0) else {
+            return Ok(false);
+        };
+        Ok(stored == crate::hash_token(token))
+    }
+
+    /// Agent-side job status transition.
+    ///
+    /// Same shape as [`Db::update_job_status`] but restricted: an agent may
+    /// mark a job `running` only from `queued`, and may only finish a job
+    /// that is currently `running`. Anything else is a no-op returning
+    /// false, so a replayed or racing callback cannot resurrect a finished
+    /// job or clobber a cancel.
+    pub async fn agent_update_job_status(
+        &self,
+        id: i64,
+        status: &str,
+        exit_code: Option<i32>,
+    ) -> Result<bool> {
+        let now = Utc::now().to_rfc3339();
+        match status {
+            "running" => {
+                let res = sqlx::query(
+                    "UPDATE jobs
+                     SET status = 'running', started_at = COALESCE(started_at, $2)
+                     WHERE id = $1 AND status = 'queued'",
+                )
+                .bind(id)
+                .bind(&now)
+                .execute(&self.pool)
+                .await?;
+                Ok(res.rows_affected() > 0)
+            }
+            "success" | "failed" => {
+                let res = sqlx::query(
+                    "UPDATE jobs
+                     SET status = $2, exit_code = $3, finished_at = $4
+                     WHERE id = $1 AND status = 'running'",
+                )
+                .bind(id)
+                .bind(status)
+                .bind(exit_code)
+                .bind(&now)
+                .execute(&self.pool)
+                .await?;
+                Ok(res.rows_affected() > 0)
+            }
+            _ => Ok(false),
+        }
+    }
+
     pub async fn get_job(&self, id: i64) -> Result<Option<JobRow>> {
         let rows = sqlx::query(
             "SELECT id, run_id, name, stage, needs, script, status, queued_at,

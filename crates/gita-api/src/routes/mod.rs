@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod auth;
 pub mod avatar;
+pub mod ci_agent;
 pub mod comment;
 pub mod group;
 pub mod issue;
@@ -21,6 +22,7 @@ pub mod visibility;
 pub use admin::admin_routes;
 pub use auth::auth_routes;
 pub use avatar::avatar_routes;
+pub use ci_agent::ci_agent_routes;
 pub use comment::comment_routes;
 pub use group::group_routes;
 pub use issue::issue_routes;
