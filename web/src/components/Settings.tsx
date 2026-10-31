@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { AdminVmSection } from './AdminVmSection'
 import { useNavigate } from 'react-router-dom'
 import { useI18n } from '../i18n'
 import { api, type Token, type User } from '../lib/api'
@@ -184,6 +185,7 @@ export function Settings() {
       </div>
 
       {user?.is_admin && <AdminUsersSection />}
+      {user?.is_admin && <AdminVmSection />}
 
       <div style={{ marginTop: 16 }}>
         <button className="btn btn-ghost" onClick={() => navigate('/')}>

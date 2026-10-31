@@ -187,6 +187,56 @@ export interface EventItem {
   created_at: string
 }
 
+// ----- VM cluster (admin panel; requires [server.vm] enabled) -----
+
+/** A cluster VM template — the named spec CI `vm:` blocks reference. */
+export interface VmTemplateInfo {
+  id: number
+  name: string
+  version: number
+  spec: {
+    cpu_millis: number
+    memory_bytes: number
+    disk_bytes: number
+    image: { name: string; digest?: string | null }
+    backend: string
+    [key: string]: unknown
+  }
+  description: string
+  owner: { owner_type: 'system' | 'group' | 'repo'; owner_id: number }
+  created_at_ms: number
+}
+
+/** A hypervisor node registered with the cluster. */
+export interface VmNodeInfo {
+  id: number
+  name: string
+  spec: { cpu_millis: number; memory_bytes: number; disk_bytes: number }
+  status: {
+    alloc_cpu_millis: number
+    alloc_memory_bytes: number
+    alloc_disk_bytes: number
+    running_vms: number
+    phase: string
+    last_heartbeat_ms: number
+  }
+  labels: Record<string, string>
+}
+
+/** A virtual machine instance. */
+export interface VmInstanceInfo {
+  id: number
+  name: string
+  owner: { owner_type: 'system' | 'group' | 'repo'; owner_id: number }
+  node: number | null
+  spec: { cpu_millis: number; memory_bytes: number; disk_bytes: number }
+  status: string
+  ip_address: string | null
+  created_at_ms: number
+  expires_at_ms: number | null
+  message: string | null
+}
+
 export interface Pipeline {
   id: number
   repo_id: number
@@ -639,6 +689,22 @@ export const api = {
     }),
   deletePages: (owner: string, name: string) =>
     request<{ message: string }>(`/api/repos/${owner}/${name}/pages`, { method: 'DELETE' }),
+
+  // VM cluster (requires [server.vm] enabled on the server; all reads
+  // need a signed-in user, writes need an administrator)
+  listVmTemplates: () =>
+    request<{ templates: VmTemplateInfo[] }>('/api/v1/vm/templates'),
+  createVmTemplate: (name: string, description: string, spec: VmTemplateInfo['spec']) =>
+    request<VmTemplateInfo>('/api/v1/vm/templates', {
+      method: 'POST',
+      body: JSON.stringify({ name, description, spec }),
+    }),
+  deleteVmTemplate: (id: number) =>
+    request<void>(`/api/v1/vm/templates/${id}`, { method: 'DELETE' }),
+  listVms: () => request<{ vms: VmInstanceInfo[] }>('/api/v1/vm/vms'),
+  deleteVm: (id: number) =>
+    request<void>(`/api/v1/vm/vms/${id}`, { method: 'DELETE' }),
+  listVmNodes: () => request<{ nodes: VmNodeInfo[] }>('/api/v1/vm/nodes'),
 
   // health
   health: () => request<{ status: string; db: string; git: string }>('/api/health'),
