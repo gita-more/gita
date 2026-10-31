@@ -18,6 +18,14 @@ members = [
     "crates/gita-ci",
     "crates/gita-workflow",
     "crates/gita-ci-agent",
+    "crates/gita-vm-api",
+    "crates/gita-vm-core",
+    "crates/gita-vm-store",
+    "crates/gita-vm-obs",
+    "crates/gita-vm-control",
+    "crates/gita-vm-node",
+    "crates/gita-vm-driver-vmm",
+    "crates/gita-vm",
     "integration/cli",
     "integration/api",
 ]
@@ -82,6 +90,14 @@ sha2 = "0.10"
 # works.
 keyring = { version = "3", default-features = false }
 url = "2.5"
+
+# VM specific
+utoipa = { version = "6", features = ["axum_extras", "yaml"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+libc = "0.2"
+prometheus = { version = "0.13", features = ["process", "std"] }
+lazy_static = "1.4"
 
 # Warnings are errors: the tree must stay warning-clean. Lint config lives
 # here; every workspace member opts in with `[lints] workspace = true`.
