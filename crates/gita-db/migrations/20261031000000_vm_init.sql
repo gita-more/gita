@@ -1,9 +1,6 @@
 -- gita-vm 初始表结构
 -- 与 gita 现有迁移风格一致：时间戳用毫秒 bigint，JSON 用 jsonb，ID 用 bigserial
 
--- 启用 uuid 扩展（如未启用）
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
 -- ============================================
 -- 网络表
 -- ============================================
@@ -142,10 +139,10 @@ CREATE TABLE vm_instances (
     template_id         BIGINT REFERENCES vm_templates(id),
     owner_type          TEXT NOT NULL DEFAULT 'repo',
     owner_id            BIGINT NOT NULL,              -- repo_id (或 group_id)
-    repo_id             BIGINT REFERENCES repositories(id), -- 关联 gita 仓库
-    pipeline_run_id     BIGINT REFERENCES pipeline_runs(id), -- 关联 CI 运行
-    job_id              BIGINT REFERENCES jobs(id),          -- 关联 CI Job
-    node_id             BIGINT REFERENCES vm_nodes(id),
+    repo_id             BIGINT REFERENCES repositories(id) ON DELETE SET NULL, -- 关联 gita 仓库
+    pipeline_run_id     BIGINT REFERENCES pipeline_runs(id) ON DELETE SET NULL, -- 关联 CI 运行
+    job_id              BIGINT REFERENCES jobs(id) ON DELETE SET NULL, -- 关联 CI Job
+    node_id             BIGINT REFERENCES vm_nodes(id) ON DELETE SET NULL,
     spec                JSONB NOT NULL,               -- VmSpec 完整序列化
     status              TEXT NOT NULL DEFAULT 'pending', -- pending, provisioning, running, stopping, stopped, migrating, failed, quarantined
     generation          BIGINT NOT NULL DEFAULT 1,
@@ -174,7 +171,7 @@ CREATE TABLE vm_operations (
     id                  BIGSERIAL PRIMARY KEY,
     kind                TEXT NOT NULL,                -- create_vm, start_vm, stop_vm, delete_vm, migrate_vm, ...
     vm_id               BIGINT NOT NULL REFERENCES vm_instances(id) ON DELETE CASCADE,
-    node_id             BIGINT REFERENCES vm_nodes(id),
+    node_id             BIGINT REFERENCES vm_nodes(id) ON DELETE SET NULL,
     steps               JSONB NOT NULL DEFAULT '[]',  -- OperationStep[]
     current_step        INTEGER NOT NULL DEFAULT 0,
     status              TEXT NOT NULL DEFAULT 'pending', -- pending, running, succeeded, failed, cancelling, cancelled

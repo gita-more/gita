@@ -46,6 +46,50 @@ pub struct App {
     pub data_dir: std::path::PathBuf,
     /// Running SSH server (Git over SSH), when enabled in config.
     pub ssh_handle: Option<Arc<gita_ssh::SshServerHandle>>,
+    /// VM control plane state, when the VM cluster is enabled in config.
+    ///
+    /// `None` means the feature is off: no routes are registered and no
+    /// background loops run.
+    pub vm_state: Option<gita_vm_control::AppState>,
+}
+
+/// Build the VM control-plane state: migrate the tables, wire the auth
+/// context, and configure the reconcile loops.
+async fn build_vm_state(
+    db: &Db,
+    auth: &gita_api::auth::Auth,
+    config: &Config,
+) -> Result<gita_vm_control::AppState> {
+    let vm_cfg = &config.server.vm;
+
+    // The VM tables live in the same database as everything else — the
+    // schema is created by gita-db's migrations, which already ran.
+    let store = Arc::new(gita_vm_store::VmStore::new(db.pool().clone()));
+
+    // The node API key is shared with the node agents. Without one the
+    // internal endpoints only require *a* non-empty key, which is fine for
+    // local development but not for anything reachable from a network.
+    let node_api_key = vm_cfg.api_key.clone();
+    let vm_auth = gita_vm_control::auth::VmAuth::new(
+        db.clone(),
+        Arc::new(auth.clone()),
+        node_api_key,
+    );
+
+    let control_config = gita_vm_control::ControlConfig {
+        reconcile_interval: std::time::Duration::from_secs(vm_cfg.reconcile_interval_secs),
+        overload_ratio: vm_cfg.overload_ratio,
+        ..Default::default()
+    };
+
+    let state = gita_vm_control::AppState::new(store, control_config, vm_auth);
+
+    info!(
+        "VM cluster enabled (reconcile {}s, overload ratio {})",
+        vm_cfg.reconcile_interval_secs, vm_cfg.overload_ratio
+    );
+
+    Ok(state)
 }
 
 impl App {
@@ -192,6 +236,15 @@ impl App {
             auth: Arc::new(auth.clone()),
         };
 
+        // VM cluster control plane. Created only when enabled: the tables
+        // are migrated, the router is built, and the background loops are
+        // started by `run()`.
+        let vm_state = if config.server.vm.enabled {
+            Some(build_vm_state(&db, &auth, &config).await?)
+        } else {
+            None
+        };
+
         // Ensure the SSH host key exists (generated on first run) so a
         // later `run()` can start the SSH listener with a stable identity.
         if config.server.ssh.enabled {
@@ -212,6 +265,7 @@ impl App {
             data_dir: config.server.data_dir.clone(),
             config,
             ssh_handle: None,
+            vm_state,
         })
     }
 
@@ -277,9 +331,18 @@ impl App {
             axum::Router::new()
         };
 
-        // Merge order: api -> pages -> SPA -> git middleware (last, wraps everything)
+        // The VM control plane rides along under /api/v1/vm. It is merged
+        // before the SPA so a VM path can never be swallowed by the SPA
+        // fallback.
+        let vm_router = match &self.vm_state {
+            Some(state) => gita_vm_control::build_router(state.clone()),
+            None => axum::Router::new(),
+        };
+
+        // Merge order: api -> vm -> pages -> SPA -> git middleware (last, wraps everything)
         axum::Router::new()
             .merge(api_router)
+            .merge(vm_router)
             .merge(pages_router)
             .merge(web_router)
             .layer(axum::middleware::from_fn({

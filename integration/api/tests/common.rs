@@ -183,6 +183,25 @@ pub async fn register_user(app: &gita_admin::App, username: &str) -> AuthedUser 
     }
 }
 
+/// Register a user and promote it to system administrator.
+///
+/// The admin flag lives on the user row, so it is set directly in the
+/// database — there is no public API for promoting yourself.
+pub async fn register_admin(app: &gita_admin::App, username: &str) -> AuthedUser {
+    let user = register_user(app, username).await;
+    let db_user = app
+        .db
+        .get_user_by_username(username)
+        .await
+        .unwrap()
+        .expect("user was just registered");
+    app.db
+        .update_user_admin(db_user.id, true)
+        .await
+        .unwrap();
+    user
+}
+
 /// Create a repository for an authenticated user and return its `owner/name`.
 ///
 /// Optional parameters: `description`, `default_branch`, `is_private`.

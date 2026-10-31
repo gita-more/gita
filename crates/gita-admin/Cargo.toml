@@ -37,6 +37,10 @@ gita-ci = { path = "../gita-ci" }
 gita-workflow = { path = "../gita-workflow" }
 gita-push = { path = "../gita-push" }
 gita-runner = { path = "../gita-runner" }
+gita-vm-api = { path = "../gita-vm-api" }
+gita-vm-core = { path = "../gita-vm-core" }
+gita-vm-store = { path = "../gita-vm-store" }
+gita-vm-control = { path = "../gita-vm-control" }
 
 [dev-dependencies]
 tempfile = "3"

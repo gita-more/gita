@@ -74,6 +74,19 @@ pub async fn run(config: Config) -> Result<()> {
         app.ssh_handle = Some(Arc::new(handle));
     }
 
+    // Start the VM cluster's background loops (reconcile / node-watch /
+    // VM GC). They are aborted on shutdown: a reconcile loop that keeps
+    // scheduling VMs while the server is going down would leave VMs
+    // pending with nobody watching them.
+    let vm_loops = match &app.vm_state {
+        Some(state) => {
+            let handles = gita_vm_control::loops::start_loops(state.clone());
+            info!("VM cluster control plane started ({} loops)", handles.len());
+            handles
+        }
+        None => Vec::new(),
+    };
+
     // Per-IP login rate limiter: 5 req/s with burst 10 — slows brute force
     // without affecting normal users.
     let limiter = gita_api::build_limiter(5, 10);
@@ -105,6 +118,11 @@ pub async fn run(config: Config) -> Result<()> {
     // The SSH listener has its own accept loop; stop it too.
     if let Some(handle) = app.ssh_handle.take() {
         handle.shutdown().await;
+    }
+
+    // Stop the VM background loops.
+    for handle in vm_loops {
+        handle.abort();
     }
 
     info!("Gita stopped");
