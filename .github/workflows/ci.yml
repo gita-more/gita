@@ -159,6 +159,10 @@ jobs:
           data_dir = "e2e-data"
           database_url = "postgres://gita:gita@localhost:55432/gita"
           jwt_secret = "ci-e2e-secret"
+
+          [server.vm]
+          enabled = true
+          api_key = "e2e-vm-key"
           EOF
           ./target/debug/gita-admin -c gita-e2e.toml &
           for i in $(seq 1 30); do

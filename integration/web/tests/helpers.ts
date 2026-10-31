@@ -177,7 +177,7 @@ export async function pageOrigin(page: Page): Promise<string> {
  * Inject gita_token + gita_user into localStorage via addInitScript so the
  * next navigation sees them. Used internally by the login helpers.
  */
-async function injectAuth(page: Page, creds: Creds) {
+export async function injectAuth(page: Page, creds: Creds) {
   const login = await page.request.post(`${BASE}/api/auth/login`, { data: creds })
   expect(login.ok(), `login failed for ${creds.username}: ${login.status()}`).toBeTruthy()
   const body = (await login.json()) as LoginResponse
