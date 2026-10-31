@@ -1,251 +1,282 @@
-//! Gita CI Agent - runs inside the CI VM, polls for jobs and executes them.
+//! Gita CI Agent — one-shot job execution inside a CI VM.
 //!
-//! This binary is designed to be built as a static binary (musl target)
-//! and embedded into the CI VM image. It runs as a systemd service
-//! inside the VM and polls the orchestrator for jobs.
+//! The runner provisions a VM for a `vm:` job and injects everything the
+//! agent needs through cloud-init user data: which repository, which
+//! commit, which command, and the per-job callback token. There is
+//! nothing to poll: the VM boots with exactly one job to run, and the
+//! agent's whole lifecycle is
+//!
+//! ```text
+//! report running → clone → checkout → run script → report success/failed
+//! ```
+//!
+//! (An earlier iteration polled `/api/v1/ci/agents/{id}/jobs/next`, but
+//! no server ever implemented those endpoints — the polling loop was dead
+//! code. One VM per job also gives the cleaner blast radius: a job's
+//! environment is always fresh, and reclaiming the VM reclaims
+//! everything about the job.)
+//!
+//! Every callback is best-effort: a dropped log line or a failed status
+//! report must not fail the job. The runner watches the job row and
+//! reclaims the VM once it reaches a terminal state (or its timeout),
+//! so a crashed agent still leaves the pipeline in a consistent state.
 
-use clap::Parser;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "gita-ci-agent", about = "Gita CI Agent - runs inside CI VM")]
+#[command(
+    name = "gita-ci-agent",
+    about = "Gita CI agent: runs one job inside a VM and reports back"
+)]
 struct Args {
-    /// Orchestrator URL to poll for jobs
-    #[arg(long, env = "GITA_CI_ORCHESTRATOR_URL")]
-    orchestrator_url: String,
+    /// Base URL of the gita server (callbacks go to /api/ci/agent/...).
+    #[arg(long, env = "GITA_AGENT_SERVER_URL")]
+    server_url: String,
 
-    /// Agent ID (defaults to hostname)
-    #[arg(long, env = "GITA_CI_AGENT_ID")]
-    agent_id: Option<String>,
+    /// The job this VM was created for.
+    #[arg(long, env = "GITA_AGENT_JOB_ID")]
+    job_id: i64,
 
-    /// Poll interval in seconds
-    #[arg(long, env = "GITA_CI_POLL_INTERVAL", default_value = "5")]
-    poll_interval: u64,
+    /// Per-job callback token minted by the runner.
+    #[arg(long, env = "GITA_AGENT_TOKEN")]
+    token: String,
+
+    /// Repository URL to clone.
+    #[arg(long, env = "GITA_AGENT_REPO_URL")]
+    repo_url: String,
+
+    /// Commit to check out.
+    #[arg(long, env = "GITA_AGENT_COMMIT")]
+    commit: String,
+
+    /// The job's script, joined as one shell program.
+    #[arg(long, env = "GITA_AGENT_SCRIPT")]
+    script: String,
+
+    /// Private key for cloning over SSH, if the repo is private.
+    #[arg(long, env = "GITA_AGENT_SSH_KEY", default_value = "")]
+    ssh_key: String,
 }
 
-struct DbLogSink {
+/// Ship log lines to the server. Failures are swallowed: a log line the
+/// server did not get is a gap in the output, not a failed job.
+struct LogSink {
     client: reqwest::Client,
-    orchestrator_url: String,
+    server_url: String,
+    token: String,
+    seq: AtomicI64,
 }
 
-impl DbLogSink {
-    fn write(&self, job_id: i64, seq: i64, stream: &str, line: &str) {
-        let client = self.client.clone();
-        let url = format!("{}/api/v1/ci/jobs/{}/logs", self.orchestrator_url, job_id);
-        let line = line.to_string();
-        let stream = stream.to_string();
+impl LogSink {
+    fn new(server_url: &str, token: &str) -> Arc<Self> {
+        Arc::new(Self {
+            client: reqwest::Client::new(),
+            server_url: server_url.trim_end_matches('/').to_string(),
+            token: token.to_string(),
+            seq: AtomicI64::new(0),
+        })
+    }
+
+    fn write(self: &Arc<Self>, job_id: i64, stream: &'static str, line: String) {
+        let sink = self.clone();
+        let seq = sink.seq.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
-            let _ = client
+            let url = format!("{server}/api/ci/agent/jobs/{job_id}/logs", server = sink.server_url);
+            let _ = sink
+                .client
                 .post(&url)
+                .bearer_auth(&sink.token)
                 .json(&serde_json::json!({
                     "seq": seq,
                     "stream": stream,
                     "line": line,
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                 }))
+                .timeout(Duration::from_secs(5))
                 .send()
                 .await;
         });
     }
 }
 
+/// Report a status transition. Also best-effort, but awaited (not
+/// spawned) so the process does not exit before the report leaves.
+async fn report_status(args: &Args, status: &str, exit_code: Option<i32>) {
+    let url = format!(
+        "{}/api/ci/agent/jobs/{}/status",
+        args.server_url.trim_end_matches('/'),
+        args.job_id
+    );
+    let res = reqwest::Client::new()
+        .post(&url)
+        .bearer_auth(&args.token)
+        .json(&serde_json::json!({ "status": status, "exit_code": exit_code }))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await;
+    match res {
+        Ok(resp) if resp.status().is_success() => {}
+        Ok(resp) => tracing::warn!("status report to {url} returned {}", resp.status()),
+        Err(e) => tracing::warn!("status report to {url} failed: {e}"),
+    }
+}
+
+/// Stream a child's stdout/stderr into the sink. Returns when both pipes
+/// are exhausted and the child has been reaped.
+async fn run_command(
+    args: &Args,
+    sink: &Arc<LogSink>,
+    mut cmd: Command,
+    what: &'static str,
+) -> Option<std::process::ExitStatus> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            sink.write(args.job_id, "stderr", format!("{what}: spawn failed: {e}"));
+            return None;
+        }
+    };
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let job_id = args.job_id;
+    let sink_out = sink.clone();
+    let out_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            sink_out.write(job_id, "stdout", line);
+        }
+    });
+    let sink_err = sink.clone();
+    let err_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            sink_err.write(job_id, "stderr", line);
+        }
+    });
+    let status = child.wait().await;
+    let _ = out_task.await;
+    let _ = err_task.await;
+    Some(status.ok()?)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-    let agent_id = args.agent_id.unwrap_or_else(|| {
-        std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown-agent".into())
-    });
 
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,gita_ci_agent=debug".into()),
+                .unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    info!("gita-ci-agent {} starting, orchestrator: {}", agent_id, args.orchestrator_url);
+    info!(
+        job = args.job_id,
+        server = %args.server_url,
+        "gita-ci-agent starting for one job"
+    );
 
-    let client = reqwest::Client::new();
-    let poll_interval = std::time::Duration::from_secs(args.poll_interval);
+    let sink = LogSink::new(&args.server_url, &args.token);
 
-    loop {
-        // Register / report ready
-        let _ = client
-            .post(&format!("{}/api/v1/ci/agents/register", args.orchestrator_url))
-            .json(&serde_json::json!({
-                "agent_id": &agent_id,
-                "status": "ready",
-            }))
-            .send()
-            .await;
+    // Claim the job first: queued → running. If the report fails, keep
+    // going anyway — the runner's timeout is the safety net.
+    report_status(&args, "running", None).await;
 
-        // Poll for next job
-        let job_resp = client
-            .get(&format!("{}/api/v1/ci/agents/{}/jobs/next", args.orchestrator_url, agent_id))
-            .send()
-            .await;
+    // Prepare the workspace.
+    let work_dir = format!("/home/ci/work/{}", args.job_id);
+    if let Err(e) = std::fs::create_dir_all(&work_dir) {
+        sink.write(args.job_id, "stderr", format!("create {work_dir}: {e}"));
+        report_status(&args, "failed", None).await;
+        anyhow::bail!("cannot create work dir: {e}");
+    }
 
-        if let Ok(resp) = job_resp {
-            if resp.status().is_success() {
-                let job_data: Option<serde_json::Value> = resp.json().await.ok().flatten();
-                if let Some(job) = job_data {
-                    let job_id = job["job_id"].as_i64().unwrap_or(0);
-                    let repo_url = job["repo_url"].as_str().unwrap_or("");
-                    let commit = job["commit"].as_str().unwrap_or("");
-                    let command = job["command"].as_str().unwrap_or("");
-                    let ssh_key = job["ssh_private_key"].as_str().unwrap_or("");
-
-                    if job_id > 0 && !repo_url.is_empty() && !commit.is_empty() {
-                        info!("Agent {} claimed job {}", agent_id, job_id);
-                        let _ = execute_job(
-                            &args.orchestrator_url,
-                            job_id,
-                            repo_url,
-                            commit,
-                            command,
-                            ssh_key,
-                        )
-                        .await;
-                    }
-                }
-            }
+    // Private repos clone over SSH; write the key with tight permissions
+    // before any git command runs.
+    if !args.ssh_key.is_empty() {
+        let key_path = "/home/ci/.ssh/id_ed25519";
+        if let Some(parent) = std::path::Path::new(key_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
         }
-
-        tokio::time::sleep(poll_interval).await;
-    }
-}
-
-async fn execute_job(
-    orchestrator_url: &str,
-    job_id: i64,
-    repo_url: &str,
-    commit: &str,
-    command: &str,
-    ssh_key: &str,
-) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
-
-    // Write SSH key first, before any clone.
-    if !ssh_key.is_empty() {
-        std::fs::write("/home/ci/deploy.key", ssh_key)?;
-        std::fs::set_permissions("/home/ci/deploy.key", std::fs::Permissions::from_mode(0o600))?;
+        if let Err(e) = std::fs::write(key_path, &args.ssh_key) {
+            sink.write(args.job_id, "stderr", format!("write ssh key: {e}"));
+        } else {
+            let _ = std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600));
+        }
     }
 
-    // Report job started
-    let _ = client
-        .post(&format!("{}/api/v1/ci/jobs/{}/status", orchestrator_url, job_id))
-        .json(&serde_json::json!({"status": "running"}))
-        .send()
-        .await;
-
-    // Prepare workspace
-    let work_dir = format!("/home/ci/work/{}", job_id);
-    std::fs::create_dir_all(&work_dir)?;
-
-    // Clone repo
-    let mut cmd = Command::new("git");
-    cmd.arg("clone")
-        .arg(repo_url)
+    // Clone + checkout the commit the run names.
+    let mut clone = Command::new("git");
+    clone
+        .arg("clone")
+        .arg(&args.repo_url)
         .arg(&work_dir)
-        .env("GIT_SSH_COMMAND", format!("ssh -i /home/ci/deploy.key -o StrictHostKeyChecking=no"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn()?;
-    let status = child.wait().await?;
+        .env(
+            "GIT_SSH_COMMAND",
+            "ssh -i /home/ci/.ssh/id_ed25519 -o StrictHostKeyChecking=no",
+        );
+    let Some(status) = run_command(&args, &sink, clone, "git clone").await else {
+        report_status(&args, "failed", None).await;
+        anyhow::bail!("git clone could not run");
+    };
     if !status.success() {
-        let _ = report_job_result(orchestrator_url, job_id, "failed", None).await;
-        return Ok(());
+        report_status(&args, "failed", status.code()).await;
+        anyhow::bail!("git clone failed");
     }
 
-    // Checkout commit
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(&work_dir).arg("checkout").arg(commit);
-    let mut child = cmd.spawn()?;
-    let status = child.wait().await?;
+    let mut checkout = Command::new("git");
+    checkout.arg("-C").arg(&work_dir).arg("checkout").arg(&args.commit);
+    let Some(status) = run_command(&args, &sink, checkout, "git checkout").await else {
+        report_status(&args, "failed", None).await;
+        anyhow::bail!("git checkout could not run");
+    };
     if !status.success() {
-        let _ = report_job_result(orchestrator_url, job_id, "failed", None).await;
-        return Ok(());
+        report_status(&args, "failed", status.code()).await;
+        anyhow::bail!("git checkout failed");
     }
 
-    // Execute command
-    let mut cmd = Command::new("bash");
-    cmd.arg("-lc")
-        .arg(command)
+    // Run the job's script. The environment is built from scratch so the
+    // agent's own configuration (notably GITA_AGENT_TOKEN) never reaches
+    // job code.
+    let mut script_cmd = Command::new("bash");
+    script_cmd
+        .arg("-ec")
+        .arg(&args.script)
         .current_dir(&work_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .env_clear()
-        .env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        .env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
         .env("HOME", &work_dir)
-        .env("DATABASE_URL", "postgres://gita:gita@localhost:55432/gita")
-        .env("GITA_TEST_DATABASE_URL", "postgres://gita:gita@localhost:55432/gita");
+        .env("CI", "true");
+    let Some(status) = run_command(&args, &sink, script_cmd, "script").await else {
+        report_status(&args, "failed", None).await;
+        anyhow::bail!("script shell could not run");
+    };
 
-    let mut child = cmd.spawn()?;
-    let seq = Arc::new(AtomicI64::new(0));
-
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-    let mut out_reader = BufReader::new(stdout).lines();
-    let mut err_reader = BufReader::new(stderr).lines();
-
-    let sink = Arc::new(DbLogSink {
-        client: reqwest::Client::new(),
-        orchestrator_url: orchestrator_url.to_string(),
-    });
-
-    let seq_out = seq.clone();
-    let sink_out = sink.clone();
-    let stdout_task = tokio::spawn(async move {
-        while let Ok(Some(line)) = out_reader.next_line().await {
-            let s = seq_out.fetch_add(1, Ordering::Relaxed);
-            sink_out.write(job_id, s, "stdout", &line);
-        }
-    });
-    let seq_err = seq.clone();
-    let sink_err = sink.clone();
-    let stderr_task = tokio::spawn(async move {
-        while let Ok(Some(line)) = err_reader.next_line().await {
-            let s = seq_err.fetch_add(1, Ordering::Relaxed);
-            sink_err.write(job_id, s, "stderr", &line);
-        }
-    });
-
-    let status = child.wait().await?;
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stdout_task).await;
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stderr_task).await;
-
-    let exit_code = status.code();
-    let success = status.success();
-    let status_str = if success { "success" } else { "failed" };
-
-    let _ = report_job_result(orchestrator_url, job_id, status_str, exit_code).await;
-
-    Ok(())
-}
-
-async fn report_job_result(
-    orchestrator_url: &str,
-    job_id: i64,
-    status: &str,
-    exit_code: Option<i32>,
-) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
-    let _ = client
-        .post(&format!("{}/api/v1/ci/jobs/{}/status", orchestrator_url, job_id))
-        .json(&serde_json::json!({
-            "status": status,
-            "exit_code": exit_code,
-        }))
-        .send()
-        .await;
-    Ok(())
+    let code = status.code();
+    if status.success() {
+        info!(job = args.job_id, "job finished successfully");
+        report_status(&args, "success", code).await;
+        Ok(())
+    } else {
+        info!(job = args.job_id, ?code, "job failed");
+        report_status(&args, "failed", code).await;
+        // The exit code is the job's outcome, not an agent malfunction —
+        // a non-zero script exit is a normal way for this process to end.
+        std::process::exit(code.unwrap_or(1));
+    }
 }
