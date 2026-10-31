@@ -554,3 +554,129 @@ jobs:
         }
     }
 }
+
+    // ----- vm: blocks -----
+
+    /// A job may ask for a VM from the cluster; the template name and the
+    /// optional overrides must survive the parse.
+    #[test]
+    fn parse_job_with_vm_block() {
+        let spec = parse_yaml(
+            r#"
+stages: [test]
+test:
+  stage: test
+  vm:
+    template: ci-runner
+    cpu: 4
+    memory: 4G
+    disk: 20G
+  script: [cargo test]
+"#,
+        )
+        .unwrap();
+        let job = &spec.jobs[0];
+        let vm = job.vm.as_ref().expect("vm block should parse");
+        assert_eq!(vm.template, "ci-runner");
+        assert_eq!(vm.cpu, Some(4));
+        assert_eq!(vm.memory.as_deref(), Some("4G"));
+        assert_eq!(vm.disk.as_deref(), Some("20G"));
+    }
+
+    /// A minimal `vm:` block carries just the template name.
+    #[test]
+    fn parse_job_with_template_only_vm_block() {
+        let spec = parse_yaml(
+            r#"
+stages: [build]
+build:
+  stage: build
+  vm:
+    template: ci-runner
+  script: [make]
+"#,
+        )
+        .unwrap();
+        let vm = spec.jobs[0].vm.as_ref().unwrap();
+        assert_eq!(vm.template, "ci-runner");
+        assert_eq!(vm.cpu, None);
+        assert_eq!(vm.memory, None);
+        assert_eq!(vm.disk, None);
+    }
+
+    /// A job without `vm:` keeps running on the runner host.
+    #[test]
+    fn parse_job_without_vm_block() {
+        let spec = parse_yaml(
+            r#"
+stages: [build]
+build:
+  stage: build
+  script: [make]
+"#,
+        )
+        .unwrap();
+        assert!(spec.jobs[0].vm.is_none());
+    }
+
+    /// An unknown key inside `vm:` is rejected — the same class of mistake
+    /// as an unknown job field.
+    #[test]
+    fn parse_rejects_unknown_vm_field() {
+        let err = parse_yaml(
+            r#"
+stages: [build]
+build:
+  stage: build
+  vm:
+    template: ci-runner
+    gpu: true
+  script: [make]
+"#,
+        )
+        .unwrap_err();
+        // parse.rs classifies "unknown field" errors from the nested
+        // spelling as UnknownField, which is the right bucket here too.
+        assert!(
+            matches!(err, PipelineParseError::UnknownField(_)),
+            "got: {err:?}"
+        );
+    }
+
+    /// Size strings are validated at parse time: a typo fails the pipeline
+    /// before anything is scheduled, not when a VM is being provisioned.
+    #[test]
+    fn parse_rejects_invalid_vm_memory_size() {
+        let err = parse_yaml(
+            r#"
+stages: [build]
+build:
+  stage: build
+  vm:
+    template: ci-runner
+    memory: four-gigabytes
+  script: [make]
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PipelineParseError::InvalidVmSize { .. }),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn vm_size_parsing() {
+        use crate::types::VmJob;
+        assert_eq!(VmJob::parse_size("4G").unwrap(), 4 * 1024 * 1024 * 1024);
+        assert_eq!(VmJob::parse_size("512M").unwrap(), 512 * 1024 * 1024);
+        assert_eq!(VmJob::parse_size("65536K").unwrap(), 65536 * 1024);
+        assert_eq!(VmJob::parse_size("1073741824").unwrap(), 1_073_741_824);
+        // Whitespace and lower-case units are accepted.
+        assert_eq!(VmJob::parse_size(" 2g ").unwrap(), 2 * 1024 * 1024 * 1024);
+        // Garbage is an error.
+        assert!(VmJob::parse_size("").is_err());
+        assert!(VmJob::parse_size("G").is_err());
+        assert!(VmJob::parse_size("4X").is_err());
+        assert!(VmJob::parse_size("four").is_err());
+    }

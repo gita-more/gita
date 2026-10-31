@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-use crate::types::{ParsedJob, PipelineParseError, PipelineSpec, TriggerRule, Triggers};
+use crate::types::{ParsedJob, PipelineParseError, PipelineSpec, TriggerRule, Triggers, VmJob};
 
 // ----- Raw YAML shapes --------------------------------------------------
 
@@ -15,7 +15,7 @@ const RESERVED_TOP_LEVEL_KEYS: [&str; 4] = ["stages", "jobs", "only", "except"];
 
 /// The keys a job definition may carry. A top-level mapping with none of
 /// them is a typo in a top-level keyword, not a job.
-const JOB_KEYS: [&str; 3] = ["stage", "script", "needs"];
+const JOB_KEYS: [&str; 4] = ["stage", "script", "needs", "vm"];
 
 /// The whole `.gita-ci.yml` document, flattened so that top-level job
 /// entries and a `jobs:` mapping can be merged before validation.
@@ -85,6 +85,20 @@ impl RawScript {
     }
 }
 
+/// The `vm:` block as written in the YAML. Everything but `template` is
+/// an optional override.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawVmJob {
+    template: String,
+    #[serde(default)]
+    cpu: Option<u64>,
+    #[serde(default)]
+    memory: Option<String>,
+    #[serde(default)]
+    disk: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawJob {
@@ -92,6 +106,8 @@ struct RawJob {
     script: Option<RawScript>,
     #[serde(default)]
     needs: Vec<String>,
+    #[serde(default)]
+    vm: Option<RawVmJob>,
 }
 
 // ----- Public API -------------------------------------------------------
@@ -180,11 +196,32 @@ pub fn parse_yaml(src: &str) -> Result<PipelineSpec, PipelineParseError> {
         if script.is_empty() {
             return Err(PipelineParseError::MissingScript { job: name.clone() });
         }
+        // A `vm:` block may only override resources; validate the size
+        // strings here, at parse time, so a typo fails the pipeline
+        // before anything is scheduled.
+        let vm = match raw_job.vm {
+            None => None,
+            Some(raw_vm) => {
+                if let Some(ref mem) = raw_vm.memory {
+                    VmJob::parse_size(mem)?;
+                }
+                if let Some(ref disk) = raw_vm.disk {
+                    VmJob::parse_size(disk)?;
+                }
+                Some(VmJob {
+                    template: raw_vm.template,
+                    cpu: raw_vm.cpu,
+                    memory: raw_vm.memory,
+                    disk: raw_vm.disk,
+                })
+            }
+        };
         jobs.push(ParsedJob {
             name,
             stage,
             script,
             needs: raw_job.needs,
+            vm,
         });
     }
 

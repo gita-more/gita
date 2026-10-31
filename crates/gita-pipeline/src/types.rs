@@ -86,6 +86,61 @@ pub struct ParsedJob {
     pub stage: String,
     pub script: Vec<String>,
     pub needs: Vec<String>,
+    /// Run this job inside a virtual machine from the gita VM cluster.
+    ///
+    /// `None` runs the job directly on the runner host (the historical
+    /// behaviour). When set, the runner provisions a VM from the named
+    /// cluster template — with the optional resource overrides applied —
+    /// executes the script inside it, and reclaims the VM afterwards.
+    pub vm: Option<VmJob>,
+}
+
+/// The `vm:` block of a job: which cluster template to instantiate, and
+/// what to override from it.
+///
+/// The overrides are deliberately coarse (`cpu` in whole cores, `memory`
+/// / `disk` as `<number><unit>` strings). Templates carry the fine-tuned
+/// spec; a job only pins what it actually cares about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmJob {
+    /// The cluster VM template to instantiate, e.g. `ci-runner`.
+    pub template: String,
+    /// Override the template's CPU (whole cores; the runner converts to
+    /// millicores).
+    pub cpu: Option<u64>,
+    /// Override the template's memory, e.g. `"4G"`.
+    pub memory: Option<String>,
+    /// Override the template's disk, e.g. `"20G"`.
+    pub disk: Option<String>,
+}
+
+impl VmJob {
+    /// Parse a size string like `4G`, `512M`, or a bare byte count into
+    /// bytes. `G`/`M`/`K` are binary units (1024-based), matching the
+    /// convention the rest of gita uses for disk and memory sizes.
+    pub fn parse_size(s: &str) -> Result<u64, PipelineParseError> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(PipelineParseError::InvalidVmSize {
+                value: s.to_string(),
+            });
+        }
+        let (num, unit): (&str, u64) = if let Some(rest) = s.strip_suffix(['G', 'g']) {
+            (rest, 1024 * 1024 * 1024)
+        } else if let Some(rest) = s.strip_suffix(['M', 'm']) {
+            (rest, 1024 * 1024)
+        } else if let Some(rest) = s.strip_suffix(['K', 'k']) {
+            (rest, 1024)
+        } else {
+            (s, 1)
+        };
+        let num: u64 = num.trim().parse().map_err(|_| {
+            PipelineParseError::InvalidVmSize {
+                value: s.to_string(),
+            }
+        })?;
+        Ok(num * unit)
+    }
 }
 
 /// A [`ParsedJob`] plus its resolved position in the stage DAG.
@@ -122,6 +177,8 @@ pub enum PipelineParseError {
     MissingScript { job: String },
     #[error("cycle detected in job needs graph: {0:?}")]
     Cycle(Vec<String>),
+    #[error("invalid vm size value: {value:?} (expected e.g. 4G, 512M, 65536K, or a byte count)")]
+    InvalidVmSize { value: String },
     #[error("job '{job}' needs '{dep}', which runs in a later stage ('{dep_stage}') than '{job}' ('{job_stage}')")]
     ForwardDependency {
         job: String,
