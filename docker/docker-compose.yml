@@ -55,6 +55,11 @@ services:
       # can only reach the user through the API response. Leave this off in
       # production — see config/config.example.toml.
       - GITA_SERVER_ALLOW_INSECURE_PASSWORD_RESET=${GITA_ALLOW_INSECURE_PASSWORD_RESET:-false}
+      # VM cluster control plane (gita-vm-node agents register via it).
+      # Dev default below; in production set GITA_VM_ENABLED=true and a
+      # strong GITA_VM_API_KEY in .env instead of relying on defaults.
+      - GITA_SERVER_VM_ENABLED=${GITA_VM_ENABLED:-false}
+      - GITA_SERVER_VM_API_KEY=${GITA_VM_API_KEY:-}
     volumes:
       # Persist repositories (database state lives in the postgres volume)
       - gita-data:/data
