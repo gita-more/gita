@@ -1543,12 +1543,14 @@ name = "gita-ci-agent"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "axum",
  "chrono",
  "clap",
  "gita-workflow",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

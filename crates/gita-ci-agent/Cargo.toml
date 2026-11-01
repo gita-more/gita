@@ -25,5 +25,9 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 gita-workflow = { path = "../gita-workflow" }
 
+[dev-dependencies]
+axum = { workspace = true }
+tempfile = "3"
+
 [lints]
 workspace = true
