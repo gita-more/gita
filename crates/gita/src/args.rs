@@ -548,3 +548,99 @@ pub enum ConfigCommand {
     /// Print the resolved configuration.
     Show,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, clap::Error> {
+        let mut all = vec!["gita"];
+        all.extend_from_slice(args);
+        Args::try_parse_from(all)
+    }
+
+    /// No subcommand at all is the help screen, not an error.
+    #[test]
+    fn no_subcommand_is_help() {
+        let args = parse(&[]).unwrap();
+        assert!(args.command.is_none());
+        assert!(!args.json);
+        assert_eq!(args.url, None);
+    }
+
+    /// Each domain routes into its subcommand enum.
+    #[test]
+    fn subcommands_route_into_their_domain() {
+        let args = parse(&["repo", "view", "alice", "widgets"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Repo {
+                cmd: RepoCommand::View { .. }
+            })
+        ));
+
+        let args = parse(&["auth", "logout"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Auth {
+                cmd: AuthCommand::Logout
+            })
+        ));
+
+        let args = parse(&["config", "set-url", "http://h:1"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Config {
+                cmd: ConfigCommand::SetUrl { .. }
+            })
+        ));
+    }
+
+    /// A positional argument the command requires is not optional.
+    #[test]
+    fn a_missing_positional_is_an_error() {
+        assert!(parse(&["repo", "view", "alice"]).is_err());
+        assert!(parse(&["repo", "delete"]).is_err());
+        assert!(parse(&["auth", "token", "delete"]).is_err());
+    }
+
+    /// The global flags work from anywhere on the line.
+    #[test]
+    fn the_global_flags_are_global() {
+        let args = parse(&["--json", "repo", "view", "alice", "widgets"]).unwrap();
+        assert!(args.json);
+
+        let args = parse(&["repo", "view", "alice", "widgets", "--json"]).unwrap();
+        assert!(args.json);
+
+        let args = parse(&["--url", "http://h:1", "auth", "whoami"]).unwrap();
+        assert_eq!(args.url.as_deref(), Some("http://h:1"));
+    }
+
+    /// The api command has defaults a user can rely on.
+    #[test]
+    fn the_api_command_has_defaults() {
+        let args = parse(&["api", "user"]).unwrap();
+        match args.command {
+            Some(Command::Api { path, method, body }) => {
+                assert_eq!(path, "user");
+                assert_eq!(method, "GET");
+                assert_eq!(body, None);
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    /// The credential helper defaults to `get`, the operation git asks
+    /// for first.
+    #[test]
+    fn the_credential_helper_defaults_to_get() {
+        let args = parse(&["auth", "credential"]).unwrap();
+        match args.command {
+            Some(Command::Auth {
+                cmd: AuthCommand::Credential { operation },
+            }) => assert_eq!(operation, "get"),
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+}
