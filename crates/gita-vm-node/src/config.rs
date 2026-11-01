@@ -73,18 +73,27 @@ impl NodeConfig {
     }
 }
 
+/// The host's name, or an error if the platform has none.
+///
+/// `gethostname` fails with a negative return value; the bytes after the
+/// name are whatever was on the stack, so they must not be read.
 fn hostname() -> std::io::Result<String> {
     let mut buf = [0u8; 256];
     let len = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
-    if len != 0 {
-        return Ok(hostname_from(&buf));
+    if len < 0 {
+        return Err(std::io::Error::last_os_error());
     }
-    Ok(hostname_from(&buf))
+    // glibc returns 0 and leaves the name NUL-terminated in the buffer;
+    // the raw syscall returns the length of the name without the
+    // terminator. Either way the name ends at the first NUL.
+    let limit = if len > 0 { (len as usize).min(buf.len()) } else { buf.len() };
+    Ok(hostname_from(&buf[..limit]))
 }
 
 /// The name in the bytes `gethostname` reported.
 fn hostname_from(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).trim_end_matches('\0').to_string()
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).to_string()
 }
 
 #[cfg(test)]
