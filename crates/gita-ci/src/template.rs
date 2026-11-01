@@ -186,3 +186,92 @@ mod tests {
         assert!(json.contains("vmlinux"));
     }
 }
+#[cfg(test)]
+mod client_tests {
+    use super::*;
+
+    /// A raw HTTP server that answers every request with `status` and
+    /// records the request line.
+    async fn canned_server(status_line: &'static str, body: &'static str) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let n = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..n]).to_string();
+            let _ = tx.send(request);
+            let response = format!(
+                "{status_line}\r\ncontent-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            use tokio::io::AsyncWriteExt;
+            let _ = sock.write_all(response.as_bytes()).await;
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    fn a_request() -> CreateTemplateRequest {
+        CreateTemplateRequest {
+            name: "test".into(),
+            spec: VmSpec {
+                cpu_millis: 4000,
+                memory_bytes: 4_000_000_000,
+                disk_bytes: 20_000_000_000,
+                image: ImageRef {
+                    name: "ubuntu-24.04".into(),
+                    digest: None,
+                },
+                kernel: None,
+                networks: vec![],
+                backend: "qemu".into(),
+                arch: None,
+                user_data: None,
+            },
+        }
+    }
+
+    /// The trailing slash of the control URL is dropped, so the path
+    /// the client asks for has exactly one separator.
+    #[tokio::test]
+    async fn the_control_url_loses_its_trailing_slash() {
+        let (url, received) = canned_server("HTTP/1.1 404 Not Found", "{}").await;
+        let client = TemplateClient::new(&format!("{url}/"));
+        let err = client.create(a_request()).await.expect_err("404 is an error");
+        assert!(
+            err.to_string().contains("404"),
+            "the error names the status: {err}"
+        );
+
+        let request = received.await.unwrap();
+        let request_line = request.lines().next().unwrap();
+        assert_eq!(
+            request_line, "POST /api/v1/templates HTTP/1.1",
+            "got {request_line}"
+        );
+    }
+
+    /// A response that is not JSON is an error, not an empty template.
+    #[tokio::test]
+    async fn a_response_that_is_not_json_is_an_error() {
+        let (url, _received) = canned_server("HTTP/1.1 404 Not Found", "not json").await;
+        let client = TemplateClient::new(&url);
+        let err = client.create(a_request()).await.expect_err("404 is an error");
+        // The body the server sent is part of the error: it is the only
+        // clue to what went wrong.
+        assert!(err.to_string().contains("not json"), "got {err}");
+    }
+
+    /// Listing templates on a server that refuses is an error that
+    /// names the status.
+    #[tokio::test]
+    async fn listing_on_a_server_that_refuses_is_an_error() {
+        let (url, _received) =
+            canned_server("HTTP/1.1 500 Internal Server Error", "boom").await;
+        let client = TemplateClient::new(&url);
+        let err = client.list().await.expect_err("500 is an error");
+        assert!(err.to_string().contains("500"), "got {err}");
+        assert!(err.to_string().contains("boom"), "the body is in the error: {err}");
+    }
+}
