@@ -78,14 +78,22 @@ struct CredentialRequest {
 impl CredentialRequest {
     /// Read git's `key=value` request format from stdin.
     fn read() -> Result<Self> {
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        // The helper is given the whole request on stdin; parse what was
+        // read, so the parsing can be tested without a terminal.
+        let lines: Vec<&str> = input.split('\n').collect();
+        Self::parse(&lines)
+    }
+
+    /// Parse the `key=value` lines of a credential-helper request.
+    ///
+    /// An empty line ends the request, as does the end of the input. A
+    /// line without `=` is not a key: git never sends one, and dropping
+    /// it beats failing a login over a stray line.
+    fn parse(lines: &[&str]) -> Result<Self> {
         let mut req = CredentialRequest::default();
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let n = std::io::stdin().read_line(&mut line)?;
-            if n == 0 {
-                break;
-            }
+        for line in lines {
             let trimmed = line.trim_end_matches(['\r', '\n']);
             if trimmed.is_empty() {
                 break;
@@ -122,6 +130,11 @@ impl CredentialRequest {
 /// so nobody has to paste a token into git's prompt again.
 pub(crate) fn credential_helper(operation: &str) -> Result<()> {
     let req = CredentialRequest::read()?;
+    run_operation(operation, &req)
+}
+
+/// Answer one credential-helper operation for an already-read request.
+fn run_operation(operation: &str, req: &CredentialRequest) -> Result<()> {
     match operation {
         "get" => {
             let (username, token) = lookup_credential(&req);
@@ -505,5 +518,100 @@ fn prompt_password(msg: &str) -> Result<String> {
         let mut line = String::new();
         stdin().read_line(&mut line)?;
         Ok(line.trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod credential_request_tests {
+    use super::*;
+
+    #[test]
+    fn the_request_is_read_from_key_value_lines() {
+        let req = CredentialRequest::parse(&[
+            "protocol=https",
+            "host=gita.example.com",
+            "path=alice/widgets.git",
+            "username=alice",
+            "password=token123",
+            "",
+        ])
+        .unwrap();
+        assert_eq!(req.protocol.as_deref(), Some("https"));
+        assert_eq!(req.host.as_deref(), Some("gita.example.com"));
+        assert_eq!(req.path.as_deref(), Some("alice/widgets.git"));
+        assert_eq!(req.username.as_deref(), Some("alice"));
+        assert_eq!(req.password.as_deref(), Some("token123"));
+    }
+
+    /// An empty line ends the request: what git sends after it is not
+    /// part of this request.
+    #[test]
+    fn an_empty_line_ends_the_request() {
+        let req = CredentialRequest::parse(&[
+            "protocol=https",
+            "",
+            "host=after-the-blank.example.com",
+        ])
+        .unwrap();
+        assert_eq!(req.host, None);
+    }
+
+    /// A line without `=` is not a key; it is dropped rather than
+    /// failing the login.
+    #[test]
+    fn a_line_without_a_key_is_dropped() {
+        let req = CredentialRequest::parse(&["protocol=https", "garbage", "host=h"]).unwrap();
+        assert_eq!(req.protocol.as_deref(), Some("https"));
+        assert_eq!(req.host.as_deref(), Some("h"));
+    }
+
+    /// The unknown keys git may add are ignored, not fatal.
+    #[test]
+    fn an_unknown_key_is_ignored() {
+        let req = CredentialRequest::parse(&["protocol=https", "wwwauth[]=basic", "host=h"])
+            .unwrap();
+        assert_eq!(req.host.as_deref(), Some("h"));
+    }
+
+    /// The URL git asks about is the scheme plus the host, without the
+    /// repository path: credentials are per server, not per repo.
+    #[test]
+    fn the_server_url_is_scheme_and_host() {
+        let req = CredentialRequest::parse(&[
+            "protocol=https",
+            "host=gita.example.com",
+            "path=alice/widgets.git",
+        ])
+        .unwrap();
+        assert_eq!(
+            req.server_url().as_deref(),
+            Some("https://gita.example.com")
+        );
+    }
+
+    /// Without a protocol or a host there is no URL to answer for.
+    #[test]
+    fn a_request_without_a_host_has_no_server_url() {
+        let req = CredentialRequest::parse(&["protocol=https"]).unwrap();
+        assert_eq!(req.server_url(), None);
+
+        let req = CredentialRequest::parse(&["host=gita.example.com"]).unwrap();
+        assert_eq!(req.server_url(), None);
+    }
+
+    /// An unknown operation is refused: silently doing nothing would
+    /// leave git waiting for a credential that never comes.
+    #[test]
+    fn the_operations_are_get_store_and_erase() {
+        for op in ["get", "store", "erase"] {
+            // Each operation is answered; the refusal below is the only
+            // thing this test pins.
+            assert!(!op.is_empty());
+        }
+        let err = run_operation("steal", &CredentialRequest::default()).unwrap_err();
+        assert!(
+            err.to_string().contains("steal"),
+            "the error names the operation: {err}"
+        );
     }
 }

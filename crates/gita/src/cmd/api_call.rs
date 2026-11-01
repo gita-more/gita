@@ -13,13 +13,7 @@ pub(super) async fn call_api(
     body: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    // Paths may be passed with or without the `/api` prefix; normalise.
-    let path = path.trim_start_matches('/');
-    let path = if path.starts_with("api/") {
-        format!("/{path}")
-    } else {
-        format!("/api/{path}")
-    };
+    let path = normalize_api_path(path);
 
     let body_value = match body {
         Some(b) => {
@@ -35,4 +29,43 @@ pub(super) async fn call_api(
         println!("{}", serde_json::to_string_pretty(&v)?);
     }
     Ok(())
+}
+
+/// The path a user typed, turned into the path the API answers on.
+///
+/// Paths may be passed with or without the `/api` prefix, and with or
+/// without the leading slash; all of it has to land on `/api/...`.
+fn normalize_api_path(path: &str) -> String {
+    let path = path.trim_start_matches('/');
+    if path.starts_with("api/") {
+        format!("/{path}")
+    } else {
+        format!("/api/{path}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_api_path;
+
+    #[test]
+    fn a_bare_path_gets_the_api_prefix() {
+        assert_eq!(normalize_api_path("user"), "/api/user");
+        assert_eq!(normalize_api_path("/user"), "/api/user");
+    }
+
+    /// A user who already typed the prefix must not end up with two.
+    #[test]
+    fn a_path_with_the_prefix_is_left_alone() {
+        assert_eq!(normalize_api_path("api/user"), "/api/user");
+        assert_eq!(normalize_api_path("/api/user"), "/api/user");
+    }
+
+    #[test]
+    fn a_nested_path_is_preserved() {
+        assert_eq!(
+            normalize_api_path("/repos/alice/widgets.git"),
+            "/api/repos/alice/widgets.git"
+        );
+    }
 }
