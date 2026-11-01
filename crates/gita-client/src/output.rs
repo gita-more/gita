@@ -29,6 +29,12 @@ impl Table {
     }
 
     pub fn print(&self) {
+        print!("{}", self.render());
+    }
+
+    /// The table as text, so that tests (and anything else) can look
+    /// at what would be drawn.
+    fn render(&self) -> String {
         let widths = self.column_widths();
         let sep: String = widths
             .iter()
@@ -36,20 +42,22 @@ impl Table {
             .collect::<Vec<_>>()
             .join("")
             + "+\n";
-        print!("{sep}");
-        self.print_row(
+        let mut out = String::new();
+        out.push_str(&sep);
+        out.push_str(&self.render_row(
             self.headers
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect::<Vec<_>>()
                 .as_slice(),
             &widths,
-        );
-        print!("{sep}");
+        ));
+        out.push_str(&sep);
         for row in &self.rows {
-            self.print_row(row, &widths);
+            out.push_str(&self.render_row(row, &widths));
         }
-        print!("{sep}");
+        out.push_str(&sep);
+        out
     }
 
     fn column_widths(&self) -> Vec<usize> {
@@ -64,12 +72,56 @@ impl Table {
         widths
     }
 
-    fn print_row(&self, cells: &[String], widths: &[usize]) {
+    fn render_row(&self, cells: &[String], widths: &[usize]) -> String {
         let parts: Vec<String> = cells
             .iter()
             .zip(widths.iter())
             .map(|(c, w)| format!(" {:<w$} ", c, w = w))
             .collect();
-        println!("|{}|", parts.join("|"));
+        format!("|{}|\n", parts.join("|"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The columns are as wide as their widest cell, headers included.
+    #[test]
+    fn the_columns_fit_their_widest_cell() {
+        let mut table = Table::new(&["NAME", "DESCRIPTION"]);
+        table.add_row(vec!["widgets".to_string(), "a repository".to_string()]);
+        table.add_row(vec![
+            "a-very-long-name".to_string(),
+            String::new(),
+        ]);
+        assert_eq!(table.column_widths(), vec![16, 12]);
+    }
+
+    /// A row shorter than the header row does not shift the columns.
+    #[test]
+    fn a_short_row_does_not_shift_the_columns() {
+        let mut table = Table::new(&["NAME", "DESCRIPTION"]);
+        table.add_row(vec!["only-one".to_string()]);
+        assert_eq!(table.column_widths(), vec![8, 11]);
+    }
+
+    /// The drawn table frames every row to the same width and lines
+    /// the cells up inside it.
+    #[test]
+    fn the_drawn_table_lines_up() {
+        let mut table = Table::new(&["NAME"]);
+        table.add_row(vec!["a".to_string()]);
+        table.add_row(vec!["longer".to_string()]);
+
+        let drawn = table.render();
+        let lines: Vec<&str> = drawn.lines().collect();
+        // top frame, header, frame, two rows, frame
+        assert_eq!(lines.len(), 6, "got:\n{drawn}");
+        for line in &lines {
+            assert_eq!(line.len(), lines[0].len(), "every line is framed the same: {drawn}");
+        }
+        assert!(drawn.contains("| NAME   |"), "the header is left-aligned: {drawn}");
+        assert!(drawn.contains("| longer |"), "got:\n{drawn}");
     }
 }
