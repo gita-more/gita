@@ -138,9 +138,16 @@ pub(crate) fn credential_helper(operation: &str) -> Result<()> {
             Ok(())
         }
         "store" => {
+            // Only keep credentials for servers we already know. The
+            // helper is registered for git as a whole, so `git push
+            // origin` (GitHub, say) would otherwise end up writing that
+            // host's password into our plaintext file.
             let Some(url) = req.server_url() else {
                 return Ok(());
             };
+            if !is_known_server(&url) {
+                return Ok(());
+            }
             if let Some(username) = req.username.as_deref() {
                 let _ = credential::set_username(&url, username);
             }
@@ -150,8 +157,25 @@ pub(crate) fn credential_helper(operation: &str) -> Result<()> {
             Ok(())
         }
         "erase" => {
-            if let Some(url) = req.server_url() {
-                let _ = credential::delete_secret(&url);
+            // Git asks to erase the credential it holds — that pair, not
+            // "everything for this host". Wiping the whole entry would
+            // throw away a good token whenever git erases a stale one it
+            // happened to try first.
+            let Some(url) = req.server_url() else {
+                return Ok(());
+            };
+            match req.password.as_deref() {
+                Some(password) => {
+                    let stored = credential::get_secret(&url).ok().flatten();
+                    if stored.as_deref() == Some(password) {
+                        let _ = credential::delete_secret(&url);
+                    }
+                }
+                // No password in the request: git wants the host's
+                // credentials gone.
+                None => {
+                    let _ = credential::delete_secret(&url);
+                }
             }
             Ok(())
         }
@@ -164,6 +188,10 @@ pub(crate) fn credential_helper(operation: &str) -> Result<()> {
 /// First the file fallback, matched by scheme and host. Then the default
 /// server's own entry — the keyring has no "list" operation, so a token
 /// that lives only in the keyring is reachable through the default URL.
+///
+/// The default server is only consulted when git is actually asking
+/// about *that* server: handing a gita token to git for some other host
+/// (github.com, say) would ship the secret to a third party.
 fn lookup_credential(req: &CredentialRequest) -> (Option<String>, Option<String>) {
     if let (Some(protocol), Some(host)) = (req.protocol.as_deref(), req.host.as_deref()) {
         if let Ok(Some(site)) = credential::lookup_by_host(protocol, host) {
@@ -172,15 +200,36 @@ fn lookup_credential(req: &CredentialRequest) -> (Option<String>, Option<String>
             }
         }
     }
-    // Fall back to the default server.
+    // Fall back to the default server — but only for that server.
+    let Some(request_url) = req.server_url() else {
+        return (None, None);
+    };
     if let Ok(config) = gita_client::config::Config::load(None) {
-        let token = credential::get_secret(&config.server_url).ok().flatten();
-        let username = credential::get_username(&config.server_url).ok().flatten();
-        if token.is_some() {
-            return (username, token);
+        if credential::same_host(&config.server_url, &request_url) {
+            let token = credential::get_secret(&config.server_url).ok().flatten();
+            let username = credential::get_username(&config.server_url).ok().flatten();
+            if token.is_some() {
+                return (username, token);
+            }
         }
     }
     (None, None)
+}
+
+/// Whether `url` is a server this CLI already holds credentials for.
+fn is_known_server(url: &str) -> bool {
+    let Some((scheme, host)) = credential::split_scheme_host(url) else {
+        return false;
+    };
+    if let Ok(Some(site)) = credential::lookup_by_host(&scheme, &host) {
+        if site.token.is_some() {
+            return true;
+        }
+    }
+    if let Ok(config) = gita_client::config::Config::load(None) {
+        return credential::same_host(&config.server_url, url);
+    }
+    false
 }
 
 /// Store the token for `base_url`, telling the user where it landed.

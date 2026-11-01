@@ -319,13 +319,48 @@ pub struct SiteCredential {
     pub token: Option<String>,
 }
 
+/// The scheme and authority of a URL, lowercased — e.g. `http://host:3100`.
+///
+/// Two URLs point at the same server when this matches. The path is
+/// irrelevant (git asks about a repository, the credential is per
+/// server), and the default port is spelled out so that `host` and
+/// `host:80` compare equal.
+fn authority_of(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let authority = match parsed.port_or_known_default() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    };
+    Some(format!("{}://{}", parsed.scheme().to_ascii_lowercase(), authority))
+}
+
+/// Split a URL into its scheme and host[:port].
+///
+/// Returns `None` for anything that does not parse as a URL.
+pub fn split_scheme_host(url: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let host = match parsed.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    };
+    Some((parsed.scheme().to_ascii_lowercase(), host))
+}
+
+/// Whether two URLs point at the same server.
+pub fn same_host(a: &str, b: &str) -> bool {
+    match (authority_of(a), authority_of(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Find the credentials for a server by scheme and authority.
 ///
 /// The credential store is keyed by full URL, but git only tells a helper
 /// the scheme and the host (`https`, `example.com:8443`) — the path is
-/// per-repository and the port may be spelled differently
-/// (`example.com` vs `example.com:443`). So the match is on
-/// scheme + authority, and the first hit wins.
+/// per-repository. So the match is on scheme + authority.
 pub fn lookup_by_host(scheme: &str, host: &str) -> Result<Option<SiteCredential>> {
     let want = format!("{}://{}", scheme.to_ascii_lowercase(), host.to_ascii_lowercase());
 
@@ -334,25 +369,7 @@ pub fn lookup_by_host(scheme: &str, host: &str) -> Result<Option<SiteCredential>
     // back to the default URL's own entry.
     let creds = read_credentials();
     for (url, site) in &creds.sites {
-        let matches = match url::Url::parse(url) {
-            Ok(parsed) => {
-                let authority = format!(
-                    "{}://{}",
-                    parsed.scheme().to_ascii_lowercase(),
-                    parsed
-                        .host_str()
-                        .map(|h| match parsed.port() {
-                            Some(p) => format!("{h}:{p}"),
-                            None => h.to_string(),
-                        })
-                        .unwrap_or_default()
-                );
-                authority == want
-                    || (parsed.port().is_none() && authority == format!("{want}"))
-            }
-            Err(_) => false,
-        };
-        if matches {
+        if authority_of(url).as_deref() == Some(want.as_str()) {
             return Ok(Some(SiteCredential {
                 url: url.clone(),
                 username: site.username.clone(),

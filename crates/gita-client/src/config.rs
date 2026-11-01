@@ -13,6 +13,31 @@ pub struct Config {
     pub token: Option<String>,
 }
 
+/// Normalize a user-supplied server URL.
+///
+/// Three things have to be true for the URL to be usable — and for the
+/// credential store to hit the same key the user logged in with:
+///
+/// * it has a scheme (a bare `host:3100` is a *relative* URL, and the
+///   request would fail with reqwest's "relative URL without a base");
+/// * it has no trailing slash (otherwise `http://host:3100/` and
+///   `http://host:3100` would be two different credential keys);
+/// * it is not empty.
+pub fn normalize_url(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("the server URL is empty");
+    }
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        // `host`, `host:port`, `192.168.0.1:3000` — all mean plain HTTP
+        // to the CLI, which only speaks HTTP.
+        format!("http://{trimmed}")
+    };
+    Ok(with_scheme.trim_end_matches('/').to_string())
+}
+
 impl Config {
     /// Load configuration.
     ///
@@ -29,6 +54,7 @@ impl Config {
             .or(std::env::var("GITA_URL").ok())
             .or_else(|| config_file_url())
             .context("no server URL configured: pass --url, set GITA_URL, or run `gita config set-url <url>`")?;
+        let server_url = normalize_url(&server_url)?;
 
         let token = std::env::var("GITA_TOKEN")
             .ok()
@@ -39,6 +65,7 @@ impl Config {
 
     /// Save the server URL to the config file.
     pub fn save_url(url: &str) -> Result<()> {
+        let url = normalize_url(url)?;
         let path = config_path()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -131,6 +158,44 @@ fn parse_config_url(content: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A URL without a scheme is a *relative* URL as far as reqwest is
+    /// concerned, and the request fails with "relative URL without a
+    /// base". The CLI has to fill the scheme in.
+    #[test]
+    fn normalize_url_fills_in_the_scheme() {
+        assert_eq!(
+            normalize_url("192.168.1.160:3100").unwrap(),
+            "http://192.168.1.160:3100"
+        );
+        assert_eq!(
+            normalize_url("gita.example.com").unwrap(),
+            "http://gita.example.com"
+        );
+        assert_eq!(
+            normalize_url("https://gita.example.com").unwrap(),
+            "https://gita.example.com"
+        );
+    }
+
+    /// The trailing slash decides the credential key, so it must not
+    /// create a second entry for the same server.
+    #[test]
+    fn normalize_url_strips_the_trailing_slash() {
+        assert_eq!(
+            normalize_url("http://127.0.0.1:3100/").unwrap(),
+            "http://127.0.0.1:3100"
+        );
+        assert_eq!(
+            normalize_url("  http://127.0.0.1:3100  ").unwrap(),
+            "http://127.0.0.1:3100"
+        );
+    }
+
+    #[test]
+    fn normalize_url_rejects_an_empty_url() {
+        assert!(normalize_url("   ").is_err());
+    }
 
     #[test]
     fn config_url_is_parsed_from_the_toml() {

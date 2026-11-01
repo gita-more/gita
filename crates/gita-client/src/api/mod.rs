@@ -44,6 +44,10 @@ pub struct GitaClient {
 
 impl GitaClient {
     pub fn new(base_url: String, token: Option<String>) -> Result<Self> {
+        // A URL without a scheme is relative as far as reqwest is
+        // concerned, and the request would fail with "relative URL
+        // without a base". Fill it in rather than passing it on.
+        let base_url = crate::config::normalize_url(&base_url)?;
         let http = Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
