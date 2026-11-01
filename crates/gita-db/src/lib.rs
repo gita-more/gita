@@ -85,7 +85,15 @@ impl Db {
     /// (`gita_test_<pid>_<n>`) and this method pins `search_path` to it on
     /// every pooled connection *before* running migrations, so all tables
     /// land in the test schema rather than `public`.
+    ///
+    /// The schema is created if it does not exist yet. Without that, the
+    /// `search_path` points at a schema Postgres has never heard of and
+    /// every statement in the migration fails with "no schema has been
+    /// selected to create in" — a confusing startup failure for what is
+    /// really just a missing schema.
     pub async fn connect_with_schema(url: &str, schema: &str) -> Result<Self> {
+        ensure_schema_exists(url, schema).await?;
+
         let schema_conn = schema.to_string();
         let pool = PgPoolOptions::new()
             .max_connections(10)
@@ -93,7 +101,7 @@ impl Db {
             .after_connect(move |conn, _meta| {
                 let schema = schema_conn.clone();
                 Box::pin(async move {
-                    sqlx::query(&format!("SET search_path TO \"{schema}\""))
+                    sqlx::query(&format!("SET search_path TO {}", quote_ident(&schema)))
                         .execute(conn)
                         .await?;
                     Ok(())
@@ -254,6 +262,41 @@ fn parse_event_type(s: &str) -> Option<EventType> {
 /// An isolated schema has exactly one owner — the caller that created it
 /// — so the lock protects nothing here. Locking stays on for the default
 /// `public` schema, where several processes really can race.
+/// Quote a Postgres identifier so it can be interpolated into DDL.
+///
+/// The schema name comes from the config file, so it is untrusted input:
+/// a name containing a quote would otherwise change the meaning of the
+/// statement. Doubling the quotes is the standard way to escape an
+/// identifier.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Create `schema` if it does not exist yet.
+///
+/// Runs on its own connection, before the pooled connections pin their
+/// `search_path` to it. `CREATE SCHEMA IF NOT EXISTS` is not safe against
+/// truly concurrent creation (it can still raise a duplicate-key error
+/// on `pg_namespace`), which is why the pool is opened with a single
+/// connection here and the schema name is suffixed per use in tests.
+async fn ensure_schema_exists(url: &str, schema: &str) -> Result<()> {
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(url)
+        .await
+        .with_context(|| format!("failed to connect to database {url}"))?;
+    sqlx::query(&format!(
+        "CREATE SCHEMA IF NOT EXISTS {}",
+        quote_ident(schema)
+    ))
+    .execute(&pool)
+    .await
+    .with_context(|| format!("failed to create schema {schema}"))?;
+    pool.close().await;
+    Ok(())
+}
+
 async fn migrate_isolated(pool: &PgPool) -> Result<()> {
     let mut migrator = sqlx::migrate!("./migrations");
     migrator.set_locking(false);
@@ -328,6 +371,118 @@ mod tests {
     async fn fresh_db() -> Db {
         let db = new_test_db(&url()).await;
         db
+    }
+
+    /// Connecting to a schema that does not exist yet must create it.
+    ///
+    /// The alternative was a startup failure deep inside the migration
+    /// ("no schema has been selected to create in") for what is really
+    /// just a missing schema — an error message that points nowhere
+    /// near the cause.
+    #[tokio::test]
+    async fn connect_with_schema_creates_the_schema() {
+        let schema = format!(
+            "gita_mk_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        // The schema does not exist yet.
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url())
+            .await
+            .unwrap();
+        let exists: Option<(String,)> = sqlx::query_as(
+            "SELECT nspname FROM pg_namespace WHERE nspname = $1",
+        )
+        .bind(&schema)
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert!(exists.is_none(), "the schema must not exist beforehand");
+        pool.close().await;
+
+        // Connecting must succeed and land the tables in that schema.
+        let db = Db::connect_with_schema(&url(), &schema).await.unwrap();
+        db.create_user("bob", "bob@example.com", "hash")
+            .await
+            .unwrap();
+
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url())
+            .await
+            .unwrap();
+        let count: (i64,) = sqlx::query_as(&format!("SELECT count(*) FROM \"{schema}\".users"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 1, "the user must live in the new schema");
+
+        // And nothing leaked into `public` — the shared dev database may
+        // already hold rows there, so check for *this* user specifically.
+        let public_bob: (i64,) =
+            sqlx::query_as("SELECT count(*) FROM public.users WHERE username = 'bob'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(public_bob.0, 0, "the user must not land in public");
+
+        sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
+
+    /// A schema name containing a quote must not be able to change the
+    /// meaning of the DDL that uses it.
+    #[test]
+    fn quote_ident_escapes_quotes() {
+        assert_eq!(quote_ident("plain"), "\"plain\"");
+        assert_eq!(quote_ident("we\"ird"), "\"we\"\"ird\"");
+
+        // An injected quote is doubled, so it stays inside the identifier
+        // instead of terminating it early.
+        let hostile = quote_ident("a\"; DROP SCHEMA public CASCADE; --");
+        assert!(
+            hostile.starts_with("\"a\"\";"),
+            "the quote must be doubled, got {hostile}"
+        );
+        assert!(hostile.ends_with("\""), "must end with the closing quote");
+
+        // The quoted identifier is well-formed: scanning it with
+        // Postgres' own rule (a doubled quote inside the identifier is a
+        // literal quote, a single one ends it), the whole string is one
+        // identifier that is opened and closed exactly once.
+        let mut chars = hostile.chars().peekable();
+        let mut inside = false;
+        let mut opened = 0;
+        let mut closed = 0;
+        while let Some(c) = chars.next() {
+            if c != '"' {
+                continue;
+            }
+            if inside {
+                if chars.peek() == Some(&'"') {
+                    // Doubled quote: a literal quote, still inside.
+                    chars.next();
+                } else {
+                    inside = false;
+                    closed += 1;
+                }
+            } else {
+                inside = true;
+                opened += 1;
+            }
+        }
+        assert!(!inside, "the identifier must be closed");
+        assert_eq!(opened, 1, "the identifier must be opened once");
+        assert_eq!(closed, 1, "the identifier must be closed once");
     }
 
     #[tokio::test]
