@@ -302,8 +302,14 @@ impl VmmDriver for QemuDriver {
 
     async fn create_snapshot(&self, vm_id: &str, snapshot_path: &Path) -> Result<()> {
         let disk_path = self.vm_dir(vm_id).join("disk.qcow2");
+        let Some(snapshot_name) = snapshot_path.file_name() else {
+            return Err(Error::OperationFailed(format!(
+                "snapshot path has no file name: {}",
+                snapshot_path.display()
+            )));
+        };
         let output = Command::new(&self.qemu_img_bin)
-            .args(["snapshot", "-c", &snapshot_path.file_name().unwrap().to_string_lossy(), &disk_path.to_string_lossy()])
+            .args(["snapshot", "-c", &snapshot_name.to_string_lossy(), &disk_path.to_string_lossy()])
             .output()
             .await
             .map_err(|e| Error::ProcessError(e.to_string()))?;
@@ -318,8 +324,14 @@ impl VmmDriver for QemuDriver {
 
     async fn restore_snapshot(&self, vm_id: &str, snapshot_path: &Path) -> Result<()> {
         let disk_path = self.vm_dir(vm_id).join("disk.qcow2");
+        let Some(snapshot_name) = snapshot_path.file_name() else {
+            return Err(Error::OperationFailed(format!(
+                "snapshot path has no file name: {}",
+                snapshot_path.display()
+            )));
+        };
         let output = Command::new(&self.qemu_img_bin)
-            .args(["snapshot", "-a", &snapshot_path.file_name().unwrap().to_string_lossy(), &disk_path.to_string_lossy()])
+            .args(["snapshot", "-a", &snapshot_name.to_string_lossy(), &disk_path.to_string_lossy()])
             .output()
             .await
             .map_err(|e| Error::ProcessError(e.to_string()))?;
