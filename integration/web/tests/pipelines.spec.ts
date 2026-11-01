@@ -18,8 +18,8 @@ test.describe('pipelines 标签页', () => {
       page.locator('.sidebar-link', { hasText: /Pipelines|流水线/ }).first(),
     ).toBeVisible()
 
-    // URL 加 ?tab=pipelines 切换到 pipelines tab
-    await page.goto(`/${owner}/${name}?tab=pipelines`)
+    // Tab 是路径段（不是查询参数）：/owner/repo/pipelines
+    await page.goto(`/${owner}/${name}/pipelines`)
     // 空目录 / 空 pipeline 都允许; 顶部至少有 PageHeader 标题
     await expect(
       page.locator('.sidebar-link.active', { hasText: /Pipelines|流水线/ }).first(),

@@ -4,6 +4,7 @@ import {
   loginViaApi,
   setUserLocale,
   createRepo,
+  createRepoWithCommit,
   DEFAULT_USER,
 } from './helpers'
 
@@ -47,7 +48,9 @@ test.describe('i18n 切换', () => {
   test('StatusLabel: zh 渲染 "打开 / 已关闭"，en 渲染 open / closed', async ({ page }) => {
     const owner = DEFAULT_USER.username
     const name = `i18n-status-${Date.now()}`
-    await createRepo(page, name)
+    // A repository with a commit: the detail page renders EmptyRepoWelcome
+    // for an empty repository, and the tabs are not reachable there.
+    await createRepoWithCommit(page, name)
 
     // Create an open issue so the Issues tab has a StatusLabel to read.
     const token = await currentToken(page)
@@ -59,7 +62,7 @@ test.describe('i18n 切换', () => {
 
     // ---- zh ----
     await setUserLocale(page, 'zh')
-    await page.goto(`/${owner}/${name}?tab=issues`)
+    await page.goto(`/${owner}/${name}/issues`)
     const zhStatus = page.locator('.status').first()
     await expect(zhStatus).toBeVisible()
     await expect(zhStatus).toContainText('打开')
@@ -67,7 +70,7 @@ test.describe('i18n 切换', () => {
 
     // ---- en ----
     await setUserLocale(page, 'en')
-    await page.goto(`/${owner}/${name}?tab=issues`)
+    await page.goto(`/${owner}/${name}/issues`)
     const enStatus = page.locator('.status').first()
     await expect(enStatus).toBeVisible()
     await expect(enStatus).toContainText('open')

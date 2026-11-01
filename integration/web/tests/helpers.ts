@@ -1,3 +1,7 @@
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, type APIRequestContext, type Page, type BrowserContext } from '@playwright/test'
 
 /**
@@ -132,6 +136,52 @@ export async function createRepo(
     return `${owner}/${name}`
   }
   throw new Error(`createRepo failed: ${res.status()} ${await res.text()}`)
+}
+
+/**
+ * Create a repository **with a real commit**, so the repository detail
+ * page renders instead of the empty-repository welcome card.
+ *
+ * The detail page shows EmptyRepoWelcome for a repository with no
+ * commits — which means the tabs (issues, pipelines, …) are not
+ * reachable at all. A test that wants to exercise a tab therefore needs
+ * a repository with history.
+ *
+ * The push goes over HTTP with the credentials embedded in the URL, which
+ * is the same shape the UI offers for a private repository.
+ */
+export async function createRepoWithCommit(
+  page: Page,
+  name: string,
+  opts: { description?: string; isPrivate?: boolean; group?: string } = {},
+): Promise<string> {
+  const fullName = await createRepo(page, name, opts)
+  const owner = opts.group ?? (await currentUsername(page))
+  // Git's Basic auth carries the *token* in the password position (gita's
+  // HTTP layer treats the password component of `Basic base64(user:pass)`
+  // as a PAT or JWT) — the account password does not authenticate a push.
+  const token = await currentToken(page)
+
+  const parent = mkdtempSync(join(tmpdir(), 'gita-e2e-push-'))
+  try {
+    const work = join(parent, 'work')
+    mkdirSync(work)
+    const url = `${BASE}/${fullName}.git`
+    // The credential is passed through the URL, which is what git sends
+    // as `Authorization: Basic base64(user:token)`.
+    const authed = url.replace('://', `://${owner}:${token}@`)
+
+    execFileSync('git', ['clone', '--quiet', authed, work], { stdio: 'pipe', timeout: 30_000 })
+    execFileSync('git', ['-C', work, 'config', 'user.email', 'e2e@example.com'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', work, 'config', 'user.name', 'e2e'], { stdio: 'pipe' })
+    writeFileSync(join(work, 'README.md'), `# ${name}\n`)
+    execFileSync('git', ['-C', work, 'add', 'README.md'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', work, 'commit', '-m', 'initial commit'], { stdio: 'pipe' })
+    execFileSync('git', ['-C', work, 'push', 'origin', 'HEAD:main'], { stdio: 'pipe', timeout: 30_000 })
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+  return fullName
 }
 
 /**
