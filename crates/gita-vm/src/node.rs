@@ -136,3 +136,235 @@ impl NodeManager {
         // 实际驱逐由 reconcile 循环执行
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gita_vm_api::ids::OwnerRef;
+    use gita_vm_api::node::NodeCapabilities;
+    use std::collections::BTreeMap;
+
+    fn url() -> String {
+        std::env::var("GITA_TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://gita:gita@127.0.0.1:55432/gita".to_string())
+    }
+
+    async fn manager() -> (gita_db::Db, NodeManager) {
+        let db = gita_db::new_test_db(&url()).await;
+        let store = Arc::new(VmStore::new(db.pool().clone()));
+        (db, NodeManager::new(store))
+    }
+
+    fn spec() -> NodeSpec {
+        NodeSpec {
+            cpu_millis: 8000,
+            memory_bytes: 16_000_000_000,
+            disk_bytes: 100_000_000_000,
+            capabilities: NodeCapabilities {
+                vmm: vec![gita_vm_api::node::VmmKind::Qemu],
+                arch: vec!["x86_64".to_string()],
+                nested_virt: false,
+                gpu_passthrough: false,
+                max_vcpus: 8,
+                max_memory_bytes: 16_000_000_000,
+            },
+        }
+    }
+
+    fn status(phase: NodePhase) -> NodeStatus {
+        NodeStatus {
+            alloc_cpu_millis: 0,
+            alloc_memory_bytes: 0,
+            alloc_disk_bytes: 0,
+            running_vms: 0,
+            phase,
+            last_heartbeat_ms: 0,
+        }
+    }
+
+    /// A node that registers can be found again by its name.
+    #[tokio::test]
+    async fn a_registered_node_can_be_found() {
+        let (db, mgr) = manager().await;
+        let id = mgr
+            .register_node("node-1", spec(), OwnerRef::system(), BTreeMap::new())
+            .await
+            .unwrap();
+        assert!(id.0 > 0, "the node must get an id");
+
+        let node = mgr
+            .store
+            .get_node(id)
+            .await
+            .unwrap()
+            .expect("the node must be there");
+        assert_eq!(node.name, "node-1");
+        assert_eq!(node.status.phase, NodePhase::Joining);
+        assert_eq!(node.spec.cpu_millis, 8000);
+        let _ = db;
+    }
+
+    /// The labels a node registers with are kept.
+    #[tokio::test]
+    async fn the_labels_of_a_node_are_kept() {
+        let (_db, mgr) = manager().await;
+        let mut labels = BTreeMap::new();
+        labels.insert("zone".to_string(), "a".to_string());
+        let id = mgr
+            .register_node("node-1", spec(), OwnerRef::system(), labels)
+            .await
+            .unwrap();
+        let node = mgr.store.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.labels.get("zone").map(String::as_str), Some("a"));
+    }
+
+    /// Two nodes cannot share a name.
+    #[tokio::test]
+    async fn a_node_name_can_only_be_taken_once() {
+        let (_db, mgr) = manager().await;
+        mgr.register_node("node-1", spec(), OwnerRef::system(), BTreeMap::new())
+            .await
+            .unwrap();
+        let err = mgr
+            .register_node("node-1", spec(), OwnerRef::system(), BTreeMap::new())
+            .await
+            .expect_err("the second registration must fail");
+        assert!(matches!(err, Error::AlreadyExists(_)), "got {err:?}");
+    }
+
+    /// A heartbeat puts the node online and refreshes its timestamp.
+    #[tokio::test]
+    async fn a_heartbeat_puts_the_node_online() {
+        let (_db, mgr) = manager().await;
+        let id = mgr
+            .register_node("node-1", spec(), OwnerRef::system(), BTreeMap::new())
+            .await
+            .unwrap();
+        mgr.heartbeat(id, status(NodePhase::Joining)).await.unwrap();
+
+        let node = mgr.store.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.status.phase, NodePhase::Online);
+        assert!(node.status.last_heartbeat_ms > 0);
+    }
+
+    /// A heartbeat for a node that does not exist is refused.
+    #[tokio::test]
+    async fn a_heartbeat_for_an_unknown_node_is_refused() {
+        let (_db, mgr) = manager().await;
+        let err = mgr
+            .heartbeat(NodeId(999), status(NodePhase::Online))
+            .await
+            .expect_err("the heartbeat must fail");
+        assert!(matches!(err, Error::NotFound(_)), "got {err:?}");
+    }
+
+    /// A node that stopped sending heartbeats is taken offline.
+    #[tokio::test]
+    async fn a_node_that_stops_heartbeating_goes_offline() {
+        let (_db, mgr) = manager().await;
+        let id = mgr
+            .register_node("node-1", spec(), OwnerRef::system(), BTreeMap::new())
+            .await
+            .unwrap();
+        mgr.heartbeat(id, status(NodePhase::Online)).await.unwrap();
+
+        // Move the heartbeat into the past.
+        let mut node = mgr.store.get_node(id).await.unwrap().unwrap();
+        node.status.last_heartbeat_ms = gita_vm_core::now_ms() - 60_000;
+        mgr.store.update_node(&node).await.unwrap();
+
+        let offline = mgr.detect_offline_nodes().await.unwrap();
+        assert_eq!(offline, vec![id], "got {offline:?}");
+
+        let node = mgr.store.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.status.phase, NodePhase::Offline);
+    }
+
+    /// A node whose heartbeat is still within the timeout is online.
+    ///
+    /// The margin keeps the test from depending on how long the
+    /// database round trip takes: the node is a second short of the
+    /// timeout, which no round trip can eat.
+    #[tokio::test]
+    async fn a_node_within_the_timeout_is_still_online() {
+        let (_db, mgr) = manager().await;
+        let mgr = mgr.with_heartbeat_timeout(30_000);
+        let id = mgr
+            .register_node("node-1", spec(), OwnerRef::system(), BTreeMap::new())
+            .await
+            .unwrap();
+
+        let mut node = mgr.store.get_node(id).await.unwrap().unwrap();
+        node.status.phase = NodePhase::Online;
+        node.status.last_heartbeat_ms = gita_vm_core::now_ms() - 29_000;
+        mgr.store.update_node(&node).await.unwrap();
+
+        let offline = mgr.detect_offline_nodes().await.unwrap();
+        assert!(offline.is_empty(), "got {offline:?}");
+    }
+
+    /// A node that is already offline, in maintenance or draining is
+    /// left alone: the detection only concerns nodes that are up.
+    #[tokio::test]
+    async fn a_node_that_is_not_up_is_left_alone() {
+        let (_db, mgr) = manager().await;
+        let id = mgr
+            .register_node("node-1", spec(), OwnerRef::system(), BTreeMap::new())
+            .await
+            .unwrap();
+
+        let mut node = mgr.store.get_node(id).await.unwrap().unwrap();
+        node.status.phase = NodePhase::Maintenance;
+        node.status.last_heartbeat_ms = gita_vm_core::now_ms() - 60_000;
+        mgr.store.update_node(&node).await.unwrap();
+
+        let offline = mgr.detect_offline_nodes().await.unwrap();
+        assert!(offline.is_empty(), "got {offline:?}");
+        let node = mgr.store.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.status.phase, NodePhase::Maintenance);
+    }
+
+    /// A node in maintenance mode does not take new work; taking it out
+    /// of maintenance puts it back online.
+    #[tokio::test]
+    async fn a_node_can_be_put_into_and_out_of_maintenance() {
+        let (_db, mgr) = manager().await;
+        let id = mgr
+            .register_node("node-1", spec(), OwnerRef::system(), BTreeMap::new())
+            .await
+            .unwrap();
+
+        mgr.set_maintenance(id, true).await.unwrap();
+        let node = mgr.store.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.status.phase, NodePhase::Maintenance);
+
+        mgr.set_maintenance(id, false).await.unwrap();
+        let node = mgr.store.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.status.phase, NodePhase::Online);
+    }
+
+    /// Draining a node tells it to give up its work.
+    #[tokio::test]
+    async fn a_node_can_be_drained() {
+        let (_db, mgr) = manager().await;
+        let id = mgr
+            .register_node("node-1", spec(), OwnerRef::system(), BTreeMap::new())
+            .await
+            .unwrap();
+        mgr.drain(id).await.unwrap();
+        let node = mgr.store.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.status.phase, NodePhase::Draining);
+    }
+
+    /// Acting on a node that does not exist is refused.
+    #[tokio::test]
+    async fn acting_on_an_unknown_node_is_refused() {
+        let (_db, mgr) = manager().await;
+        for err in [
+            mgr.set_maintenance(NodeId(999), true).await.err(),
+            mgr.drain(NodeId(999)).await.err(),
+        ] {
+            let err = err.expect("the call must fail");
+            assert!(matches!(err, Error::NotFound(_)), "got {err:?}");
+        }
+    }
+}

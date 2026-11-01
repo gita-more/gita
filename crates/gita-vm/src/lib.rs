@@ -122,4 +122,36 @@ mod tests {
         assert_eq!(events::VM_CREATED, "vm.created");
         assert_eq!(events::NODE_ONLINE, "vm.node_online");
     }
+
+    /// The event names are what the consumers match on; they must not
+    /// drift.
+    #[test]
+    fn the_event_names_are_fixed() {
+        assert_eq!(events::VM_DELETED, "vm.deleted");
+        assert_eq!(events::VM_STARTED, "vm.started");
+        assert_eq!(events::VM_STOPPED, "vm.stopped");
+        assert_eq!(events::VM_FAILED, "vm.failed");
+        assert_eq!(events::NODE_OFFLINE, "vm.node_offline");
+        assert_eq!(events::TEMPLATE_CREATED, "vm.template_created");
+        assert_eq!(events::IMAGE_READY, "vm.image_ready");
+    }
+
+    /// A bare spec carries no template, so it cannot be turned into a
+    /// VM: the caller is told to say which template to use.
+    #[tokio::test]
+    async fn a_bare_spec_cannot_become_a_vm() {
+        let url = std::env::var("GITA_TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://gita:gita@127.0.0.1:55432/gita".to_string());
+        let db = Arc::new(gita_db::new_test_db(&url).await);
+        let cluster = VmClusterImpl::new(db).await.unwrap();
+
+        let err = cluster
+            .create_vm(VmSpec::default())
+            .await
+            .expect_err("the creation must fail");
+        assert!(
+            matches!(err, gita_vm_core::Error::Validation(_)),
+            "got {err:?}"
+        );
+    }
 }
