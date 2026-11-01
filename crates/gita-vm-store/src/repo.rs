@@ -998,9 +998,9 @@ impl Repository for VmStore {
             QuotaScope::System => {
                 sqlx::query_as(
                     "SELECT COUNT(*),
-                            COALESCE(SUM((spec->>'cpu_millis')::bigint), 0),
-                            COALESCE(SUM((spec->>'memory_bytes')::bigint), 0),
-                            COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)
+                            COALESCE(SUM((spec->>'cpu_millis')::bigint), 0)::bigint,
+                            COALESCE(SUM((spec->>'memory_bytes')::bigint), 0)::bigint,
+                            COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)::bigint
                      FROM vm_instances
                      WHERE status IN ('pending', 'provisioning', 'running', 'stopping', 'migrating')",
                 )
@@ -1011,9 +1011,9 @@ impl Repository for VmStore {
             QuotaScope::Group => {
                 sqlx::query_as(
                     "SELECT COUNT(*),
-                            COALESCE(SUM((spec->>'cpu_millis')::bigint), 0),
-                            COALESCE(SUM((spec->>'memory_bytes')::bigint), 0),
-                            COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)
+                            COALESCE(SUM((spec->>'cpu_millis')::bigint), 0)::bigint,
+                            COALESCE(SUM((spec->>'memory_bytes')::bigint), 0)::bigint,
+                            COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)::bigint
                      FROM vm_instances
                      WHERE owner_type = 'group' AND owner_id = $1
                        AND status IN ('pending', 'provisioning', 'running', 'stopping', 'migrating')",
@@ -1026,9 +1026,9 @@ impl Repository for VmStore {
             QuotaScope::Repo => {
                 sqlx::query_as(
                     "SELECT COUNT(*),
-                            COALESCE(SUM((spec->>'cpu_millis')::bigint), 0),
-                            COALESCE(SUM((spec->>'memory_bytes')::bigint), 0),
-                            COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)
+                            COALESCE(SUM((spec->>'cpu_millis')::bigint), 0)::bigint,
+                            COALESCE(SUM((spec->>'memory_bytes')::bigint), 0)::bigint,
+                            COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)::bigint
                      FROM vm_instances
                      WHERE owner_type = 'repo' AND owner_id = $1
                        AND status IN ('pending', 'provisioning', 'running', 'stopping', 'migrating')",
