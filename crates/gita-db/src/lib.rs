@@ -38,6 +38,7 @@ mod repositories;
 mod ssh_keys;
 mod stars;
 mod users;
+pub mod vm_settings;
 mod webhooks;
 
 pub use access_tokens::hash_token;

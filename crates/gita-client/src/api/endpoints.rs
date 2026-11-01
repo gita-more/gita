@@ -1013,6 +1013,13 @@ impl GitaClient {
         .await
     }
 
+    /// The node API key of the VM control plane (admin only; generated
+    /// server-side when the deployment has not configured one).
+    pub async fn vm_get_api_key(&self) -> Result<VmApiKeyResponse> {
+        self.request(reqwest::Method::GET, "/api/v1/vm/api-key", None)
+            .await
+    }
+
     /// List cluster nodes.
     pub async fn vm_list_nodes(&self) -> Result<VmNodesResponse> {
         self.request(reqwest::Method::GET, "/api/v1/vm/nodes", None)

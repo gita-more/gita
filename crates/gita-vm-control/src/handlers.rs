@@ -227,6 +227,26 @@ async fn list_nodes(State(state): State<AppState>) -> ApiResult<Json<serde_json:
     Ok(Json(json!({ "nodes": nodes })))
 }
 
+/// GET /api-key
+///
+/// 管理员专用：读出节点 API key。key 由部署端在启动时解析/生成并
+/// 持久化（[`crate::internal::resolve_node_api_key`]），这里只读取，
+/// 不临时随机——保证两次查询结果一致，`gita-admin vm api-key` 把它
+/// 交到节点代理的 `--api-key` 手里。
+async fn get_api_key(
+    State(state): State<AppState>,
+    user: VmUser,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_admin().map_err(auth_err)?;
+    let Some(key) = state.auth.node_api_key() else {
+        return Err(ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "node api key not initialised".into(),
+        ));
+    };
+    Ok(Json(json!({ "api_key": key })))
+}
+
 async fn get_node(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -263,6 +283,7 @@ pub fn router() -> Router<AppState> {
         // nodes
         .route("/nodes", get(list_nodes))
         .route("/nodes/{id}", get(get_node))
+        .route("/api-key", get(get_api_key))
         // images
         .route("/images", get(list_images))
         // quotas

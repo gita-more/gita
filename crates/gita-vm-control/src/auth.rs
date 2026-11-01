@@ -29,8 +29,12 @@ pub struct VmAuth {
     auth: Arc<Auth>,
     /// 数据库（查用户、查吊销列表）
     db: Db,
-    /// 节点代理使用的 API key；`None` 表示未配置（此时内部接口只要求
-    /// 存在非空 key，方便本地开发，生产必须配置）
+    /// 节点代理使用的 API key。
+    ///
+    /// `None` 表示服务端没有配置 key，此时内部接口一律拒绝——调用方
+    /// （gita-admin 与独立 gita-vm-control）都会在启动时经
+    /// [`crate::internal::resolve_node_api_key`] 解析出 key：显式配置的
+    /// 优先，否则生成随机值并持久化。因此运行中的控制面总持有 key。
     node_api_key: Option<String>,
 }
 
@@ -41,6 +45,11 @@ impl VmAuth {
             db,
             node_api_key: node_api_key.filter(|k| !k.is_empty()),
         }
+    }
+
+    /// 当前生效的节点 API key（`resolve_node_api_key` 之后才有值）。
+    pub fn node_api_key(&self) -> Option<&str> {
+        self.node_api_key.as_deref()
     }
 
     /// 从 Bearer 令牌解析用户身份。
@@ -69,11 +78,15 @@ impl VmAuth {
             return Err(ApiAuthError::Unauthorized("missing api key".into()));
         }
         match &self.node_api_key {
-            // 配置了 key 就必须匹配；没配置只要求非空（开发模式）
+            // 配置了 key 就必须匹配；没有 key 就拒绝——不设“任意非空
+            // 都行”的开发后门，一条漏配的部署就是暴露的节点接口。
             Some(expected) if presented != expected => {
                 Err(ApiAuthError::Unauthorized("invalid api key".into()))
             }
-            _ => Ok(()),
+            Some(_) => Ok(()),
+            None => Err(ApiAuthError::Unauthorized(
+                "node api key not configured".into(),
+            )),
         }
     }
 }

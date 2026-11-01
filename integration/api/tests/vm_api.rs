@@ -420,3 +420,98 @@ async fn run_detail_includes_its_vm_instances() {
         "a local run must report an empty vms list, got {v:?}"
     );
 }
+
+
+
+/// The node API key endpoint is admin-only and returns the configured value.
+#[tokio::test]
+async fn the_node_api_key_is_only_visible_to_admins() {
+    let (app, _guard) = common::test_app_with_vm().await;
+    let admin = common::register_admin(&app, "vmkeyadmin").await;
+    let plain = common::register_user(&app, "vmkeyplain").await;
+
+    // Admin sees the key that was configured in the deployment.
+    let (status, body) = common::request(
+        &app,
+        Method::GET,
+        "/api/v1/vm/api-key",
+        None,
+        Some(&admin.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let key = body["api_key"].as_str().expect("admin must get the key");
+    assert!(!key.is_empty());
+    assert_eq!(key, "test-vm-key", "the configured key is returned as-is");
+
+    // A plain user must not.
+    let (status, body) = common::request(
+        &app,
+        Method::GET,
+        "/api/v1/vm/api-key",
+        None,
+        Some(&plain.token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+}
+
+/// With no key configured the control plane generates one, stores it in
+/// `vm_settings`, and hands the same value to every later reader — that is
+/// the secret a node agent must present (e.g. via `gita-admin vm api-key`).
+#[tokio::test]
+async fn an_unset_node_api_key_is_generated_and_persisted() {
+    use gita_db::vm_settings;
+
+    let (app, _guard) = common::test_app_with_vm_default_key().await;
+    let admin = common::register_admin(&app, "vmdfltadmin").await;
+
+    let uri = "/api/v1/vm/api-key";
+    let first = common::request(&app, Method::GET, uri, None, Some(&admin.token)).await;
+    assert_eq!(first.0, StatusCode::OK, "{:?}", first.1);
+    let first_key = first.1["api_key"].as_str().expect("generated key");
+
+    // Twice-read is stable: the agent copies it once, operators re-run the
+    // CLI later and must land on the same secret.
+    let second = common::request(&app, Method::GET, uri, None, Some(&admin.token)).await;
+    assert_eq!(second.0, StatusCode::OK, "{:?}", second.1);
+    assert_eq!(second.1["api_key"].as_str().expect("key after re-read"), first_key);
+
+    // And it is the persisted one — not a per-request throwaway.
+    let stored = app
+        .db
+        .get_setting(vm_settings::NODE_API_KEY)
+        .await
+        .unwrap()
+        .expect("key persisted in vm_settings");
+    assert_eq!(stored, first_key);
+
+    // A node agent presenting that key registers; the key generation has
+    // not broken the node protocol. The internal endpoints read the key
+    // from `x-api-key`, not the bearer token, so this uses a raw request
+    // (same shape as `node_registration_is_visible_to_admins`).
+    let req = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri("/api/v1/vm/internal/nodes")
+        .header("content-type", "application/json")
+        .header("x-api-key", first_key)
+        .body(axum::body::Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "name": "api-key-node",
+                "cpu_millis": 8000u64,
+                "memory_bytes": 16_000_000_000u64,
+                "disk_bytes": 100_000_000_000u64,
+                "vmm": ["qemu"],
+                "arch": ["x86_64"],
+                "labels": {},
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let resp = app.router().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+

@@ -89,6 +89,17 @@ pub async fn test_app_with_vm() -> (gita_admin::App, TestAppGuard) {
     .await
 }
 
+/// Like [`test_app_with_vm`], but no node API key is configured, so the
+/// server follows its self-managed path: a random key is generated on
+/// first start and persisted in `vm_settings`.
+pub async fn test_app_with_vm_default_key() -> (gita_admin::App, TestAppGuard) {
+    build_test_app(|config| {
+        config.server.vm.enabled = true;
+        config.server.vm.api_key = None;
+    })
+    .await
+}
+
 /// Build an app with an isolated schema, letting the caller adjust the
 /// server configuration first.
 async fn build_test_app(configure: impl FnOnce(&mut Config)) -> (gita_admin::App, TestAppGuard) {

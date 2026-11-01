@@ -1,5 +1,6 @@
 //! 内部接口：节点代理专用（长轮询拉取操作、上报状态）
 
+use rand::RngCore;
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -10,6 +11,41 @@ use axum::{
 use gita_vm_api::node::{NodePhase, NodeStatus};
 use serde::Deserialize;
 use serde_json::json;
+
+/// 解析节点 API key：显式配置的值优先；否则取持久化值；没有就生成
+/// 一个随机值写进 `vm_settings` 后返回。并发首启时先写者赢，输的
+/// 一方读回赢家的值（[`gita_db::vm_settings::Db::insert_setting`]）。
+///
+/// 部署不配 key（历史上是“任意非空都能过”的开发模式）会在这里第一次
+/// 启动时被替代成“服务端生成的 key 并持久化”，之后每次启动一致。
+pub async fn resolve_node_api_key(
+    db: &gita_db::Db,
+    configured: Option<String>,
+) -> anyhow::Result<String> {
+    if let Some(key) = configured.filter(|k| !k.trim().is_empty()) {
+        return Ok(key);
+    }
+    if let Some(key) = db.get_setting(gita_db::vm_settings::NODE_API_KEY).await? {
+        return Ok(key);
+    }
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let key = hex::encode(bytes);
+    let inserted = db
+        .insert_setting(
+            gita_db::vm_settings::NODE_API_KEY,
+            &key,
+            gita_vm_core::now_ms(),
+        )
+        .await?;
+    if inserted {
+        return Ok(key);
+    }
+    // 并发首启：另一个控制面抢先写入了它的 key，以它为准。
+    db.get_setting(gita_db::vm_settings::NODE_API_KEY)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("node api key missing after insert conflict"))
+}
 
 /// 节点注册请求
 #[derive(Debug, Deserialize)]

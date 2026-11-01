@@ -7,6 +7,7 @@
 use clap::Parser;
 use gita_api::auth::Auth;
 use gita_vm_control::auth::VmAuth;
+use gita_vm_control::internal;
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -44,10 +45,12 @@ async fn main() -> anyhow::Result<()> {
     let store = std::sync::Arc::new(gita_vm_store::VmStore::new(db.pool().clone()));
 
     // 鉴权是必需的：控制面永远带鉴权运行。
+    let node_api_key =
+        internal::resolve_node_api_key(&db, Some(args.vm_api_key.clone())).await?;
     let auth = VmAuth::new(
         (*db).clone(),
         Arc::new(Auth::new(args.jwt_secret.clone())),
-        Some(args.vm_api_key.clone()),
+        Some(node_api_key),
     );
 
     let state = gita_vm_control::AppState::new(

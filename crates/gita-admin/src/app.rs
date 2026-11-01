@@ -66,14 +66,17 @@ async fn build_vm_state(
     // schema is created by gita-db's migrations, which already ran.
     let store = Arc::new(gita_vm_store::VmStore::new(db.pool().clone()));
 
-    // The node API key is shared with the node agents. Without one the
-    // internal endpoints only require *a* non-empty key, which is fine for
-    // local development but not for anything reachable from a network.
-    let node_api_key = vm_cfg.api_key.clone();
+    // The node API key is shared with the node agents. A value set in the
+    // config wins; when none is set the control plane generates a random
+    // one on first start and persists it, so the empty-key "any non-empty
+    // passes" mode of the raw library is never active. Operators read the
+    // key back with `gita-admin vm api-key` and hand it to `gita-vm-node`.
+    let node_api_key =
+        gita_vm_control::internal::resolve_node_api_key(&db, vm_cfg.api_key.clone()).await?;
     let vm_auth = gita_vm_control::auth::VmAuth::new(
         db.clone(),
         Arc::new(auth.clone()),
-        node_api_key,
+        Some(node_api_key),
     );
 
     let control_config = gita_vm_control::ControlConfig {

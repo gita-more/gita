@@ -113,6 +113,17 @@ pub enum VmCmd {
         #[arg(long)]
         id: i64,
     },
+    /// Print the VM control plane's node API key (generated server-side
+    /// when the deployment has not configured one). Pipe it into
+    /// `gita-vm-node --api-key`.
+    ApiKey {
+        /// gita server URL
+        #[arg(long, default_value = "http://127.0.0.1:3000")]
+        server_url: String,
+        /// Access token (PAT or JWT) of an administrator
+        #[arg(long, env = "GITA_TOKEN")]
+        token: Option<String>,
+    },
     /// List cluster nodes (hypervisors)
     Nodes {
         /// gita server URL
@@ -323,9 +334,9 @@ pub struct VmConfig {
     pub data_dir: Option<PathBuf>,
     /// 节点代理使用的 API key（访问 /api/v1/vm/internal/* ）。
     ///
-    /// 为空时内部接口只要求存在非空 key——仅适合本地开发。生产环境
-    /// 必须配置一个强随机值，否则任何能访问该端口的人都能注册节点、
-    /// 领取并执行操作。
+    /// 显式配置的值优先；留空（或未配置）时控制面第一次启动自动
+    /// 生成强随机值并持久化到 `vm_settings`，重启不变。管理员用
+    /// `gita-admin vm api-key` 把它读出来交给 `gita-vm-node`。
     #[serde(default)]
     pub api_key: Option<String>,
     /// reconcile 循环间隔（秒）：把待创建的 VM 调度到节点上。

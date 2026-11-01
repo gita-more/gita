@@ -273,6 +273,12 @@ pub struct VmNode {
     pub status: serde_json::Value,
 }
 
+/// `GET /api/v1/vm/api-key` 的响应：节点代理的 API key。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VmApiKeyResponse {
+    pub api_key: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct VmNodesResponse {
     pub nodes: Vec<VmNode>,

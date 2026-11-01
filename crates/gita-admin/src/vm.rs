@@ -101,6 +101,13 @@ pub async fn run(cmd: VmCmd) -> Result<()> {
             client.vm_delete_template(id).await?;
             println!("Deleted VM template {id}");
         }
+        // Plain value, no table: the point is to be pasted into
+        // `gita-vm-node --api-key "$(gita-admin vm api-key …)"`.
+        VmCmd::ApiKey { server_url, token } => {
+            let client = client(server_url, token)?;
+            let v = client.vm_get_api_key().await?;
+            output::print_json(&serde_json::json!({ "api_key": v.api_key }))?;
+        }
         VmCmd::Nodes { server_url, token } => {
             let client = client(server_url, token)?;
             let v = client.vm_list_nodes().await?;
