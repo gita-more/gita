@@ -15,9 +15,13 @@ cargo build --release -p gita  # -> target/release/gita
 
 | Source | Precedence | What |
 |--------|-----------|------|
-| `GITA_URL` env | highest | Server base URL, e.g. `http://127.0.0.1:3000` |
-| `~/.config/gita/config.toml` | middle | `server_url = "http://..."` |
-| default | lowest | `http://127.0.0.1:3000` |
+| `--url` / `GITA_URL` env | highest | Server base URL, e.g. `http://127.0.0.1:3000` |
+| `~/.gita/config.toml` | middle | `[server]` / `url = "http://..."` |
+| — | — | nothing configured: the CLI errors out instead of guessing a server |
+
+The config lives in `~/.gita` (`$GITA_CONFIG_DIR` overrides it). The older
+`~/.config/gita/config.toml` is still read when the new file is absent, so
+an existing setup keeps working; writes always go to `~/.gita`.
 
 ```bash
 ./target/debug/gita config set-url http://127.0.0.1:3000
@@ -29,8 +33,13 @@ cargo build --release -p gita  # -> target/release/gita
 Token resolution order (highest to lowest):
 
 1. `GITA_TOKEN` env var
-2. OS keyring (service `gita`, account = server URL)
+2. the credential store (OS keyring, or the plaintext fallback file)
 3. none (anonymous)
+
+Credentials are keyed by server URL, so several servers can be logged in at
+once. `auth login` / `auth register` make the server they logged into the
+default one — otherwise later commands (which resolve the default) would
+look up a different URL than the one the token was stored under.
 
 Keyring tokens persist across invocations — `GITA_TOKEN` is only needed when
 you don't want to log in (e.g. CI):
@@ -162,30 +171,64 @@ Every command prints a table by default. Pass `--json` for pretty-printed JSON
 | Variable | Meaning |
 |----------|---------|
 | `GITA_URL` | Server base URL (overrides config file) |
-| `GITA_TOKEN` | Bearer token (overrides keyring) |
+| `GITA_TOKEN` | Bearer token (overrides the credential store) |
 | `GITA_PASSWORD` | Password for login (alternative to prompting) |
 | `GITA_DISABLE_KEYRING` | Never touch the OS keyring (see below) |
+| `GITA_CONFIG_DIR` | Client config directory (default `~/.gita`) |
 
-## Keyring
+## Credential store
 
 Credentials live in the OS keyring under service `gita`, keyed by server URL
 (account). On Linux this uses the Secret Service API (D-Bus) via the `keyring`
-crate — no C dependencies. Nothing is ever written to disk in plaintext.
+crate — no C dependencies.
 
 Every keyring call is bounded by a 3-second deadline. On Linux the keyring can
 *block* rather than fail: a locked Secret Service waits for an unlock agent
 that will never arrive in a headless session, and the kernel keyring backend
 waits in `request_key()` for a user keyring that `pam_keyinit` never created.
 The CLI treats the keyring as best-effort, so a blocked call is abandoned
-after the deadline and the command continues with a warning instead of hanging
-forever.
+after the deadline.
+
+### Plaintext fallback
+
+A keyring that cannot store the token must not lose the session: the CLI
+would log in successfully and then be anonymous again on the next command. So
+when the keyring is unavailable (missing, timed out, or disabled) the token
+degrades to `~/.gita/credentials.toml`, written with `0600` permissions (the
+directory is `0700`). Reads prefer the keyring and fall back to the file;
+`auth logout` clears both.
+
+The CLI always says where the secret ended up:
+
+```
+warning: keyring unavailable — the token is stored in plaintext at /home/you/.gita/credentials.toml
+```
 
 Set `GITA_DISABLE_KEYRING=1` to skip the keyring entirely — no token is read
-from it and nothing is written to it:
+from it and nothing is written to it (the plaintext fallback is still used):
 
 ```bash
 GITA_DISABLE_KEYRING=1 ./target/debug/gita repo list
 ```
+
+## Git credential helper
+
+`gita auth credential` implements git's credential helper protocol, so
+`git push` reuses the token you already logged in with instead of prompting
+for it again:
+
+```bash
+git config --global credential.helper "gita auth credential"
+```
+
+Point it at the absolute path of the binary if it is not on `PATH`:
+
+```bash
+git config --global credential.helper "/path/to/gita auth credential"
+```
+
+The helper answers from the credential store, matched by scheme and host —
+git only tells a helper the host, not the repository path.
 
 ## CI
 

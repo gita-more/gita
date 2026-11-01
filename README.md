@@ -147,21 +147,23 @@ The binary lands at `target/debug/gita` (or `target/release/gita`).
 ./target/debug/gita auth register --username alice --email alice@example.com \
   --password hunter22
 
-# Log in
-./target/debug/gita auth login --username alice --password hunter22
+# Log in (prompts for the password; the input is not echoed)
+./target/debug/gita auth login --url http://127.0.0.1:3000
 
 # Verify who you are
 ./target/debug/gita auth whoami
 ./target/debug/gita auth status
 ```
 
-Token resolution order: `GITA_TOKEN` env > OS keyring (per server URL) > none.
-Server URL resolution: `GITA_URL` env > `~/.config/gita/config.toml` >
-`http://127.0.0.1:3000`.
+Token resolution order: `GITA_TOKEN` env > credential store (per server URL) > none.
+Server URL resolution: `--url` / `GITA_URL` env > `~/.gita/config.toml` > error
+(no server configured is an error, not a guess).
 
 Keyring access is bounded by a 3-second deadline — on Linux the keyring can
 block forever in a headless session — and `GITA_DISABLE_KEYRING=1` turns it off
-entirely. See [crates/gita/README.md](crates/gita/README.md#keyring).
+entirely. When the keyring cannot be used the token falls back to a `0600`
+`~/.gita/credentials.toml` file. See
+[crates/gita/README.md](crates/gita/README.md#credential-store).
 
 ### Common commands
 
