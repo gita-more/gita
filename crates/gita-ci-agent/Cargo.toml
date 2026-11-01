@@ -5,6 +5,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "gita_ci_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gita-ci-agent"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
