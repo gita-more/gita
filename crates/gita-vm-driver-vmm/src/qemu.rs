@@ -630,6 +630,24 @@ mod tests {
         assert!(matches!(err, Error::OperationFailed(_)), "got {err:?}");
     }
 
+    /// A snapshot path with no file name in it cannot name a snapshot.
+    #[tokio::test]
+    async fn a_snapshot_path_without_a_file_name_is_an_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path()).with_qemu_img_bin("/bin/false");
+        let err = d
+            .create_snapshot("vm-1", Path::new("/"))
+            .await
+            .expect_err("the snapshot must fail");
+        assert!(matches!(err, Error::OperationFailed(_)), "got {err:?}");
+
+        let err = d
+            .restore_snapshot("vm-1", Path::new("/"))
+            .await
+            .expect_err("the restore must fail");
+        assert!(matches!(err, Error::OperationFailed(_)), "got {err:?}");
+    }
+
     /// Deleting a VM removes its directory.
     #[tokio::test]
     async fn deleting_a_vm_removes_its_directory() {
