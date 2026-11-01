@@ -10,11 +10,14 @@ FROM docker.io/library/debian:bookworm-slim
 # Install runtime dependencies:
 # - git: git CLI for git protocol backend
 # - libssl3: OpenSSL for reqwest/rustls
+# - libdbus-1-3: the admin CLI links the OS keyring (via gita-client);
+#   even unused at runtime the dynamic loader wants the library present
 # - curl: healthchecks
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     git \
     libssl3 \
+    libdbus-1-3 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

@@ -2,19 +2,36 @@ use anyhow::Result;
 
 pub async fn run(cmd: crate::config::ImageCmd) -> Result<()> {
     match cmd {
-        crate::config::ImageCmd::Build { output, size, ubuntu_release, agent_script } => {
-            build_image(&output, &size, &ubuntu_release, agent_script).await
+        crate::config::ImageCmd::Build {
+            output,
+            size,
+            ubuntu_release,
+            agent_script,
+        } => build_image(&output, &size, &ubuntu_release, agent_script).await,
+        crate::config::ImageCmd::Register {
+            control_url,
+            pool,
+            path,
+            name,
+            arch,
+            api_key,
+        } => {
+            register_image(&control_url, &pool, &path, &name, &arch, api_key.as_deref())
+                .await
         }
-        crate::config::ImageCmd::Register { control_url, pool, path, name, arch } => {
-            register_image(&control_url, &pool, &path, &name, &arch).await
-        }
-        crate::config::ImageCmd::List { control_url } => {
-            list_images(&control_url).await
-        }
+        crate::config::ImageCmd::List {
+            control_url,
+            api_key,
+        } => list_images(&control_url, api_key.as_deref()).await,
     }
 }
 
-async fn build_image(output: &str, size: &str, ubuntu_release: &str, agent_script: Option<String>) -> Result<()> {
+async fn build_image(
+    output: &str,
+    size: &str,
+    ubuntu_release: &str,
+    agent_script: Option<String>,
+) -> Result<()> {
     println!("Building CI image...");
     println!("  Output: {}", output);
     println!("  Size: {}", size);
@@ -27,7 +44,14 @@ async fn build_image(output: &str, size: &str, ubuntu_release: &str, agent_scrip
     Ok(())
 }
 
-async fn register_image(control_url: &str, pool: &str, path: &str, name: &str, arch: &str) -> Result<()> {
+async fn register_image(
+    control_url: &str,
+    pool: &str,
+    path: &str,
+    name: &str,
+    arch: &str,
+    api_key: Option<&str>,
+) -> Result<()> {
     use gita_ci::image::{ImageClient, RegisterImageRequest};
     use sha2::Digest;
     use std::fs;
@@ -35,7 +59,7 @@ async fn register_image(control_url: &str, pool: &str, path: &str, name: &str, a
     let content = fs::read(path)?;
     let digest = format!("sha256:{:x}", sha2::Sha256::digest(&content));
 
-    let client = ImageClient::new(control_url);
+    let client = ImageClient::with_key(control_url, api_key);
     let req = RegisterImageRequest {
         name: name.to_string(),
         pool: pool.to_string(),
@@ -50,12 +74,15 @@ async fn register_image(control_url: &str, pool: &str, path: &str, name: &str, a
     Ok(())
 }
 
-async fn list_images(control_url: &str) -> Result<()> {
+async fn list_images(control_url: &str, api_key: Option<&str>) -> Result<()> {
     use gita_ci::image::ImageClient;
-    let client = ImageClient::new(control_url);
+    let client = ImageClient::with_key(control_url, api_key);
     let images = client.list().await?;
     for img in images {
-        println!("{} (id: {}, pool: {}, size: {} bytes)", img.name, img.id, img.pool, img.size_bytes);
+        println!(
+            "{} (id: {}, pool: {}, size: {} bytes)",
+            img.name, img.id, img.pool, img.size_bytes
+        );
     }
     Ok(())
 }

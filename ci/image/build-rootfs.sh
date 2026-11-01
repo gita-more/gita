@@ -147,12 +147,18 @@ echo "export PATH=/opt/cargo/bin:\$PATH" >> /etc/profile.d/rust.sh
 
 # =============================================================================
 # 4. 安装 Node.js 22（从 nodesource）
+#
+# 只装 nodejs，不单独装 npm：nodesource 的 nodejs 包自带 npm 并声明了
+# `Conflicts: npm`，同时安装会被 apt 拒绝（npm 依赖的一堆 node-* 包
+# 全部无法解析）。nodejs 装好后 npm 已经在 PATH 里。
 # =============================================================================
 chroot "$ROOT" /bin/bash -c '
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt-get install -y nodejs npm
+apt-get install -y nodejs
+node --version
+npm --version
 # 全局装 Playwright 依赖（浏览器 chromium 需要系统库）
 npm install -g playwright
 npx playwright install --with-deps chromium
@@ -161,7 +167,18 @@ rm -rf /var/lib/apt/lists/*
 '
 
 # =============================================================================
-# 5. 配置 SSH（允许 CI agent 登录）
+# 5. 确保 /sbin/init 指向 systemd（debootstrap minbase 不自动链接）
+# =============================================================================
+chroot "$ROOT" /bin/bash -c '
+set -euo pipefail
+if [[ ! -e /sbin/init ]] || [[ "$(readlink -f /sbin/init)" != "/lib/systemd/systemd" ]]; then
+  ln -sf /lib/systemd/systemd /sbin/init
+  echo "已链接 /sbin/init -> /lib/systemd/systemd"
+fi
+'
+
+# =============================================================================
+# 6. 配置 SSH（允许 CI agent 登录）
 # =============================================================================
 chroot "$ROOT" /bin/bash -c '
 set -euo pipefail

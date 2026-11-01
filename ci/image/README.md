@@ -84,3 +84,26 @@ gita-admin template create \
 - 构建需要能访问 Ubuntu cloud image 源。
 - 构建出的 rootfs 是 **raw/ext4** 格式（rcluster 存储驱动统一 raw）。
 - 内核由 rcluster 提供（`fetch-guest-assets.sh` 下载 vmlinux），本目录只构建 rootfs。
+## 关于「免 root 构建」的说明（重要）
+
+**rootless 容器无法完成 debootstrap。** debootstrap 必须在目标 rootfs 里创建
+设备节点（`mknod`），而 rootless 容器运行在用户命名空间，内核禁止在用户
+命名空间里 `mknod`——加 `--privileged` 或 `--cap-add MKNOD` 均无效
+（podman `--privileged` 与 `--cap-add` 互斥，且 rootless 下都不起作用）。
+
+因此**构建 gita CI 镜像的可靠方式是在宿主机用 sudo 跑**
+`build-rootfs.sh`（debootstrap + chroot + mount 需要真 root）。
+`build-rootfs-in-docker.sh` 是给 **rootful docker/podman**（system 级服务，
+非 rootless）环境用的；在 rootless 环境下它会失败在 `mknod` 一步。
+
+可选的免 root 替代：`debootstrap --variant=fakechroot` + `fakeroot`
+（纯用户态模拟），但 systemd / postgresql 等依赖真实设备的包可能安装失败，
+不推荐用于生产 CI 镜像。
+
+**推荐做法：**
+```bash
+sudo ./ci/image/build-rootfs.sh \
+  --output /home/zac/git/rcluster/runtime/state/images/gita-ci-ubuntu.ext4 \
+  --size 8G \
+  --agent-script target/x86_64-unknown-linux-musl/release/gita-ci-agent
+```

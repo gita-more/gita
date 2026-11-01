@@ -75,10 +75,14 @@ pub enum ImageCmd {
         #[arg(long)] path: String,
         #[arg(long)] name: String,
         #[arg(long, default_value = "x86_64")] arch: String,
+        /// rcluster API key (defaults to $RCLUSTER_API_KEY)
+        #[arg(long)] api_key: Option<String>,
     },
     /// List registered images
     List {
         #[arg(long)] control_url: String,
+        /// rcluster API key (defaults to $RCLUSTER_API_KEY)
+        #[arg(long)] api_key: Option<String>,
     },
 }
 
@@ -86,7 +90,11 @@ pub enum ImageCmd {
 pub enum TemplateCmd {
     Create {
         #[arg(long)] control_url: String,
+        /// rcluster API key (defaults to $RCLUSTER_API_KEY)
+        #[arg(long)] api_key: Option<String>,
         #[arg(long)] image: String,
+        /// 内核镜像名；缺省使用平台默认内核。
+        #[arg(long)] kernel: Option<String>,
         #[arg(long)] template: String,
         #[arg(long, default_value = "4000")] cpu: u64,
         #[arg(long, default_value = "4G")] memory: String,
@@ -95,6 +103,8 @@ pub enum TemplateCmd {
     },
     List {
         #[arg(long)] control_url: String,
+        /// rcluster API key (defaults to $RCLUSTER_API_KEY)
+        #[arg(long)] api_key: Option<String>,
     },
 }
 
@@ -731,6 +741,22 @@ mod tests {
              and silently ignored"
         );
 
+        // The VM block has the same trap: its keys must land under
+        // [server.vm], not [server.ssh].
+        let vm_at = text
+            .find("\n[server.vm]\n")
+            .expect("entrypoint should emit [server.vm]");
+        let vm_enabled_at = text
+            .find("enabled = ${GITA_SERVER_VM_ENABLED")
+            .expect("entrypoint should emit the vm enabled flag");
+        assert!(
+            vm_enabled_at > vm_at && vm_enabled_at < ssh_at,
+            "the vm enabled flag is emitted at offset {vm_enabled_at}, which falls outside \
+             the [server.vm] table ({vm_at}..{ssh_at}) — TOML scopes keys to the most \
+             recent table header, so it would be read as server.ssh.enabled and silently \
+             ignored"
+        );
+
         // The password-reset switch has the same trap.
         let reset_at = text
             .find("allow_insecure_password_reset =")
@@ -791,23 +817,16 @@ mod tests {
         let path = dir.path().join("gita.toml");
 
         // Absent -> default (off).
-        std::fs::write(&path, "[server]
-").unwrap();
+        std::fs::write(&path, "[server]\n").unwrap();
         assert!(!Config::load(&path).unwrap().server.vm.enabled);
 
         // Explicitly on.
-        std::fs::write(&path, "[server]
-[server.vm]
-enabled = true
-").unwrap();
+        std::fs::write(&path, "[server]\n[server.vm]\nenabled = true\n").unwrap();
         assert!(Config::load(&path).unwrap().server.vm.enabled);
 
         // Explicitly off again — this is the case that reading the value
         // out of the defaulted struct would get wrong.
-        std::fs::write(&path, "[server]
-[server.vm]
-enabled = false
-").unwrap();
+        std::fs::write(&path, "[server]\n[server.vm]\nenabled = false\n").unwrap();
         assert!(!Config::load(&path).unwrap().server.vm.enabled);
     }
 

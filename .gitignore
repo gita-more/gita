@@ -25,6 +25,10 @@ config/gita.toml
 tmp
 log
 
+# CI VM 镜像产物（rootfs / 内核）：由 ci/image/build-rootfs.sh 构建或从
+# 上游镜像下载，体积很大且与代码无关，不入库。
+/ci/image/assets/
+
 # Playwright
 /test-results
 integration/web/test-results
