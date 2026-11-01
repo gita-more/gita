@@ -1002,7 +1002,7 @@ impl Repository for VmStore {
                             COALESCE(SUM((spec->>'memory_bytes')::bigint), 0),
                             COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)
                      FROM vm_instances
-                     WHERE status IN ('pending', 'provisiooning', 'running', 'stopping', 'migrating')",
+                     WHERE status IN ('pending', 'provisioning', 'running', 'stopping', 'migrating')",
                 )
                 .fetch_all(&self.pool)
                 .await
@@ -1016,7 +1016,7 @@ impl Repository for VmStore {
                             COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)
                      FROM vm_instances
                      WHERE owner_type = 'group' AND owner_id = $1
-                       AND status IN ('pending', 'provisiooning', 'running', 'stopping', 'migrating')",
+                       AND status IN ('pending', 'provisioning', 'running', 'stopping', 'migrating')",
                 )
                 .bind(scope_id)
                 .fetch_all(&self.pool)
@@ -1031,7 +1031,7 @@ impl Repository for VmStore {
                             COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)
                      FROM vm_instances
                      WHERE owner_type = 'repo' AND owner_id = $1
-                       AND status IN ('pending', 'provisiooning', 'running', 'stopping', 'migrating')",
+                       AND status IN ('pending', 'provisioning', 'running', 'stopping', 'migrating')",
                 )
                 .bind(scope_id)
                 .fetch_all(&self.pool)
