@@ -1,12 +1,13 @@
 //! Pipeline execution: clone, parse YAML, run jobs, collect logs.
 
+use crate::client::{LogLine, RunnerClient};
 use crate::clone::{prepare_run_repo, resolve_repo_owner_name, CloneOutcome};
 use crate::config::RunnerConfig;
 use crate::registry::JobRegistry;
 use crate::workspace::{job_work_dir, run_work_dir};
 use anyhow::Context;
 use chrono::Utc;
-use gita_db::{Db, PipelineRunRow};
+use gita_db::PipelineRunRow;
 use gita_pipeline::{expand, parse_yaml};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
@@ -28,7 +29,7 @@ const CANCEL_POLL: Duration = Duration::from_secs(1);
 /// 5. Mark the run terminal (`success` or `failed`) and publish the
 ///    corresponding event.
 pub async fn execute_pipeline(
-    db: &Db,
+    client: &RunnerClient,
     config: &RunnerConfig,
     registry: &JobRegistry,
     run: &PipelineRunRow,
@@ -41,11 +42,11 @@ pub async fn execute_pipeline(
     // Prepare the checkout. The clone/checkout logic is shared with the
     // workflow executor so both paths check out exactly the commit the
     // run names.
-    let repo_dir = match prepare_run_repo(db, config, run).await? {
+    let repo_dir = match prepare_run_repo(client, config, run).await? {
         CloneOutcome::Ready(dir) => dir,
         CloneOutcome::Failed(reason) => {
             tracing::warn!("pipeline checkout failed: {reason}");
-            db.update_pipeline_run_status(run.id, "failed").await?;
+            client.set_run_status(run.id, "failed").await?;
             return Ok(());
         }
     };
@@ -63,7 +64,7 @@ pub async fn execute_pipeline(
                 })
                 .unwrap_or_default();
             tracing::warn!("read .gita-ci.yml failed: {e}; repo dir contains: {listing:?}");
-            db.update_pipeline_run_status(run.id, "failed").await?;
+            client.set_run_status(run.id, "failed").await?;
             return Ok(());
         }
     };
@@ -72,7 +73,7 @@ pub async fn execute_pipeline(
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("parse .gita-ci.yml failed: {e}");
-            db.update_pipeline_run_status(run.id, "failed").await?;
+            client.set_run_status(run.id, "failed").await?;
             return Ok(());
         }
     };
@@ -81,7 +82,7 @@ pub async fn execute_pipeline(
         Ok(p) => p,
         Err(e) => {
             tracing::warn!("expand pipeline failed: {e}");
-            db.update_pipeline_run_status(run.id, "failed").await?;
+            client.set_run_status(run.id, "failed").await?;
             return Ok(());
         }
     };
@@ -90,19 +91,19 @@ pub async fn execute_pipeline(
     let mut canceled = false;
     for plan in &plans {
         // Skip the remaining stages if the run was canceled.
-        if let Ok(Some(fresh)) = db.get_pipeline_run(run.id).await {
+        if let Ok(fresh) = client.get_run(run.id).await {
             if fresh.status == "canceled" {
                 canceled = true;
                 break;
             }
         }
-        let ok = run_job(db, config, registry, run, &plan.job).await?;
+        let ok = run_job(client, config, registry, run, &plan.job).await?;
         if !ok {
             any_failed = true;
             // If the job was canceled (vs. failed for some other
             // reason), don't keep starting more jobs and don't
             // overwrite the canceled run status.
-            if let Ok(Some(fresh)) = db.get_pipeline_run(run.id).await {
+            if let Ok(fresh) = client.get_run(run.id).await {
                 if fresh.status == "canceled" {
                     canceled = true;
                 }
@@ -118,22 +119,21 @@ pub async fn execute_pipeline(
     }
 
     let final_run_status = if any_failed { "failed" } else { "success" };
-    db.update_pipeline_run_status(run.id, final_run_status)
-        .await?;
+    client.set_run_status(run.id, final_run_status).await?;
     Ok(())
 }
 
 /// Run a single job: insert row, publish event, exec `sh -c`, collect logs.
 /// Returns `true` if the job succeeded.
 async fn run_job(
-    db: &Db,
+    client: &RunnerClient,
     config: &RunnerConfig,
     registry: &JobRegistry,
     run: &PipelineRunRow,
     job: &gita_pipeline::ParsedJob,
 ) -> anyhow::Result<bool> {
-    let job_id = db
-        .insert_job(run.id, &job.name, &job.stage, &job.needs, &job.script)
+    let job_id = client
+        .create_job(run.id, &job.name, &job.stage, &job.needs, &job.script)
         .await?;
 
     // A `vm:` job runs inside a cluster virtual machine: the runner only
@@ -144,7 +144,7 @@ async fn run_job(
     if let Some(vm) = &job.vm {
         let script = job.script.join("\n");
         let outcome =
-            crate::vm_exec::run_job_in_vm(db, config, run, job_id, vm, &script).await?;
+            crate::vm_exec::run_job_in_vm(client, config, run, job_id, vm, &script).await?;
         return Ok(match outcome {
             crate::vm_exec::VmJobOutcome::Success => {
                 // The agent already finished the row; the caller expects
@@ -163,13 +163,13 @@ async fn run_job(
             crate::vm_exec::VmJobOutcome::Failed
             | crate::vm_exec::VmJobOutcome::TimedOut
             | crate::vm_exec::VmJobOutcome::InfrastructureError => {
-                db.update_job_status(job_id, "failed", None).await?;
+                client.set_job_status(job_id, "failed", None).await?;
                 false
             }
         });
     }
 
-    db.update_job_status(job_id, "running", None).await?;
+    client.set_job_status(job_id, "running", None).await?;
 
     // Create the job workspace (a fresh clone in a per-job dir).
     let job_dir = job_work_dir(config, run.id, &job.name);
@@ -180,7 +180,7 @@ async fn run_job(
 
     // The repository's owner/name, for the job's environment. The run row
     // carries only `repo_id`.
-    let repo_label = match resolve_repo_owner_name(db, run).await? {
+    let repo_label = match resolve_repo_owner_name(client, run).await? {
         Some((owner, repo_name)) => format!("{owner}/{repo_name}"),
         None => String::new(),
     };
@@ -203,12 +203,12 @@ async fn run_job(
 
     // The job's environment is built from scratch rather than inherited.
     //
-    // The runner process holds `GITA_DATABASE_URL` (with the database
-    // password) and `GITA_RUNNER_TOKEN` (a personal access token that can
-    // push to every repository its owner owns). A job script is arbitrary
-    // shell from a pushed file; if it inherited the runner's environment,
-    // `env` alone would hand it both credentials. Start from an empty
-    // environment and add back only what a build needs.
+    // The runner process holds `GITA_RUNNER_TOKEN` (a personal access
+    // token that can push to every repository its owner owns). A job
+    // script is arbitrary shell from a pushed file; if it inherited the
+    // runner's environment, `env` alone would hand it the credential.
+    // Start from an empty environment and add back only what a build
+    // needs.
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
         .arg(&script)
@@ -234,12 +234,9 @@ async fn run_job(
     cmd.env("GITA_REF", &run.ref_name);
     cmd.env("GITA_JOB_NAME", &job.name);
     cmd.env("GITA_RUN_ID", run.id.to_string());
-    // Keep the runner's own environment out of the job.
-    cmd.env_remove("GITA_DATABASE_URL");
+    // Keep the runner's own credentials out of the job.
     cmd.env_remove("GITA_RUNNER_TOKEN");
-    cmd.env_remove("DATABASE_URL");
     cmd.env_remove("GITA_SERVER_URL");
-    cmd.env_remove("GITA_SERVER_DB_URL");
 
     let child = cmd.spawn().context("spawn sh")?;
 
@@ -247,7 +244,13 @@ async fn run_job(
     // it via JobRegistry::kill_run.
     registry.register(run.id, &job.name, child).await;
 
-    // Read stdout/stderr line-buffered and insert into logs.
+    // Read stdout/stderr line-buffered and send them to the server.
+    //
+    // The lines are batched: one HTTP request per log line would make a
+    // chatty build spend most of its time on round trips. A batch goes
+    // out when it reaches LOG_BATCH_LINES or when the flush interval
+    // elapses, whichever comes first — so the last lines of a job still
+    // show up promptly.
     let seq = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
 
     let mut child = registry
@@ -255,36 +258,40 @@ async fn run_job(
         .await
         .ok_or_else(|| anyhow::anyhow!("child disappeared from registry"))?;
 
-    let mut stdout_reader = BufReader::new(child.stdout.take().unwrap()).lines();
+    let stdout_reader = BufReader::new(child.stdout.take().unwrap()).lines();
     let stderr_reader = child.stderr.take().unwrap();
-    let mut stderr_reader = BufReader::new(stderr_reader).lines();
+    let stderr_reader = BufReader::new(stderr_reader).lines();
 
-    let db_stdout = db.clone();
+    let client_stdout = client.clone();
     let job_id_stdout = job_id;
     let seq_stdout = seq.clone();
     let stdout_task = tokio::spawn(async move {
-        while let Ok(Some(line)) = stdout_reader.next_line().await {
-            let s = seq_stdout.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let _ = db_stdout
-                .insert_log(job_id_stdout, s, "stdout", &line, &Utc::now().to_rfc3339())
-                .await;
-        }
+        stream_logs(
+            client_stdout,
+            job_id_stdout,
+            seq_stdout,
+            "stdout",
+            stdout_reader,
+        )
+        .await;
     });
 
-    let db_stderr = db.clone();
+    let client_stderr = client.clone();
     let job_id_stderr = job_id;
     let seq_stderr = seq.clone();
     let stderr_task = tokio::spawn(async move {
-        while let Ok(Some(line)) = stderr_reader.next_line().await {
-            let s = seq_stderr.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let _ = db_stderr
-                .insert_log(job_id_stderr, s, "stderr", &line, &Utc::now().to_rfc3339())
-                .await;
-        }
+        stream_logs(
+            client_stderr,
+            job_id_stderr,
+            seq_stderr,
+            "stderr",
+            stderr_reader,
+        )
+        .await;
     });
 
     // Race the child against a cancel poll. The cancel poll runs every
-    // CANCEL_POLL on a separate task; if pipeline_runs.status becomes
+    // CANCEL_POLL on a separate task; if the run's status becomes
     // 'canceled' the watcher calls registry.kill_run, which start_kill()s
     // the registered child (here, `child` is a fresh handle we just took
     // out, so it isn't in the registry anymore — the watcher needs the
@@ -299,14 +306,14 @@ async fn run_job(
     // background task once we've awaited the child.
     let watcher_kill_tx = kill_tx.clone();
     let registry_for_watcher = registry.clone();
-    let watcher_db = db.clone();
+    let watcher_client = client.clone();
     let watcher_run_id = run.id;
     let _watcher = tokio::spawn(async move {
         let mut ticker = interval(CANCEL_POLL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            let Ok(Some(fresh)) = watcher_db.get_pipeline_run(watcher_run_id).await else {
+            let Ok(fresh) = watcher_client.get_run(watcher_run_id).await else {
                 break;
             };
             if fresh.status == "canceled" {
@@ -413,7 +420,8 @@ async fn run_job(
         "failed"
     };
 
-    db.update_job_status(job_id, final_status, exit_code)
+    client
+        .set_job_status(job_id, final_status, exit_code)
         .await?;
 
     // Clean up the job workspace to avoid accumulating dirs. A git
@@ -436,6 +444,80 @@ async fn run_job(
     tokio::fs::remove_dir_all(&job_dir).await.ok();
 
     Ok(ok)
+}
+
+/// How many log lines go out in one request.
+const LOG_BATCH_LINES: usize = 32;
+
+/// How long a partial batch waits before it is sent anyway.
+const LOG_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Read a stream of log lines and send them to the server in batches.
+///
+/// The batch is flushed when it is full or when the flush interval
+/// elapses — the latter matters for a job whose last line arrives long
+/// before the job ends: the log has to be visible while the job is still
+/// running.
+async fn stream_logs<R>(
+    client: RunnerClient,
+    job_id: i64,
+    seq: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    stream: &'static str,
+    mut reader: tokio::io::Lines<R>,
+) where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut batch: Vec<LogLine> = Vec::with_capacity(LOG_BATCH_LINES);
+    let mut ticker = interval(LOG_FLUSH_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The first tick fires immediately; skip it so a batch that fills up
+    // right away is not sent twice.
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            line = reader.next_line() => {
+                match line {
+                    Ok(Some(line)) => {
+                        let s = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        batch.push(LogLine {
+                            seq: s,
+                            stream: stream.to_string(),
+                            line,
+                            timestamp: Utc::now().to_rfc3339(),
+                        });
+                        if batch.len() >= LOG_BATCH_LINES {
+                            flush_logs(&client, job_id, &mut batch).await;
+                        }
+                    }
+                    // End of stream: send what is left and stop.
+                    Ok(None) => {
+                        flush_logs(&client, job_id, &mut batch).await;
+                        break;
+                    }
+                    Err(_) => {
+                        flush_logs(&client, job_id, &mut batch).await;
+                        break;
+                    }
+                }
+            }
+            _ = ticker.tick() => {
+                flush_logs(&client, job_id, &mut batch).await;
+            }
+        }
+    }
+}
+
+/// Send a batch of log lines. A failed send is logged and dropped: the
+/// job's outcome must not depend on the log transport.
+async fn flush_logs(client: &RunnerClient, job_id: i64, batch: &mut Vec<LogLine>) {
+    if batch.is_empty() {
+        return;
+    }
+    let lines = std::mem::take(batch);
+    if let Err(e) = client.append_logs(job_id, &lines).await {
+        tracing::warn!("could not send job logs: {e:#}");
+    }
 }
 
 /// Create a per-job working directory as a git worktree of the run's

@@ -65,7 +65,6 @@ mod tests {
 
     fn config(base: &str, token: &str) -> RunnerConfig {
         RunnerConfig {
-            server_db_url: "postgres://localhost/gita".to_string(),
             server_base_url: base.to_string(),
             runner_token: token.to_string(),
             runner_name: "runner-1".to_string(),

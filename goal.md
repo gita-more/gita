@@ -371,7 +371,7 @@ gita 自带一个轻量级 in-repo CI，借鉴主流 SaaS CI 平台的形态，�
   其他字段（`image`、`artifacts`、`cache`、`when`、顶层 `services` 等）会被严格拒绝并
   在 UI 上报错；**顶层的未知 key 也会按名字报错**，不会再被误当成一个 job。
 - **Pipeline 定义 in-repo**，由仓库自己管理；没有 server-side 管理面板。
-- **Runner 是独立二进制** `gita-runner`，与 `gita-server` 解耦，跨进程通过 PostgreSQL 共享状态（`pipeline_runs` 表 + `FOR UPDATE SKIP LOCKED` 抢单），独立 worker 模型。
+- **Runner 是独立二进制** `gita-runner`，与 `gita-server` 解耦，只凭 server URL + runner token 通过 HTTP API 领取与回报任务（抢单的 `FOR UPDATE SKIP LOCKED` 仍在 server 端执行），独立 worker 模型，不需要数据库凭据。
 - **Phase 1 runtime 仅 shell**（`sh -c "<joined script>"`）；Docker / Podman 推迟到 Phase 3。
 - 触发器：push（Phase 1）；PR 状态检查、定时触发推迟到 Phase 2。
   （SSE 日志流与 cancel 已经提前做掉了，见下。）
@@ -388,7 +388,7 @@ gita 自带一个轻量级 in-repo CI，借鉴主流 SaaS CI 平台的形态，�
 
 - DB migration `20261020000000_pipelines.sql`：`pipelines` / `pipeline_runs` / `jobs` / `logs` 四张表 + 抢单用的 partial index。
 - `crates/gita-pipeline/` —— `.gita-ci.yml` 解析 + stages DAG 展开。
-- `crates/gita-runner/` —— 独立二进制。`FOR UPDATE SKIP LOCKED` 抢单、`git clone --depth 1`、`sh -c` 执行、stdout/stderr 行级写入 `logs`。
+- `crates/gita-runner/` —— 独立二进制。通过 `/api/runner/*` 领取任务、`git clone --depth 1`、`sh -c` 执行、经 API 写 job 状态与 `logs`；不直连数据库。
 - `gita-server worker register --name <n> --user <u>` CLI 子命令，铸 PAT 给 runner 用作 clone 时的 Basic-auth 密码。（二进制名是 `gita-server`，不是 `gita`。）
 - `crates/gita-http/`：push 事件 payload 升级到 `{ref, old_sha, new_sha, pusher_id}`（顺手修了 `actor_id: None` 那个旧 bug）；enqueue 路径检测新 commit 上的 `.gita-ci.yml`、upsert pipeline、insert run、发 `PipelineRequested` 事件。SSH push 走同一条路径（`crates/gita-push/`）。
 - `crates/gita-api/`：**7 个** REST 端点（list pipelines / list runs / create run / get run / cancel / logs / logs stream）。

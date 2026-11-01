@@ -189,7 +189,7 @@ async fn run_one_step(
         .stdin(Stdio::null());
 
     // Build a clean environment from scratch: do not leak the runner's own
-    // env (which may hold database credentials) into the job.
+    // env (which holds its runner token) into the job.
     cmd.env_clear();
     cmd.env(
         "PATH",
@@ -201,13 +201,10 @@ async fn run_one_step(
     for (k, v) in env {
         cmd.env(k, v);
     }
-    // Remove any runner secrets explicitly.
-    for secret in [
-        "GITA_DATABASE_URL",
-        "GITA_RUNNER_TOKEN",
-        "DATABASE_URL",
-        "GITA_SERVER_URL",
-    ] {
+    // Remove the runner's own credentials explicitly. A workflow may set
+    // `DATABASE_URL` for its own use, so only the runner's variables are
+    // stripped here.
+    for secret in ["GITA_RUNNER_TOKEN", "GITA_SERVER_URL"] {
         cmd.env_remove(secret);
     }
 

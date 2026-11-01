@@ -39,6 +39,7 @@ pub const OPENAPI_JSON: &str = r##"{
     { "name": "groups", "description": "Groups and membership" },
     { "name": "search", "description": "Repository and code search" },
     { "name": "pipelines", "description": "In-repo CI pipelines, runs and job logs" },
+    { "name": "runner", "description": "CI runner work queue, job status and logs (runner tokens only)" },
     { "name": "pages", "description": "Static site (Pages) publishing configuration" },
     { "name": "misc", "description": "Health and metadata" }
   ],
@@ -982,6 +983,195 @@ pub const OPENAPI_JSON: &str = r##"{
         "responses": { "200": { "description": "text/event-stream" } }
       }
     },
+    "/api/runner/claim": {
+      "post": {
+        "tags": ["runner"],
+        "summary": "Claim the next queued run",
+        "description": "Requires a runner token (a personal access token named `runner/…`). The server performs the atomic claim; the response contains the run and the pipeline whose content the runner must execute, or `run: null` when the queue is empty.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["runner_name"],
+                "properties": {
+                  "runner_name": { "type": "string" },
+                  "lease_secs": { "type": "integer", "default": 300 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "The claimed run (or null) and its pipeline" },
+          "401": { "description": "Missing or invalid token" },
+          "403": { "description": "The token is not a runner token" }
+        }
+      }
+    },
+    "/api/runner/runs/{run_id}": {
+      "get": {
+        "tags": ["runner"],
+        "summary": "Get a run's current state",
+        "description": "Requires a runner token. Runners poll this to notice a cancellation while a job is running.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Run state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PipelineRun" } } } },
+          "401": { "description": "Missing or invalid token" },
+          "403": { "description": "The token is not a runner token" },
+          "404": { "description": "Run not found" }
+        }
+      }
+    },
+    "/api/runner/runs/{run_id}/status": {
+      "post": {
+        "tags": ["runner"],
+        "summary": "Set a run's status",
+        "description": "Requires a runner token. Used to mark a claimed run running and then terminal.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": { "status": { "type": "string", "enum": ["running", "success", "failed", "canceled"] } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Status updated" },
+          "400": { "description": "Invalid status" },
+          "401": { "description": "Missing or invalid token" },
+          "403": { "description": "The token is not a runner token" }
+        }
+      }
+    },
+    "/api/runner/runs/{run_id}/jobs": {
+      "post": {
+        "tags": ["runner"],
+        "summary": "Create a job row for a run",
+        "description": "Requires a runner token. Returns the id the runner uses for status updates and log lines.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "stage", "needs", "script"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "stage": { "type": "string" },
+                  "needs": { "type": "array", "items": { "type": "string" } },
+                  "script": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Job created", "content": { "application/json": { "schema": { "type": "object", "properties": { "job_id": { "type": "integer" } } } } } },
+          "401": { "description": "Missing or invalid token" },
+          "403": { "description": "The token is not a runner token" }
+        }
+      }
+    },
+    "/api/runner/jobs/{job_id}": {
+      "get": {
+        "tags": ["runner"],
+        "summary": "Get a job's current state",
+        "description": "Requires a runner token.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Job state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Job" } } } },
+          "401": { "description": "Missing or invalid token" },
+          "403": { "description": "The token is not a runner token" },
+          "404": { "description": "Job not found" }
+        }
+      }
+    },
+    "/api/runner/jobs/{job_id}/status": {
+      "post": {
+        "tags": ["runner"],
+        "summary": "Set a job's status",
+        "description": "Requires a runner token. `exit_code` is recorded for terminal states.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": { "type": "string", "enum": ["running", "success", "failed", "skipped", "canceled"] },
+                  "exit_code": { "type": "integer", "nullable": true }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Status updated" },
+          "400": { "description": "Invalid status" },
+          "401": { "description": "Missing or invalid token" },
+          "403": { "description": "The token is not a runner token" }
+        }
+      }
+    },
+    "/api/runner/jobs/{job_id}/logs": {
+      "post": {
+        "tags": ["runner"],
+        "summary": "Append log lines to a job",
+        "description": "Requires a runner token. Inserts are idempotent per `(job_id, seq)`, so a retried batch does not duplicate lines.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["seq", "stream", "line", "timestamp"],
+                  "properties": {
+                    "seq": { "type": "integer" },
+                    "stream": { "type": "string", "enum": ["stdout", "stderr", "system"] },
+                    "line": { "type": "string" },
+                    "timestamp": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Lines appended" },
+          "400": { "description": "Invalid stream name" },
+          "401": { "description": "Missing or invalid token" },
+          "403": { "description": "The token is not a runner token" }
+        }
+      }
+    },
+    "/api/runner/repos/{repo_id}": {
+      "get": {
+        "tags": ["runner"],
+        "summary": "Resolve a repository id to its owner and name",
+        "description": "Requires a runner token. Used to build the clone URL for a run.",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Repository owner and name" },
+          "401": { "description": "Missing or invalid token" },
+          "403": { "description": "The token is not a runner token" },
+          "404": { "description": "Repository not found" }
+        }
+      }
+    },
     "/api/users/me/avatar": {
       "post": {
         "tags": ["misc"],
@@ -1873,6 +2063,7 @@ mod tests {
             include_str!("routes/pages.rs"),
             include_str!("routes/misc.rs"),
             include_str!("routes/resolve.rs"),
+            include_str!("routes/runner.rs"),
         ] {
             let mut idx = 0;
             while let Some(pos) = module[idx..].find(".route(") {

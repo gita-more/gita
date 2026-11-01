@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 
-use crate::Config;
 use crate::worker_register;
+use crate::Config;
 
 pub async fn run(cmd: crate::config::RunnerCmd, config: &Config) -> Result<()> {
     match cmd {

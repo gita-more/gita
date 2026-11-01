@@ -5,10 +5,12 @@ Actions' runner architecture, and how to close the gap between the
 two. It is a forward-looking reference, not a record of work already
 done.
 
-The current gita-runner is a single Rust process that polls
-`pipeline_runs` in Postgres, claims a run with `FOR UPDATE SKIP
-LOCKED`, and executes the job's shell script directly inside the
-runner process via `tokio::process::Command::new("sh") -c "..."`.
+The current gita-runner is a single Rust process that polls the
+server's runner API, asks it to claim the next queued run (the server
+does the `FOR UPDATE SKIP LOCKED` query), and executes the job's shell
+script directly inside the runner process via
+`tokio::process::Command::new("sh") -c "..."`. The runner needs only
+the server URL and a runner token; it has no database connection.
 That is fine for a developer tool, but it is not the model GitHub
 Actions uses and not the model gita should ship for production.
 

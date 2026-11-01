@@ -532,6 +532,82 @@ Stream a job's logs as they are produced (SSE)
 - 需要认证
 - 响应码：`200`
 
+## runner
+
+CI runner work queue, job status and logs (runner tokens only)
+
+### `POST /api/runner/claim`
+
+Claim the next queued run
+
+Requires a runner token (a personal access token named `runner/…`). The server performs the atomic claim; the response contains the run and the pipeline whose content the runner must execute, or `run: null` when the queue is empty.
+
+- 需要认证
+- 响应码：`200`, `401`, `403`
+
+### `GET /api/runner/jobs/{job_id}`
+
+Get a job's current state
+
+Requires a runner token.
+
+- 需要认证
+- 响应码：`200`, `401`, `403`, `404`
+
+### `POST /api/runner/jobs/{job_id}/logs`
+
+Append log lines to a job
+
+Requires a runner token. Inserts are idempotent per `(job_id, seq)`, so a retried batch does not duplicate lines.
+
+- 需要认证
+- 响应码：`200`, `400`, `401`, `403`
+
+### `POST /api/runner/jobs/{job_id}/status`
+
+Set a job's status
+
+Requires a runner token. `exit_code` is recorded for terminal states.
+
+- 需要认证
+- 响应码：`200`, `400`, `401`, `403`
+
+### `GET /api/runner/repos/{repo_id}`
+
+Resolve a repository id to its owner and name
+
+Requires a runner token. Used to build the clone URL for a run.
+
+- 需要认证
+- 响应码：`200`, `401`, `403`, `404`
+
+### `GET /api/runner/runs/{run_id}`
+
+Get a run's current state
+
+Requires a runner token. Runners poll this to notice a cancellation while a job is running.
+
+- 需要认证
+- 响应码：`200`, `401`, `403`, `404`
+
+### `POST /api/runner/runs/{run_id}/jobs`
+
+Create a job row for a run
+
+Requires a runner token. Returns the id the runner uses for status updates and log lines.
+
+- 需要认证
+- 响应码：`200`, `401`, `403`
+
+### `POST /api/runner/runs/{run_id}/status`
+
+Set a run's status
+
+Requires a runner token. Used to mark a claimed run running and then terminal.
+
+- 需要认证
+- 响应码：`200`, `400`, `401`, `403`
+
 ## pages
 
 Static site (Pages) publishing configuration

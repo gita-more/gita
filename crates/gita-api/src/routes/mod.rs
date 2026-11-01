@@ -14,6 +14,7 @@ pub mod pipeline;
 pub mod pr;
 pub mod repo;
 pub mod resolve;
+pub mod runner;
 pub mod search;
 pub mod ssh_key;
 pub mod visibility;
@@ -30,6 +31,7 @@ pub use misc::event_routes;
 pub use misc::misc_routes;
 pub use repo::repo_routes;
 pub use resolve::resolve_routes;
+pub use runner::runner_routes;
 pub use search::search_routes;
 pub use ssh_key::ssh_key_routes;
 /// Map a git-layer error to an API error.

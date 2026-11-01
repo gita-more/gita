@@ -5,15 +5,15 @@
 //! 每个方法都有默认实现（返回 `Error::Storage("not implemented")`），
 //! 这样测试替身只需覆盖自己关心的方法。
 
+use crate::{Error, Result};
+use async_trait::async_trait;
 use gita_vm_api::ids::{ImageId, NetworkId, NodeId, OperationId, TemplateId, VmId};
 use gita_vm_api::network::IpLease;
 use gita_vm_api::node::Node;
 use gita_vm_api::operation::Operation;
 use gita_vm_api::quota::{Quota, QuotaScope, QuotaUsage};
 use gita_vm_api::template::VmTemplate;
-use gita_vm_api::vm::Vm;
-use crate::{Error, Result};
-use async_trait::async_trait;
+use gita_vm_api::vm::{Vm, VmLinkage};
 
 #[async_trait]
 pub trait Repository: Send + Sync {
@@ -37,6 +37,21 @@ pub trait Repository: Send + Sync {
         Err(unimpl())
     }
 
+    /// 创建一台**带 gita 关联**的 VM，并返回它的 id。
+    ///
+    /// CI 场景必须走这里：普通 `create_vm` 不写 `repo_id` /
+    /// `pipeline_run_id` / `job_id`，那台 VM 就与任何 job 无关——控制面
+    /// 不知道该不该回收它，Web UI 也显示不出来。返回值必须是真实 id：
+    /// 调用方（runner）要靠它回收这台 VM。
+    async fn create_linked_vm(&self, _vm: &Vm, _linkage: VmLinkage) -> Result<VmId> {
+        Err(unimpl())
+    }
+
+    /// 读取一台 VM 与 gita 侧的关联。
+    async fn get_vm_linkage(&self, _id: VmId) -> Result<Option<VmLinkage>> {
+        Err(unimpl())
+    }
+
     // ===== Template =====
     async fn create_template(&self, _tmpl: &VmTemplate) -> Result<()> {
         Err(unimpl())
@@ -50,7 +65,10 @@ pub trait Repository: Send + Sync {
     async fn delete_template(&self, _id: TemplateId) -> Result<()> {
         Err(unimpl())
     }
-    async fn list_templates(&self, _owner: Option<gita_vm_api::ids::OwnerRef>) -> Result<Vec<VmTemplate>> {
+    async fn list_templates(
+        &self,
+        _owner: Option<gita_vm_api::ids::OwnerRef>,
+    ) -> Result<Vec<VmTemplate>> {
         Err(unimpl())
     }
 
@@ -84,7 +102,10 @@ pub trait Repository: Send + Sync {
     async fn delete_image(&self, _id: ImageId) -> Result<()> {
         Err(unimpl())
     }
-    async fn list_images(&self, _owner: Option<gita_vm_api::ids::OwnerRef>) -> Result<Vec<gita_vm_api::Image>> {
+    async fn list_images(
+        &self,
+        _owner: Option<gita_vm_api::ids::OwnerRef>,
+    ) -> Result<Vec<gita_vm_api::Image>> {
         Err(unimpl())
     }
 
@@ -101,7 +122,10 @@ pub trait Repository: Send + Sync {
     async fn delete_network(&self, _id: NetworkId) -> Result<()> {
         Err(unimpl())
     }
-    async fn list_networks(&self, _owner: Option<gita_vm_api::ids::OwnerRef>) -> Result<Vec<gita_vm_api::network::Network>> {
+    async fn list_networks(
+        &self,
+        _owner: Option<gita_vm_api::ids::OwnerRef>,
+    ) -> Result<Vec<gita_vm_api::network::Network>> {
         Err(unimpl())
     }
     async fn get_default_network(&self) -> Result<Option<gita_vm_api::network::Network>> {
@@ -144,7 +168,11 @@ pub trait Repository: Send + Sync {
     async fn list_operations(&self, _node_id: Option<NodeId>) -> Result<Vec<Operation>> {
         Err(unimpl())
     }
-    async fn list_pending_operations(&self, _node_id: Option<NodeId>, _limit: usize) -> Result<Vec<Operation>> {
+    async fn list_pending_operations(
+        &self,
+        _node_id: Option<NodeId>,
+        _limit: usize,
+    ) -> Result<Vec<Operation>> {
         Err(unimpl())
     }
 

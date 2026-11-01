@@ -55,6 +55,14 @@ impl VmAuth {
             .map_err(|_| ApiAuthError::Unauthorized("invalid or revoked token".into()))
     }
 
+    /// 数据库句柄。
+    ///
+    /// 控制面自己要写 gita 侧的表（CI job 的 agent token），而不只是读
+    /// 用户和吊销列表。
+    pub fn db(&self) -> &Db {
+        &self.db
+    }
+
     /// 校验节点 API key
     fn check_node_key(&self, presented: &str) -> Result<(), ApiAuthError> {
         if presented.is_empty() {
@@ -142,9 +150,7 @@ pub async fn require_vm_auth(State(state): State<AppState>, req: Request, next: 
 
     let token = match bearer_token(&req) {
         Some(t) => t.to_string(),
-        None => {
-            return ApiAuthError::Unauthorized("missing bearer token".into()).into_response()
-        }
+        None => return ApiAuthError::Unauthorized("missing bearer token".into()).into_response(),
     };
 
     match auth.resolve_user(&token).await {

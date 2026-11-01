@@ -13,10 +13,11 @@
 //!   run must execute the commit it names, not the current tip; running
 //!   a different commit than the run reports is worse than failing.
 
+use crate::client::RunnerClient;
 use crate::config::RunnerConfig;
 use crate::workspace::clone_url;
 use anyhow::{Context, Result};
-use gita_db::{Db, PipelineRunRow};
+use gita_db::PipelineRunRow;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::Command;
@@ -37,7 +38,7 @@ pub enum CloneOutcome {
 /// skipped — this is what lets an integration test pre-clone the
 /// repository. The checkout is *not* re-verified in that case.
 pub async fn prepare_run_repo(
-    db: &Db,
+    client: &RunnerClient,
     config: &RunnerConfig,
     run: &PipelineRunRow,
 ) -> Result<CloneOutcome> {
@@ -48,7 +49,7 @@ pub async fn prepare_run_repo(
 
     // The run row stores ref + head_sha but not owner/name — resolve them
     // from the repository the run points at.
-    let Some((owner, repo_name)) = resolve_repo_owner_name(db, run).await? else {
+    let Some((owner, repo_name)) = resolve_repo_owner_name(client, run).await? else {
         // Repo was deleted while the run was queued.
         return Ok(CloneOutcome::Failed("repository no longer exists".into()));
     };
@@ -167,13 +168,13 @@ pub async fn prepare_run_repo(
     Ok(CloneOutcome::Ready(repo_dir))
 }
 
-/// Resolve `(owner, repo_name)` for a run from the repositories table.
+/// Resolve `(owner, repo_name)` for a run from the server.
 pub async fn resolve_repo_owner_name(
-    db: &Db,
+    client: &RunnerClient,
     run: &PipelineRunRow,
 ) -> Result<Option<(String, String)>> {
-    let repo = db.get_repository(run.repo_id).await?;
-    Ok(repo.map(|r| (r.owner_name, r.name)))
+    let repo = client.get_repo(run.repo_id).await?;
+    Ok(Some((repo.owner_name, repo.name)))
 }
 
 #[cfg(test)]

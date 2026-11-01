@@ -17,7 +17,6 @@ use common::push_files;
 /// A runner config rooted in a unique temp directory.
 fn runner_config(app: &gita_admin::App, tag: &str) -> RunnerConfig {
     RunnerConfig {
-        server_db_url: common::test_db_url(),
         server_base_url: format!("file://{}", app.data_dir.join("repos").display()),
         runner_token: "workflow-test-token".to_string(),
         runner_name: format!("workflow-runner-{tag}"),
@@ -46,7 +45,7 @@ async fn run_workflow(
     repo: &str,
     workflow_path: &str,
     workflow_yaml: &str,
-) -> (gita_db::Db, i64) {
+) -> (gita_db::Db, i64, String, gita_runner::client::RunnerClient) {
     let db = app.db.clone();
 
     push_files(
@@ -71,7 +70,13 @@ async fn run_workflow(
     // The pipeline row holds the workflow's YAML; its path marks the run
     // as a workflow rather than a `.gita-ci.yml` pipeline.
     let pipeline_id = db
-        .upsert_pipeline(repo_row.id, workflow_path, "refs/heads/main", &head_sha, workflow_yaml)
+        .upsert_pipeline(
+            repo_row.id,
+            workflow_path,
+            "refs/heads/main",
+            &head_sha,
+            workflow_yaml,
+        )
         .await
         .unwrap();
     let run_id = db
@@ -86,7 +91,10 @@ async fn run_workflow(
         .await
         .unwrap();
 
-    (db, run_id)
+    // The runner executes the workflow's YAML, which it gets from the
+    // server's claim response; the test hands it over directly.
+    let (_base_url, _token, client) = common::runner_client(app, owner).await;
+    (db, run_id, workflow_yaml.to_string(), client)
 }
 
 #[tokio::test]
@@ -106,14 +114,8 @@ jobs:
         run: echo "sentinel-WORKFLOW-RAN-OK"
 "#;
 
-    let (db, run_id) = run_workflow(
-        &app,
-        "wfowner",
-        "wfrepo",
-        ".github/workflows/ci.yml",
-        yaml,
-    )
-    .await;
+    let (db, run_id, content, client) =
+        run_workflow(&app, "wfowner", "wfrepo", ".github/workflows/ci.yml", yaml).await;
 
     let config = runner_config(&app, "basic");
     std::fs::create_dir_all(&config.work_dir).unwrap();
@@ -126,7 +128,7 @@ jobs:
     assert_eq!(claimed.id, run_id);
 
     let registry = JobRegistry::new();
-    execute_workflow_run(&db, &config, &registry, &claimed)
+    execute_workflow_run(&client, &config, &registry, &claimed, &content)
         .await
         .expect("execute_workflow_run");
 
@@ -171,14 +173,8 @@ jobs:
       - run: echo "step-two"
 "#;
 
-    let (db, run_id) = run_workflow(
-        &app,
-        "wford",
-        "wfordrepo",
-        ".github/workflows/ci.yml",
-        yaml,
-    )
-    .await;
+    let (db, run_id, content, client) =
+        run_workflow(&app, "wford", "wfordrepo", ".github/workflows/ci.yml", yaml).await;
 
     let config = runner_config(&app, "order");
     std::fs::create_dir_all(&config.work_dir).unwrap();
@@ -189,7 +185,7 @@ jobs:
         .unwrap()
         .expect("a run should be claimable");
     let registry = JobRegistry::new();
-    execute_workflow_run(&db, &config, &registry, &claimed)
+    execute_workflow_run(&client, &config, &registry, &claimed, &content)
         .await
         .expect("execute_workflow_run");
 
@@ -228,7 +224,7 @@ jobs:
       - run: echo "after-failure"
 "#;
 
-    let (db, run_id) = run_workflow(
+    let (db, run_id, content, client) = run_workflow(
         &app,
         "wffail",
         "wffailrepo",
@@ -246,7 +242,7 @@ jobs:
         .unwrap()
         .expect("a run should be claimable");
     let registry = JobRegistry::new();
-    execute_workflow_run(&db, &config, &registry, &claimed)
+    execute_workflow_run(&client, &config, &registry, &claimed, &content)
         .await
         .expect("execute_workflow_run");
 
@@ -288,7 +284,7 @@ jobs:
       - run: echo "running on ${{ matrix.os }}"
 "#;
 
-    let (db, run_id) = run_workflow(
+    let (db, run_id, content, client) = run_workflow(
         &app,
         "wfmatrix",
         "wfmatrixrepo",
@@ -306,7 +302,7 @@ jobs:
         .unwrap()
         .expect("a run should be claimable");
     let registry = JobRegistry::new();
-    execute_workflow_run(&db, &config, &registry, &claimed)
+    execute_workflow_run(&client, &config, &registry, &claimed, &content)
         .await
         .expect("execute_workflow_run");
 
@@ -345,14 +341,8 @@ jobs:
       - run: echo hi
 "#;
 
-    let (db, run_id) = run_workflow(
-        &app,
-        "wfbad",
-        "wfbadrepo",
-        ".github/workflows/ci.yml",
-        yaml,
-    )
-    .await;
+    let (db, run_id, content, client) =
+        run_workflow(&app, "wfbad", "wfbadrepo", ".github/workflows/ci.yml", yaml).await;
 
     let config = runner_config(&app, "bad");
     std::fs::create_dir_all(&config.work_dir).unwrap();
@@ -363,7 +353,7 @@ jobs:
         .unwrap()
         .expect("a run should be claimable");
     let registry = JobRegistry::new();
-    execute_workflow_run(&db, &config, &registry, &claimed)
+    execute_workflow_run(&client, &config, &registry, &claimed, &content)
         .await
         .expect("execute_workflow_run");
 
@@ -390,7 +380,7 @@ jobs:
       - run: echo "cloned-into-the-repo"
 "#;
 
-    let (db, run_id) = run_workflow(
+    let (db, run_id, content, client) = run_workflow(
         &app,
         "wfclone",
         "wfclonerepo",
@@ -410,7 +400,7 @@ jobs:
         .unwrap()
         .expect("a run should be claimable");
     let registry = JobRegistry::new();
-    execute_workflow_run(&db, &config, &registry, &claimed)
+    execute_workflow_run(&client, &config, &registry, &claimed, &content)
         .await
         .expect("execute_workflow_run");
 
@@ -722,7 +712,9 @@ jobs:
     assert_eq!(claimed.id, run_id);
 
     let registry = JobRegistry::new();
-    execute_workflow_run(&db, &config, &registry, &claimed)
+    let (_base_url, _token, client) = common::runner_client(&app, "wfexec").await;
+    let content = pipeline.content.clone();
+    execute_workflow_run(&client, &config, &registry, &claimed, &content)
         .await
         .expect("execute_workflow_run");
 

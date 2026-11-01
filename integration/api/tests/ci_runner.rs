@@ -111,10 +111,10 @@ jobs:
         .unwrap();
     assert_eq!(claimed.id, run_id);
 
+    let (base_url, token, client) = common::runner_client(&app, "ciowner").await;
     let runner_config = RunnerConfig {
-        server_db_url: common::test_db_url(),
-        server_base_url: "http://localhost:3100".to_string(),
-        runner_token: "test-token".to_string(),
+        server_base_url: base_url,
+        runner_token: token,
         runner_name: "test-runner".to_string(),
         work_dir: std::env::temp_dir().join(format!("gita-ci-it-{}", std::process::id())),
         poll_interval_secs: 1,
@@ -150,7 +150,7 @@ jobs:
 
     // Run the pipeline executor.
     let registry = JobRegistry::new();
-    execute_pipeline(&db, &runner_config, &registry, &claimed)
+    execute_pipeline(&client, &runner_config, &registry, &claimed)
         .await
         .expect("execute_pipeline");
 
@@ -236,10 +236,10 @@ jobs:
         .unwrap();
 
     // Pre-clone so execute_pipeline skips network clone.
+    let (base_url, token, client) = common::runner_client(&app, "cancelowner").await;
     let runner_config = RunnerConfig {
-        server_db_url: common::test_db_url(),
-        server_base_url: "http://localhost:3100".to_string(),
-        runner_token: "cancel-test-token".to_string(),
+        server_base_url: base_url,
+        runner_token: token,
         runner_name: "cancel-runner".to_string(),
         work_dir: std::env::temp_dir().join(format!(
             "gita-cancel-it-{}-{}",
@@ -276,7 +276,6 @@ jobs:
 
     // Spawn the executor in a background task — it will block for
     // ~30s on the long-running sleep job otherwise.
-    let db_for_exec = db.clone();
     let cfg = runner_config.clone();
     let claimed = db
         .claim_pipeline_run("cancel-runner", 300)
@@ -285,7 +284,7 @@ jobs:
         .unwrap();
     let exec_handle = tokio::spawn(async move {
         let registry = JobRegistry::new();
-        execute_pipeline(&db_for_exec, &cfg, &registry, &claimed).await
+        execute_pipeline(&client, &cfg, &registry, &claimed).await
     });
 
     // Wait until the run is observed running, then cancel it.
@@ -411,10 +410,10 @@ jobs:
         .unwrap();
 
     // Pre-clone so execute_pipeline skips the network clone.
+    let (base_url, token, client) = common::runner_client(&app, "dagowner").await;
     let runner_config = RunnerConfig {
-        server_db_url: common::test_db_url(),
-        server_base_url: "http://localhost:3100".to_string(),
-        runner_token: "dag-test-token".to_string(),
+        server_base_url: base_url,
+        runner_token: token,
         runner_name: "dag-runner".to_string(),
         work_dir: std::env::temp_dir().join(format!(
             "gita-dag-it-{}-{}",
@@ -455,7 +454,7 @@ jobs:
         .unwrap()
         .unwrap();
     let registry = JobRegistry::new();
-    execute_pipeline(&db, &runner_config, &registry, &claimed)
+    execute_pipeline(&client, &runner_config, &registry, &claimed)
         .await
         .expect("execute_pipeline");
 
@@ -759,10 +758,10 @@ async fn runner_clones_the_repository_using_a_full_ref() {
         .join("repos")
         .join("cloneci")
         .join("cirepo.git");
+    let (_base_url, token, client) = common::runner_client(&app, "cloneci").await;
     let runner_config = RunnerConfig {
-        server_db_url: common::test_db_url(),
         server_base_url: format!("file://{}", bare.parent().unwrap().display()),
-        runner_token: "test-token".to_string(),
+        runner_token: token,
         runner_name: "test-runner".to_string(),
         work_dir: std::env::temp_dir().join(format!(
             "gita-clone-it-{}-{}",
@@ -797,7 +796,7 @@ async fn runner_clones_the_repository_using_a_full_ref() {
     );
 
     let registry = JobRegistry::new();
-    execute_pipeline(&db, &runner_config, &registry, &claimed)
+    execute_pipeline(&client, &runner_config, &registry, &claimed)
         .await
         .expect("execute_pipeline");
 

@@ -73,6 +73,25 @@ impl Drop for TestAppGuard {
 
 /// Build a fresh `App` with an isolated per-test Postgres schema.
 pub async fn test_app() -> (gita_admin::App, TestAppGuard) {
+    build_test_app(|_| {}).await
+}
+
+/// Like [`test_app`], but with the VM control plane enabled.
+///
+/// The VM endpoints only exist when the server runs the control plane
+/// (`[server.vm] enabled`), so a test that exercises the runner's VM path
+/// needs it switched on.
+pub async fn test_app_with_vm() -> (gita_admin::App, TestAppGuard) {
+    build_test_app(|config| {
+        config.server.vm.enabled = true;
+        config.server.vm.api_key = Some("test-vm-key".to_string());
+    })
+    .await
+}
+
+/// Build an app with an isolated schema, letting the caller adjust the
+/// server configuration first.
+async fn build_test_app(configure: impl FnOnce(&mut Config)) -> (gita_admin::App, TestAppGuard) {
     let tmp = tempfile::TempDir::new().unwrap();
     let schema = format!(
         "gita_it_{}_{}",
@@ -97,6 +116,7 @@ pub async fn test_app() -> (gita_admin::App, TestAppGuard) {
     config.server.data_dir = tmp.path().join("data");
     config.server.database_url = base_url.clone();
     config.server.database_schema = Some(schema.clone());
+    configure(&mut config);
 
     let app = gita_admin::App::build(config).await.unwrap();
 
@@ -195,11 +215,74 @@ pub async fn register_admin(app: &gita_admin::App, username: &str) -> AuthedUser
         .await
         .unwrap()
         .expect("user was just registered");
-    app.db
-        .update_user_admin(db_user.id, true)
+    app.db.update_user_admin(db_user.id, true).await.unwrap();
+    user
+}
+
+/// Serve the app's router on a TCP port and return its base URL.
+///
+/// The runner talks to the server over HTTP, so a test that drives the
+/// runner needs a real socket — the in-process `oneshot` helper cannot
+/// serve the runner's API calls.
+pub async fn serve(app: &gita_admin::App) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let router = app.router();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
         .await
         .unwrap();
-    user
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// Mint a runner token for `username` and return the plaintext.
+///
+/// The runner API only accepts tokens whose stored name starts with
+/// `runner/` — that is the kind check that keeps an ordinary user PAT
+/// from claiming CI work.
+pub async fn runner_token(app: &gita_admin::App, username: &str) -> String {
+    let user = app
+        .db
+        .get_user_by_username(username)
+        .await
+        .unwrap()
+        .expect("user exists");
+    // The secret must be unique: `access_tokens` is unique on the token
+    // hash, and a test may mint more than one runner token for the same
+    // user.
+    let token = format!(
+        "runner-token-{}-{}-{}",
+        username,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    app.db
+        .create_access_token(user.id, &token, &format!("runner/{username}"))
+        .await
+        .unwrap();
+    token
+}
+
+/// Serve the app and return a runner client talking to it.
+///
+/// The runner talks to the server over HTTP, so a test that drives the
+/// runner needs a real socket — the in-process `oneshot` helper cannot
+/// serve the runner's API calls.
+pub async fn runner_client(
+    app: &gita_admin::App,
+    username: &str,
+) -> (String, String, gita_runner::client::RunnerClient) {
+    let base_url = serve(app).await;
+    let token = runner_token(app, username).await;
+    let client = gita_runner::client::RunnerClient::new(&base_url, &token).unwrap();
+    (base_url, token, client)
 }
 
 /// Create a repository for an authenticated user and return its `owner/name`.

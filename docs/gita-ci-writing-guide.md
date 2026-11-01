@@ -662,8 +662,8 @@ is reported by name, not as a job with a broken stage.
 ### Environment variables available to a job
 
 A job's script runs with an **empty environment** apart from the
-variables below. The runner's own environment — including the database
-URL and the runner token — is deliberately *not* inherited.
+variables below. The runner's own environment — including its runner
+token — is deliberately *not* inherited.
 
 | Variable | Meaning |
 | --- | --- |

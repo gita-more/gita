@@ -7,10 +7,6 @@ use std::time::Duration;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "gita-runner", about = "Gita CI runner")]
 pub struct RunnerConfig {
-    /// PostgreSQL connection URL
-    #[arg(long, env = "GITA_DATABASE_URL")]
-    pub server_db_url: String,
-
     /// Base URL of the gita-server (for clone URLs and API calls)
     #[arg(long, env = "GITA_SERVER_URL", default_value = "http://localhost:3100")]
     pub server_base_url: String,
@@ -75,7 +71,6 @@ mod tests {
 
     fn config() -> RunnerConfig {
         RunnerConfig {
-            server_db_url: "postgres://localhost/gita".to_string(),
             server_base_url: "http://localhost:3100".to_string(),
             runner_token: "runner-token".to_string(),
             runner_name: "runner-1".to_string(),

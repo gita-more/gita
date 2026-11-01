@@ -1,19 +1,18 @@
 //! Integration tests for the runner's VM job path.
 //!
-//! These run `run_job_in_vm` against a real database without any actual
-//! virtual machine: everything up to the point where a VM would be
-//! created (token minting, template resolution, failure reporting) is
-//! exercisable, and a missing template is the one path where the whole
-//! chain completes without a hypervisor.
+//! These run `run_job_in_vm` against a real server with the VM control
+//! plane enabled, but without any actual virtual machine: everything up
+//! to the point where a VM would be created (template resolution, failure
+//! reporting) is exercisable, and a missing template is the one path where
+//! the whole chain completes without a hypervisor.
 
 mod common;
 
 /// A `vm:` job whose template does not exist must fail the job — with a
-/// system log line explaining why — and must have minted an agent token
-/// that can no longer do anything (the job is terminal).
+/// system log line explaining why.
 #[tokio::test]
 async fn vm_job_with_unknown_template_fails_with_a_system_log() {
-    let (app, _guard) = common::test_app().await;
+    let (app, _guard) = common::test_app_with_vm().await;
     let user = common::register_user(&app, "vmfail").await;
     let full = common::create_repo(&app, &user.token, "vmfailrepo").await;
     let (owner, repo) = full.split_once('/').unwrap();
@@ -55,11 +54,12 @@ async fn vm_job_with_unknown_template_fails_with_a_system_log() {
     use clap::Parser as _;
     let runner_config = gita_runner::config::RunnerConfig::parse_from([
         "gita-runner",
-        "--server-db-url",
-        &common::test_db_url(),
+        "--server-base-url",
+        "http://127.0.0.1:1",
         "--runner-token",
         "test-token",
     ]);
+    let (_base_url, _token, client) = common::runner_client(&app, "vmfail").await;
 
     let run = app.db.get_pipeline_run(run_id).await.unwrap().unwrap();
     let vm = gita_pipeline::VmJob {
@@ -69,16 +69,10 @@ async fn vm_job_with_unknown_template_fails_with_a_system_log() {
         disk: None,
     };
 
-    let outcome = gita_runner::vm_exec::run_job_in_vm(
-        &app.db,
-        &runner_config,
-        &run,
-        job_id,
-        &vm,
-        "echo hi",
-    )
-    .await
-    .unwrap();
+    let outcome =
+        gita_runner::vm_exec::run_job_in_vm(&client, &runner_config, &run, job_id, &vm, "echo hi")
+            .await
+            .unwrap();
 
     assert_eq!(
         outcome,
@@ -97,18 +91,8 @@ async fn vm_job_with_unknown_template_fails_with_a_system_log() {
 
     let logs = app.db.list_logs_since(job_id, 0, 100).await.unwrap();
     assert!(
-        logs.iter().any(|l| l.stream == "system"
-            && l.line.contains("no-such-template")),
+        logs.iter()
+            .any(|l| l.stream == "system" && l.line.contains("no-such-template")),
         "a system log must name the missing template, got {logs:?}"
     );
-
-    // The agent token was minted, but the job is terminal so the
-    // callback endpoints refuse it: a token for a failed job is dead.
-    let row: (Option<String>,) =
-        sqlx::query_as("SELECT agent_token FROM jobs WHERE id = $1")
-            .bind(job_id)
-            .fetch_one(app.db.pool())
-            .await
-            .unwrap();
-    assert!(row.0.is_some(), "the runner must have stored a token hash");
 }

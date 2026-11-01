@@ -16,6 +16,24 @@ pub struct ImageRef {
     pub digest: Option<String>,
 }
 
+/// 一台虚拟机与 gita 侧的关联。
+///
+/// CI 场景下，VM 是某个 pipeline job 的执行环境：没有这层关联，控制面
+/// 不知道该回收哪台 VM，Web UI 也无法在运行页显示这台 VM。字段全部可空，
+/// 非 CI 创建的 VM 留空即可。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct VmLinkage {
+    /// 关联的 gita 仓库
+    #[serde(default)]
+    pub repo_id: Option<i64>,
+    /// 关联的 pipeline run
+    #[serde(default)]
+    pub pipeline_run_id: Option<i64>,
+    /// 关联的 CI job
+    #[serde(default)]
+    pub job_id: Option<i64>,
+}
+
 /// 虚拟机的期望规格
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct VmSpec {
@@ -119,7 +137,10 @@ pub enum VmStatus {
 impl VmStatus {
     /// 是否是终态（不会再自动变化）
     pub fn is_terminal(&self) -> bool {
-        matches!(self, VmStatus::Failed | VmStatus::Quarantined | VmStatus::Deleted)
+        matches!(
+            self,
+            VmStatus::Failed | VmStatus::Quarantined | VmStatus::Deleted
+        )
     }
 
     /// 是否处于活跃状态（占用节点资源）

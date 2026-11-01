@@ -19,13 +19,14 @@
 //! produces several instances, so the instance's matrix label is appended
 //! to keep the `(run_id, name)` uniqueness constraint satisfied.
 
+use crate::client::{LogLine, RunnerClient};
 use crate::clone::{prepare_run_repo, CloneOutcome};
 use crate::config::RunnerConfig;
 use crate::registry::JobRegistry;
 use crate::workflow_exec::{execute_workflow_job, LogSink};
 use anyhow::{Context, Result};
 use chrono::Utc;
-use gita_db::{Db, PipelineRunRow};
+use gita_db::PipelineRunRow;
 use gita_workflow::WorkflowJobInstance;
 use std::sync::Arc;
 
@@ -38,25 +39,33 @@ pub fn is_workflow_path(path: &str) -> bool {
     path.starts_with(WORKFLOW_PATH_PREFIX)
 }
 
-/// A log sink that writes into the `logs` table.
-struct DbLogSink {
-    db: Db,
+/// A log sink that sends lines to the server.
+struct ApiLogSink {
+    client: RunnerClient,
     job_id: i64,
 }
 
-impl LogSink for DbLogSink {
+impl LogSink for ApiLogSink {
     fn write(&self, job_id: i64, seq: i64, stream: &str, line: &str) {
         // The sink is called from the executor's reader tasks; the write
-        // is fire-and-forget so a slow database does not stall the pipe.
-        // The `logs` table has a unique (job_id, seq) constraint, so a
-        // duplicate insert is a no-op rather than an error.
-        let db = self.db.clone();
+        // is fire-and-forget so a slow server does not stall the pipe.
+        // The server's insert is idempotent per (job_id, seq), so a
+        // duplicate is a no-op rather than an error.
+        let client = self.client.clone();
         let job_id = if job_id == 0 { self.job_id } else { job_id };
         let line = line.to_string();
         let stream = stream.to_string();
         tokio::spawn(async move {
-            let _ = db
-                .insert_log(job_id, seq, &stream, &line, &Utc::now().to_rfc3339())
+            let _ = client
+                .append_logs(
+                    job_id,
+                    &[LogLine {
+                        seq,
+                        stream,
+                        line,
+                        timestamp: Utc::now().to_rfc3339(),
+                    }],
+                )
                 .await;
         });
     }
@@ -81,34 +90,31 @@ pub fn instance_job_name(instance: &WorkflowJobInstance) -> String {
 /// column. On any failure the run is marked `failed` rather than left
 /// running.
 pub async fn execute_workflow_run(
-    db: &Db,
+    client: &RunnerClient,
     config: &RunnerConfig,
     registry: &JobRegistry,
     run: &PipelineRunRow,
+    content: &str,
 ) -> Result<()> {
-    // ---- 1. Load the workflow YAML ----
-    let Some(pipeline) = db.get_pipeline(run.pipeline_id).await? else {
-        db.update_pipeline_run_status(run.id, "failed").await?;
-        return Ok(());
-    };
-    let content = pipeline.content;
+    // ---- 1. The workflow YAML comes with the claim ----
+    let content = content.to_string();
 
     // ---- 2. Parse and expand ----
     let spec = match crate::workflow_pipeline::prepare_workflow(&content) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("parse workflow failed: {e}");
-            db.update_pipeline_run_status(run.id, "failed").await?;
+            client.set_run_status(run.id, "failed").await?;
             return Ok(());
         }
     };
 
     // ---- 3. Prepare the checkout ----
-    let repo_dir = match prepare_run_repo(db, config, run).await? {
+    let repo_dir = match prepare_run_repo(client, config, run).await? {
         CloneOutcome::Ready(dir) => dir,
         CloneOutcome::Failed(reason) => {
             tracing::warn!("workflow checkout failed: {reason}");
-            db.update_pipeline_run_status(run.id, "failed").await?;
+            client.set_run_status(run.id, "failed").await?;
             return Ok(());
         }
     };
@@ -119,7 +125,7 @@ pub async fn execute_workflow_run(
 
     for instance in &spec.instances {
         // A canceled run must not start new jobs.
-        if let Ok(Some(fresh)) = db.get_pipeline_run(run.id).await {
+        if let Ok(fresh) = client.get_run(run.id).await {
             if fresh.status == "canceled" {
                 canceled = true;
                 break;
@@ -127,13 +133,13 @@ pub async fn execute_workflow_run(
         }
 
         let job_name = instance_job_name(instance);
-        let job_id = db
-            .insert_job(run.id, &job_name, &instance.job.name, &[], &[])
+        let job_id = client
+            .create_job(run.id, &job_name, &instance.job.name, &[], &[])
             .await?;
-        db.update_job_status(job_id, "running", None).await?;
+        client.set_job_status(job_id, "running", None).await?;
 
-        let sink = Arc::new(DbLogSink {
-            db: db.clone(),
+        let sink = Arc::new(ApiLogSink {
+            client: client.clone(),
             job_id,
         });
 
@@ -142,7 +148,7 @@ pub async fn execute_workflow_run(
         match result {
             Ok(res) => {
                 let status = if res.success { "success" } else { "failed" };
-                db.update_job_status(job_id, status, res.exit_code).await?;
+                client.set_job_status(job_id, status, res.exit_code).await?;
                 if !res.success {
                     any_failed = true;
                 }
@@ -151,7 +157,7 @@ pub async fn execute_workflow_run(
                 // The executor itself failed (e.g. a `uses:` step that is
                 // not implemented yet). Record it as a failed job.
                 tracing::warn!("workflow job {job_name} failed to execute: {e:#}");
-                db.update_job_status(job_id, "failed", None).await?;
+                client.set_job_status(job_id, "failed", None).await?;
                 any_failed = true;
             }
         }
@@ -169,7 +175,8 @@ pub async fn execute_workflow_run(
         return Ok(());
     }
     let final_status = if any_failed { "failed" } else { "success" };
-    db.update_pipeline_run_status(run.id, final_status)
+    client
+        .set_run_status(run.id, final_status)
         .await
         .context("update workflow run status")?;
     Ok(())

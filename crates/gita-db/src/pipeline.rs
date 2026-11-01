@@ -2,11 +2,13 @@
 
 use anyhow::Result;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 
 use crate::Db;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineRow {
     pub id: i64,
     pub repo_id: i64,
@@ -19,7 +21,11 @@ pub struct PipelineRow {
 }
 
 /// Row shape for the `pipeline_runs` table.
-#[derive(Debug, Clone)]
+///
+/// The serde derives make this the wire format of the runner API: the
+/// runner used to read these rows straight out of Postgres, and now gets
+/// them over HTTP from the server instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineRunRow {
     pub id: i64,
     pub pipeline_id: i64,
@@ -38,7 +44,7 @@ pub struct PipelineRunRow {
 
 /// Row shape for the `jobs` table. `needs` and `script` are JSON-encoded
 /// arrays of strings — decoded by callers that need them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobRow {
     pub id: i64,
     pub run_id: i64,
@@ -54,7 +60,7 @@ pub struct JobRow {
 }
 
 /// Row shape for the `logs` table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogRow {
     pub id: i64,
     pub job_id: i64,
@@ -526,9 +532,11 @@ impl Db {
         .bind(stream)
         .bind(line)
         .bind(ts)
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(row.try_get("id").unwrap_or(0))
+        // `ON CONFLICT DO NOTHING` returns no row on a duplicate batch.
+        // That is a successful, idempotent retry — not an error.
+        Ok(row.and_then(|row| row.try_get("id").ok()).unwrap_or(0))
     }
 
     /// Fetch log lines for a job, starting at `since_seq` (inclusive).

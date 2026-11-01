@@ -3,13 +3,13 @@
 use crate::models::*;
 use async_trait::async_trait;
 use gita_vm_api::ids::{ImageId, NetworkId, NodeId, OperationId, OwnerRef, TemplateId, VmId};
+use gita_vm_api::image::Image;
 use gita_vm_api::network::{IpLease, Network};
 use gita_vm_api::node::Node;
 use gita_vm_api::operation::Operation;
 use gita_vm_api::quota::{Quota, QuotaScope, QuotaUsage};
 use gita_vm_api::template::VmTemplate;
-use gita_vm_api::vm::Vm;
-use gita_vm_api::image::Image;
+use gita_vm_api::vm::{Vm, VmLinkage};
 use gita_vm_core::repository::Repository;
 use gita_vm_core::{Error, Result};
 use sqlx::PgPool;
@@ -54,7 +54,13 @@ impl Repository for VmStore {
         .bind(owner_id)
         .bind(vm.node.map(|n| n.0))
         .bind(serde_json::to_value(&vm.spec).map_err(|e| Error::Storage(e.to_string()))?)
-        .bind(serde_json::to_value(&vm.status).map_err(|e| Error::Storage(e.to_string()))?.as_str().map(|s| s.to_string()).unwrap_or_else(|| "pending".into()))
+        .bind(
+            serde_json::to_value(&vm.status)
+                .map_err(|e| Error::Storage(e.to_string()))?
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "pending".into()),
+        )
         .bind(vm.generation as i64)
         .bind(vm.observed_generation as i64)
         .bind(serde_json::to_value(&vm.conditions).map_err(|e| Error::Storage(e.to_string()))?)
@@ -70,14 +76,74 @@ impl Repository for VmStore {
         Ok(())
     }
 
-    async fn get_vm(&self, id: VmId) -> Result<Option<Vm>> {
-        let row = sqlx::query_as::<_, DbVm>(
-            "SELECT * FROM vm_instances WHERE id = $1",
+    /// CI 用：创建 VM 并写入 gita 侧关联，返回真实 id。
+    ///
+    /// `create_vm` 不写 `repo_id` / `pipeline_run_id` / `job_id`，而且不
+    /// 返回 id——调用方拿到的永远是 0。CI 场景两样都需要：关联决定谁来
+    /// 回收这台 VM，id 是 runner 回收它的唯一凭据。
+    async fn create_linked_vm(&self, vm: &Vm, linkage: VmLinkage) -> Result<VmId> {
+        let (owner_type, owner_id) = Self::owner_params(&vm.owner);
+        let row = sqlx::query(
+            "INSERT INTO vm_instances
+             (name, template_id, owner_type, owner_id, node_id, spec, status,
+              generation, observed_generation, conditions, rootfs_path, ip_address,
+              console_url, created_at_ms, message, expires_at_ms,
+              repo_id, pipeline_run_id, job_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                     $17, $18, $19)
+             RETURNING id",
         )
-        .bind(id.0)
-        .fetch_optional(&self.pool)
+        .bind(&vm.name)
+        .bind(vm.spec.template.map(|t| t.0))
+        .bind(&owner_type)
+        .bind(owner_id)
+        .bind(vm.node.map(|n| n.0))
+        .bind(serde_json::to_value(&vm.spec).map_err(|e| Error::Storage(e.to_string()))?)
+        .bind(
+            serde_json::to_value(&vm.status)
+                .map_err(|e| Error::Storage(e.to_string()))?
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "pending".into()),
+        )
+        .bind(vm.generation as i64)
+        .bind(vm.observed_generation as i64)
+        .bind(serde_json::to_value(&vm.conditions).map_err(|e| Error::Storage(e.to_string()))?)
+        .bind(&vm.rootfs_path)
+        .bind(&vm.ip_address)
+        .bind(&vm.console_url)
+        .bind(vm.created_at_ms)
+        .bind(&vm.message)
+        .bind(vm.expires_at_ms)
+        .bind(linkage.repo_id)
+        .bind(linkage.pipeline_run_id)
+        .bind(linkage.job_id)
+        .fetch_one(&self.pool)
         .await
         .map_err(|e| Error::Storage(e.to_string()))?;
+        let id: i64 = sqlx::Row::try_get(&row, "id").map_err(|e| Error::Storage(e.to_string()))?;
+        Ok(VmId(id))
+    }
+
+    async fn get_vm_linkage(&self, id: VmId) -> Result<Option<VmLinkage>> {
+        let row = sqlx::query_as::<_, DbVm>("SELECT * FROM vm_instances WHERE id = $1")
+            .bind(id.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        Ok(row.map(|v| VmLinkage {
+            repo_id: v.repo_id,
+            pipeline_run_id: v.pipeline_run_id,
+            job_id: v.job_id,
+        }))
+    }
+
+    async fn get_vm(&self, id: VmId) -> Result<Option<Vm>> {
+        let row = sqlx::query_as::<_, DbVm>("SELECT * FROM vm_instances WHERE id = $1")
+            .bind(id.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(row.map(Vm::from))
     }
 
@@ -94,7 +160,13 @@ impl Repository for VmStore {
         .bind(&vm.name)
         .bind(vm.node.map(|n| n.0))
         .bind(serde_json::to_value(&vm.spec).map_err(|e| Error::Storage(e.to_string()))?)
-        .bind(serde_json::to_value(&vm.status).map_err(|e| Error::Storage(e.to_string()))?.as_str().map(|s| s.to_string()).unwrap_or_else(|| "pending".into()))
+        .bind(
+            serde_json::to_value(&vm.status)
+                .map_err(|e| Error::Storage(e.to_string()))?
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "pending".into()),
+        )
         .bind(vm.generation as i64)
         .bind(vm.observed_generation as i64)
         .bind(serde_json::to_value(&vm.conditions).map_err(|e| Error::Storage(e.to_string()))?)
@@ -139,13 +211,12 @@ impl Repository for VmStore {
     }
 
     async fn list_vms_by_node(&self, node_id: NodeId) -> Result<Vec<Vm>> {
-        let rows = sqlx::query_as::<_, DbVm>(
-            "SELECT * FROM vm_instances WHERE node_id = $1 ORDER BY id",
-        )
-        .bind(node_id.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        let rows =
+            sqlx::query_as::<_, DbVm>("SELECT * FROM vm_instances WHERE node_id = $1 ORDER BY id")
+                .bind(node_id.0)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(rows.into_iter().map(Vm::from).collect())
     }
 
@@ -174,13 +245,11 @@ impl Repository for VmStore {
     }
 
     async fn get_template(&self, id: TemplateId) -> Result<Option<VmTemplate>> {
-        let row = sqlx::query_as::<_, DbTemplate>(
-            "SELECT * FROM vm_templates WHERE id = $1",
-        )
-        .bind(id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        let row = sqlx::query_as::<_, DbTemplate>("SELECT * FROM vm_templates WHERE id = $1")
+            .bind(id.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(row.map(VmTemplate::from))
     }
 
@@ -309,7 +378,14 @@ impl Repository for VmStore {
         .bind(n.spec.cpu_millis as i64)
         .bind(n.spec.memory_bytes as i64)
         .bind(n.spec.disk_bytes as i64)
-        .bind(n.spec.capabilities.vmm.iter().map(|v| v.as_str().to_string()).collect::<Vec<_>>())
+        .bind(
+            n.spec
+                .capabilities
+                .vmm
+                .iter()
+                .map(|v| v.as_str().to_string())
+                .collect::<Vec<_>>(),
+        )
         .bind(&n.spec.capabilities.arch)
         .bind(n.spec.capabilities.nested_virt)
         .bind(n.spec.capabilities.gpu_passthrough)
@@ -617,35 +693,29 @@ impl Repository for VmStore {
     }
 
     async fn get_ip_lease_by_ip(&self, ip: &str) -> Result<Option<IpLease>> {
-        let row = sqlx::query_as::<_, DbIpLease>(
-            "SELECT * FROM vm_ip_leases WHERE ip = $1",
-        )
-        .bind(ip)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        let row = sqlx::query_as::<_, DbIpLease>("SELECT * FROM vm_ip_leases WHERE ip = $1")
+            .bind(ip)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(row.map(IpLease::from))
     }
 
     async fn get_ip_lease_by_vm(&self, vm_id: VmId) -> Result<Option<IpLease>> {
-        let row = sqlx::query_as::<_, DbIpLease>(
-            "SELECT * FROM vm_ip_leases WHERE vm_id = $1",
-        )
-        .bind(vm_id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        let row = sqlx::query_as::<_, DbIpLease>("SELECT * FROM vm_ip_leases WHERE vm_id = $1")
+            .bind(vm_id.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(row.map(IpLease::from))
     }
 
     async fn get_ip_lease_by_id(&self, id: i64) -> Result<Option<IpLease>> {
-        let row = sqlx::query_as::<_, DbIpLease>(
-            "SELECT * FROM vm_ip_leases WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        let row = sqlx::query_as::<_, DbIpLease>("SELECT * FROM vm_ip_leases WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(row.map(IpLease::from))
     }
 
@@ -709,12 +779,24 @@ impl Repository for VmStore {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              RETURNING id",
         )
-        .bind(serde_json::to_value(&op.kind).map_err(|e| Error::Storage(e.to_string()))?.as_str().map(|s| s.to_string()).unwrap_or_else(|| "create_vm".into()))
+        .bind(
+            serde_json::to_value(&op.kind)
+                .map_err(|e| Error::Storage(e.to_string()))?
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "create_vm".into()),
+        )
         .bind(op.vm_id.0)
         .bind(op.node_id.map(|n| n.0))
         .bind(serde_json::to_value(&op.steps).map_err(|e| Error::Storage(e.to_string()))?)
         .bind(op.current_step as i32)
-        .bind(serde_json::to_value(&op.status).map_err(|e| Error::Storage(e.to_string()))?.as_str().map(|s| s.to_string()).unwrap_or_else(|| "pending".into()))
+        .bind(
+            serde_json::to_value(&op.status)
+                .map_err(|e| Error::Storage(e.to_string()))?
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "pending".into()),
+        )
         .bind(op.priority)
         .bind(op.created_at_ms)
         .bind(op.started_at_ms)
@@ -730,13 +812,11 @@ impl Repository for VmStore {
     }
 
     async fn get_operation(&self, id: OperationId) -> Result<Option<Operation>> {
-        let row = sqlx::query_as::<_, DbOperation>(
-            "SELECT * FROM vm_operations WHERE id = $1",
-        )
-        .bind(id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        let row = sqlx::query_as::<_, DbOperation>("SELECT * FROM vm_operations WHERE id = $1")
+            .bind(id.0)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(row.map(Operation::from))
     }
 
@@ -751,7 +831,13 @@ impl Repository for VmStore {
         .bind(op.node_id.map(|n| n.0))
         .bind(serde_json::to_value(&op.steps).map_err(|e| Error::Storage(e.to_string()))?)
         .bind(op.current_step as i32)
-        .bind(serde_json::to_value(&op.status).map_err(|e| Error::Storage(e.to_string()))?.as_str().map(|s| s.to_string()).unwrap_or_else(|| "pending".into()))
+        .bind(
+            serde_json::to_value(&op.status)
+                .map_err(|e| Error::Storage(e.to_string()))?
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "pending".into()),
+        )
         .bind(op.started_at_ms)
         .bind(op.finished_at_ms)
         .bind(&op.error)
@@ -782,7 +868,11 @@ impl Repository for VmStore {
         Ok(rows.into_iter().map(Operation::from).collect())
     }
 
-    async fn list_pending_operations(&self, node_id: Option<NodeId>, limit: usize) -> Result<Vec<Operation>> {
+    async fn list_pending_operations(
+        &self,
+        node_id: Option<NodeId>,
+        limit: usize,
+    ) -> Result<Vec<Operation>> {
         let rows = if let Some(node_id) = node_id {
             sqlx::query_as::<_, DbOperation>(
                 "SELECT * FROM vm_operations
@@ -954,10 +1044,10 @@ impl Repository for VmStore {
             }
         };
 
-        let (count, cpu, mem, disk) = rows
-            .first()
-            .cloned()
-            .unwrap_or((Some(0), Some(0), Some(0), Some(0)));
+        let (count, cpu, mem, disk) =
+            rows.first()
+                .cloned()
+                .unwrap_or((Some(0), Some(0), Some(0), Some(0)));
         Ok(QuotaUsage {
             concurrent_vms: count.unwrap_or(0) as u32,
             used_cpu_millis: cpu.unwrap_or(0) as u64,

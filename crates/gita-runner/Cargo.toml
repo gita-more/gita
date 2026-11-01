@@ -1,9 +1,17 @@
 [package]
 name = "gita-runner"
-description = "In-repo CI runner — a separate binary that polls and executes pipeline runs"
+description = "In-repo CI runner — polls the gita server for pipeline runs and executes them"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[lib]
+name = "gita_runner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gita-runner"
+path = "src/main.rs"
 
 [dependencies]
 tokio = { workspace = true }
@@ -15,21 +23,17 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono"] }
+reqwest = { workspace = true }
 gita-core = { path = "../gita-core" }
 gita-db = { path = "../gita-db" }
 gita-pipeline = { path = "../gita-pipeline" }
 gita-workflow = { path = "../gita-workflow" }
 gita-ci = { path = "../gita-ci" }
-gita-vm = { path = "../gita-vm" }
-gita-vm-api = { path = "../gita-vm-api" }
-gita-vm-core = { path = "../gita-vm-core" }
-gita-vm-store = { path = "../gita-vm-store" }
 hex = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
-sqlx = { workspace = true, features = ["runtime-tokio", "postgres"] }
+
 [lints]
 workspace = true

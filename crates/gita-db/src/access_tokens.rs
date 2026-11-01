@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 use gita_core::*;
 use sqlx::Row;
 
-use crate::Db;
 use crate::users::row_to_user;
+use crate::Db;
 
 pub fn hash_token(token: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -93,6 +93,29 @@ impl Db {
             }
         }
         Ok(Some(row_to_user(row)?))
+    }
+
+    /// The stored name of the personal access token, if it exists.
+    ///
+    /// The name is how a token is *labelled* at creation time — a runner
+    /// token is created as `runner/<name>`. Callers use this to scope an
+    /// endpoint to a kind of token: the runner API, for instance, accepts
+    /// only tokens labelled `runner/…`, so a user's everyday PAT cannot
+    /// claim CI work.
+    pub async fn get_token_name(&self, token: &str) -> Result<Option<String>> {
+        let hash = hash_token(token);
+        let rows = sqlx::query(
+            "SELECT name FROM access_tokens
+             WHERE token_hash = $1 OR (token_hash IS NULL AND token = $2)
+             LIMIT 1",
+        )
+        .bind(&hash)
+        .bind(token)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .first()
+            .and_then(|row| row.try_get::<String, _>("name").ok()))
     }
 
     /// List a user's personal access tokens.

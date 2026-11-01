@@ -19,15 +19,10 @@
 //! - The VM carries an expiry (`expires_at_ms`) past which the control
 //!   plane's GC reclaims it even if this runner process dies mid-job.
 
+use crate::client::RunnerClient;
 use crate::config::RunnerConfig;
 use anyhow::{Context, Result};
-use gita_db::Db;
-use gita_vm::{CreateVmOptions, VmSpecOverrides};
-use gita_vm_core::repository::Repository;
-use gita_vm_core::Result as VmResult;
-use gita_vm_store::VmStore;
 use rand::RngCore;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -58,7 +53,7 @@ impl VmJobOutcome {
 /// `job_id` must already exist (queued). `vm` is the parsed `vm:` block
 /// from `.gita-ci.yml`.
 pub async fn run_job_in_vm(
-    db: &Db,
+    client: &RunnerClient,
     config: &RunnerConfig,
     run: &gita_db::PipelineRunRow,
     job_id: i64,
@@ -66,69 +61,46 @@ pub async fn run_job_in_vm(
     job_script: &str,
 ) -> Result<VmJobOutcome> {
     // 1. Mint the per-job agent token: plaintext goes into the VM, only
-    //    the hash is stored.
+    //    the hash is stored — and the hash is stored by the *server*, as
+    //    part of the create request.
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     let agent_token = hex::encode(bytes);
-    db.set_job_agent_token(job_id, &gita_db::hash_token(&agent_token))
-        .await
-        .context("record agent token")?;
+    let agent_token_hash = gita_db::hash_token(&agent_token);
 
-    // 2. Resolve the template by name. The whole cluster's template list
-    //    is small; filter in memory rather than adding a by-name query
-    //    that only this caller uses.
-    let store = Arc::new(VmStore::new(db.pool().clone()));
-    let templates = store.list_templates(None).await?;
-    let Some(template) = templates.iter().find(|t| t.name == vm.template) else {
-        let msg = format!(
-            "vm template {:?} not found — ask an administrator to create it (gita-admin vm template)",
-            vm.template
-        );
-        tracing::warn!(job = job_id, "{msg}");
-        write_system_log(db, job_id, &msg).await?;
-        return Ok(VmJobOutcome::InfrastructureError);
-    };
-
-    // 3. Build the overrides from the job's `vm:` block. Sizes were
+    // 2. Validate the sizes from the job's `vm:` block. They were
     //    validated at parse time, so these parses only fail on a
     //    programmer error — but map them to a job failure regardless
     //    rather than panicking a runner.
-    let overrides = VmSpecOverrides {
-        cpu_millis: vm.cpu.map(|cores| cores * 1000),
-        memory_bytes: match &vm.memory {
-            Some(s) => match gita_pipeline::VmJob::parse_size(s) {
-                Ok(b) => Some(b),
-                Err(e) => {
-                    let msg = format!("invalid vm memory size {s:?}: {e}");
-                    tracing::warn!(job = job_id, "{msg}");
-                    write_system_log(db, job_id, &msg).await?;
-                    return Ok(VmJobOutcome::InfrastructureError);
-                }
-            },
-            None => None,
+    let memory_bytes = match &vm.memory {
+        Some(s) => match gita_pipeline::VmJob::parse_size(s) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                let msg = format!("invalid vm memory size {s:?}: {e}");
+                tracing::warn!(job = job_id, "{msg}");
+                write_system_log(client, job_id, &msg).await?;
+                return Ok(VmJobOutcome::InfrastructureError);
+            }
         },
-        disk_bytes: match &vm.disk {
-            Some(s) => match gita_pipeline::VmJob::parse_size(s) {
-                Ok(b) => Some(b),
-                Err(e) => {
-                    let msg = format!("invalid vm disk size {s:?}: {e}");
-                    tracing::warn!(job = job_id, "{msg}");
-                    write_system_log(db, job_id, &msg).await?;
-                    return Ok(VmJobOutcome::InfrastructureError);
-                }
-            },
-            None => None,
+        None => None,
+    };
+    let disk_bytes = match &vm.disk {
+        Some(s) => match gita_pipeline::VmJob::parse_size(s) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                let msg = format!("invalid vm disk size {s:?}: {e}");
+                tracing::warn!(job = job_id, "{msg}");
+                write_system_log(client, job_id, &msg).await?;
+                return Ok(VmJobOutcome::InfrastructureError);
+            }
         },
-        // Clone over HTTP: the repo URL is the server's own public
-        // address. Private repos are a known limitation — see the
-        // module docs.
-        ..Default::default()
+        None => None,
     };
 
     // 4. Compose the agent's user data. The job's environment variables
     //    (GITA_REPOSITORY etc.) are exported in the script preamble so
     //    VM jobs see the same surface local jobs do.
-    let repo_label = repo_full_name(db, run).await;
+    let repo_label = repo_full_name(client, run).await?;
     let script = format!(
         // The agent runs `bash <file>` without -e (its own -ec applies to
         // the outer shell only), so the file aborts on the first failing
@@ -138,7 +110,7 @@ pub async fn run_job_in_vm(
         repo = repo_label,
         sha = run.head_sha,
         ref_ = run.ref_name,
-        job_name = job_name_for(db, job_id).await,
+        job_name = job_name_for(client, job_id).await,
         run_id = run.id,
         script = job_script,
     );
@@ -159,50 +131,53 @@ pub async fn run_job_in_vm(
         "",
     )
     .context("generate vm job user data")?;
-    let overrides = VmSpecOverrides {
-        user_data: Some(userdata),
-        ..overrides
-    };
-
-    // 5. Provision the VM. The expiry gives the control-plane GC a
-    //    backstop: if this runner dies, the VM is still reclaimed.
+    // 5. Provision the VM — the server's control plane does the work:
+    //    it resolves the template, writes the VM row linked to this job,
+    //    and stores the agent token hash. The expiry gives the
+    //    control-plane GC a backstop: if this runner dies, the VM is
+    //    still reclaimed.
     let timeout = config.job_timeout().unwrap_or(Duration::from_secs(3600));
-    let helper = gita_vm::ci::CiVmHelper::new(store.clone());
-    let opts = CreateVmOptions {
-        owner: None,
-        repo_id: Some(run.repo_id),
-        pipeline_run_id: Some(run.id),
-        job_id: Some(job_id),
-        expires_at_ms: Some(gita_vm::now_ms() + timeout.as_millis() as i64 + 600_000),
-        template_id: Some(template.id),
-        overrides: Some(overrides),
-    };
-    let vm_result = match helper.create_ci_vm(&opts).await {
+    let expires_at_ms = Some(now_ms() + timeout.as_millis() as i64 + 600_000);
+    let vm_result = match client
+        .create_ci_vm(
+            run.id,
+            job_id,
+            run.repo_id,
+            &vm.template,
+            vm.cpu.map(|cores| cores * 1000),
+            memory_bytes,
+            disk_bytes,
+            expires_at_ms,
+            Some(userdata),
+            &agent_token_hash,
+        )
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             let msg = format!("failed to provision VM: {e}");
             tracing::warn!(job = job_id, "{msg}");
-            write_system_log(db, job_id, &msg).await?;
+            write_system_log(client, job_id, &msg).await?;
             return Ok(VmJobOutcome::InfrastructureError);
         }
     };
-    tracing::info!(job = job_id, vm = %vm_result.vm_id, "provisioned VM for job");
+    tracing::info!(job = job_id, vm = vm_result.vm_id, "provisioned VM for job");
 
     // 6. Watch the job row until it settles. The agent moves it
     //    queued → running → success/failed; a user cancel also lands
     //    here.
-    let outcome = watch_job(db, job_id, timeout).await;
+    let outcome = watch_job(client, job_id, timeout).await;
 
     // 7. Reclaim the VM, whatever happened.
-    if let Err(e) = helper.destroy_vm(vm_result.vm_id).await {
-        tracing::warn!(job = job_id, vm = %vm_result.vm_id, "reclaim VM failed: {e}");
+    if let Err(e) = client.reclaim_ci_vm(vm_result.vm_id, job_id).await {
+        tracing::warn!(job = job_id, vm = vm_result.vm_id, "reclaim VM failed: {e}");
     }
 
     Ok(outcome)
 }
 
 /// Poll the job row until a terminal state or the timeout.
-async fn watch_job(db: &Db, job_id: i64, timeout: Duration) -> VmJobOutcome {
+async fn watch_job(client: &RunnerClient, job_id: i64, timeout: Duration) -> VmJobOutcome {
     let mut ticker = interval(WATCH_POLL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let deadline = tokio::time::Instant::now() + timeout;
@@ -210,19 +185,13 @@ async fn watch_job(db: &Db, job_id: i64, timeout: Duration) -> VmJobOutcome {
     loop {
         ticker.tick().await;
 
-        match db.get_job(job_id).await {
-            Ok(Some(job)) => match job.status.as_str() {
+        match client.get_job(job_id).await {
+            Ok(job) => match job.status.as_str() {
                 "success" => return VmJobOutcome::Success,
                 "failed" => return VmJobOutcome::Failed,
                 "canceled" => return VmJobOutcome::Canceled,
                 _ => {}
             },
-            Ok(None) => {
-                // The job row vanished — the run was deleted out from
-                // under us. Nothing to wait for.
-                tracing::warn!(job = job_id, "job row disappeared while watching");
-                return VmJobOutcome::Failed;
-            }
             Err(e) => tracing::warn!(job = job_id, "watch poll failed: {e}"),
         }
 
@@ -235,41 +204,40 @@ async fn watch_job(db: &Db, job_id: i64, timeout: Duration) -> VmJobOutcome {
 
 /// Best-effort system log line, so the failure is visible in the job's
 /// log view and not just the runner's stderr.
-async fn write_system_log(db: &Db, job_id: i64, line: &str) -> Result<()> {
-    let _ = db
-        .insert_log(
+async fn write_system_log(client: &RunnerClient, job_id: i64, line: &str) -> Result<()> {
+    let _ = client
+        .append_logs(
             job_id,
-            0,
-            "system",
-            line,
-            &chrono::Utc::now().to_rfc3339(),
+            &[crate::client::LogLine {
+                seq: 0,
+                stream: "system".to_string(),
+                line: line.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            }],
         )
         .await;
     Ok(())
 }
 
-async fn repo_full_name(db: &Db, run: &gita_db::PipelineRunRow) -> String {
-    match db.get_repository(run.repo_id).await {
-        Ok(Some(repo)) => repo.full_name(),
-        _ => String::new(),
+/// The current time in unix milliseconds.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+async fn repo_full_name(client: &RunnerClient, run: &gita_db::PipelineRunRow) -> Result<String> {
+    match client.get_repo(run.repo_id).await {
+        Ok(repo) => Ok(format!("{}/{}", repo.owner_name, repo.name)),
+        Err(e) => Err(anyhow::anyhow!("could not resolve the repository: {e:#}")),
     }
 }
 
-async fn job_name_for(db: &Db, job_id: i64) -> String {
-    db.get_job(job_id)
+async fn job_name_for(client: &RunnerClient, job_id: i64) -> String {
+    client
+        .get_job(job_id)
         .await
-        .ok()
-        .flatten()
         .map(|j| j.name)
         .unwrap_or_default()
 }
-
-// Re-export for the executor's use.
-pub use gita_vm::now_ms as _vm_now_ms;
-
-// Keep the unused-import lint honest: VmResult is part of the public
-// signature surface only via inference today.
-#[allow(unused)]
-fn _assert_send<T: Send>(_t: T) {}
-#[allow(dead_code)]
-fn _unused_vm_result(_: VmResult<()>) {}

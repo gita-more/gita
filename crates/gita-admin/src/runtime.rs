@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
+use crate::shutdown;
 use crate::App;
 use crate::Config;
-use crate::shutdown;
 
 /// Locate the built React frontend (`web/dist`).
 ///
