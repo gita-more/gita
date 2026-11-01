@@ -1002,7 +1002,7 @@ impl Repository for VmStore {
                             COALESCE(SUM((spec->>'memory_bytes')::bigint), 0),
                             COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)
                      FROM vm_instances
-                     WHERE status IN ('pending', 'provisioning', 'running', 'stopping', 'migrating')",
+                     WHERE status IN ('pending', 'provisiooning', 'running', 'stopping', 'migrating')",
                 )
                 .fetch_all(&self.pool)
                 .await
@@ -1016,7 +1016,7 @@ impl Repository for VmStore {
                             COALESCE(SUM((spec->>'disk_bytes')::bigint), 0)
                      FROM vm_instances
                      WHERE owner_type = 'group' AND owner_id = $1
-                       AND status IN ('pending', 'provisioning', 'running', 'stopping', 'migrating')",
+                       AND status IN ('pending', 'provisiooning', 'running', 'stopping', 'migrating')",
                 )
                 .bind(scope_id)
                 .fetch_all(&self.pool)
@@ -1071,5 +1071,654 @@ impl Repository for VmStore {
         _offset: i64,
     ) -> Result<Vec<gita_vm_api::Event>> {
         Ok(vec![])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gita_vm_api::ids::{CellId, OwnerType, StoragePoolId};
+    use gita_vm_api::image::{ImageKind, ImageStatus};
+    use gita_vm_api::network::{LeaseState, NetProvider};
+    use gita_vm_api::node::{NodeCapabilities, NodePhase, NodeSpec, NodeStatus, VmmKind};
+    use gita_vm_api::operation::{OperationKind, OperationStatus, OperationStep};
+    use gita_vm_api::quota::QuotaUsage;
+    use gita_vm_api::template::VmTemplate;
+    use gita_vm_api::vm::{Vm, VmSpec, VmStatus};
+    use std::collections::BTreeMap;
+
+    fn url() -> String {
+        std::env::var("GITA_TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://gita:gita@127.0.0.1:55432/gita".to_string())
+    }
+
+    /// A store on a schema of its own, so the tests do not see each
+    /// other's rows.
+    async fn store() -> (gita_db::Db, VmStore) {
+        let db = gita_db::new_test_db(&url()).await;
+        let store = VmStore::new(db.pool().clone());
+        (db, store)
+    }
+
+    fn vm_spec(cpu: u64, memory: u64, disk: u64) -> VmSpec {
+        VmSpec {
+            cpu_millis: cpu,
+            memory_bytes: memory,
+            disk_bytes: disk,
+            ..Default::default()
+        }
+    }
+
+    fn a_vm(name: &str) -> Vm {
+        Vm {
+            id: VmId(0),
+            name: name.to_string(),
+            owner: OwnerRef::repo(1),
+            cell: None,
+            node: None,
+            spec: vm_spec(1000, 1024 * 1024, 2048),
+            status: VmStatus::Pending,
+            generation: 1,
+            observed_generation: 1,
+            conditions: Vec::new(),
+            rootfs_path: None,
+            ip_address: None,
+            console_url: None,
+            created_at_ms: 1000,
+            message: None,
+            expires_at_ms: None,
+        }
+    }
+
+    fn a_node(name: &str) -> Node {
+        Node {
+            id: NodeId(0),
+            name: name.to_string(),
+            cell: None,
+            spec: NodeSpec {
+                cpu_millis: 8000,
+                memory_bytes: 16_000_000_000,
+                disk_bytes: 100_000_000_000,
+                capabilities: NodeCapabilities {
+                    vmm: vec![VmmKind::Qemu],
+                    arch: vec!["x86_64".to_string()],
+                    nested_virt: false,
+                    gpu_passthrough: false,
+                    max_vcpus: 8,
+                    max_memory_bytes: 16_000_000_000,
+                },
+            },
+            status: NodeStatus {
+                alloc_cpu_millis: 0,
+                alloc_memory_bytes: 0,
+                alloc_disk_bytes: 0,
+                running_vms: 0,
+                phase: NodePhase::Joining,
+                last_heartbeat_ms: 1000,
+            },
+            taints: Vec::new(),
+            labels: BTreeMap::new(),
+            owner: OwnerRef::system(),
+            conditions: Vec::new(),
+            created_at_ms: 1000,
+            updated_at_ms: 1000,
+        }
+    }
+
+    fn a_network(name: &str, is_default: bool) -> Network {
+        Network {
+            id: NetworkId(0),
+            name: name.to_string(),
+            provider: NetProvider::Bridge,
+            bridge: "br0".to_string(),
+            cidr: "10.42.0.0/24".to_string(),
+            gateway: "10.42.0.1".to_string(),
+            dhcp_start: Some("10.42.0.10".to_string()),
+            dhcp_end: None,
+            mtu: 1500,
+            vlan: None,
+            owner: OwnerRef::system(),
+            is_default,
+            created_at_ms: 1000,
+        }
+    }
+
+    /// A VM is written, read back, changed, and deleted — the whole
+    /// lifecycle through the store.
+    #[tokio::test]
+    async fn a_vm_survives_the_round_trip() {
+        let (_db, store) = store().await;
+        let mut vm = a_vm("vm-1");
+        store.create_vm(&vm).await.unwrap();
+
+        let listed = store.list_vms(None).await.unwrap();
+        assert_eq!(listed.len(), 1, "got {listed:?}");
+        let id = listed[0].id;
+        vm.id = id;
+
+        let loaded = store.get_vm(id).await.unwrap().expect("the vm must be there");
+        assert_eq!(loaded.name, "vm-1");
+        assert_eq!(loaded.owner.owner_type, OwnerType::Repo);
+        assert_eq!(loaded.owner.owner_id, 1);
+        assert_eq!(loaded.status, VmStatus::Pending);
+        assert_eq!(loaded.spec.cpu_millis, 1000);
+        assert_eq!(loaded.spec.memory_bytes, 1024 * 1024);
+        assert_eq!(loaded.spec.disk_bytes, 2048);
+
+        // The status survives as the text the domain type serializes to,
+        // not as a fallback.
+        let mut running = loaded.clone();
+        running.status = VmStatus::Running;
+        running.message = Some("up".to_string());
+        store.update_vm(&running).await.unwrap();
+        let reloaded = store.get_vm(id).await.unwrap().unwrap();
+        assert_eq!(reloaded.status, VmStatus::Running);
+        assert_eq!(reloaded.message.as_deref(), Some("up"));
+
+        store.delete_vm(id).await.unwrap();
+        assert!(store.get_vm(id).await.unwrap().is_none());
+    }
+
+    /// Listing by owner returns only that owner's VMs.
+    #[tokio::test]
+    async fn the_vms_are_listed_by_owner() {
+        let (_db, store) = store().await;
+        let mut mine = a_vm("mine");
+        mine.owner = OwnerRef::repo(1);
+        let mut theirs = a_vm("theirs");
+        theirs.owner = OwnerRef::repo(2);
+        store.create_vm(&mine).await.unwrap();
+        store.create_vm(&theirs).await.unwrap();
+
+        let listed = store.list_vms(Some(OwnerRef::repo(1))).await.unwrap();
+        assert_eq!(listed.len(), 1, "got {listed:?}");
+        assert_eq!(listed[0].name, "mine");
+
+        let listed = store.list_vms(None).await.unwrap();
+        assert_eq!(listed.len(), 2);
+    }
+
+    /// A VM that is placed on a node is listed under that node.
+    #[tokio::test]
+    async fn the_vms_are_listed_by_node() {
+        let (_db, store) = store().await;
+        let node = a_node("node-1");
+        store.create_node(&node).await.unwrap();
+        let node_id = store.list_nodes(None).await.unwrap()[0].id;
+
+        let mut vm = a_vm("vm-1");
+        vm.node = Some(node_id);
+        store.create_vm(&vm).await.unwrap();
+
+        let listed = store.list_vms_by_node(node_id).await.unwrap();
+        assert_eq!(listed.len(), 1, "got {listed:?}");
+        assert_eq!(listed[0].name, "vm-1");
+    }
+
+    /// A template is written and read back with its spec intact.
+    #[tokio::test]
+    async fn a_template_survives_the_round_trip() {
+        let (_db, store) = store().await;
+        let template = VmTemplate {
+            id: TemplateId(0),
+            name: "ubuntu".to_string(),
+            version: 2,
+            spec: vm_spec(2000, 4096, 8192),
+            created_at_ms: 1000,
+            image_id: None,
+            kernel_image_id: None,
+            owner: OwnerRef::group(7),
+            tags: vec!["default".to_string()],
+            description: "the default template".to_string(),
+        };
+        store.create_template(&template).await.unwrap();
+
+        let listed = store.list_templates(None).await.unwrap();
+        assert_eq!(listed.len(), 1, "got {listed:?}");
+        let loaded = store
+            .get_template(listed[0].id)
+            .await
+            .unwrap()
+            .expect("the template must be there");
+        assert_eq!(loaded.name, "ubuntu");
+        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.spec.cpu_millis, 2000);
+        assert_eq!(loaded.owner.owner_type, OwnerType::Group);
+        assert_eq!(loaded.owner.owner_id, 7);
+        assert_eq!(loaded.tags, vec!["default".to_string()]);
+        assert_eq!(loaded.description, "the default template");
+
+        store.delete_template(loaded.id).await.unwrap();
+        assert!(store.get_template(loaded.id).await.unwrap().is_none());
+    }
+
+    /// A node is written and read back with its capacity and phase.
+    #[tokio::test]
+    async fn a_node_survives_the_round_trip() {
+        let (_db, store) = store().await;
+        let mut node = a_node("node-1");
+        node.status.phase = NodePhase::Online;
+        node.labels.insert("zone".to_string(), "a".to_string());
+        store.create_node(&node).await.unwrap();
+
+        let listed = store.list_nodes(None).await.unwrap();
+        assert_eq!(listed.len(), 1, "got {listed:?}");
+        let loaded = store.get_node(listed[0].id).await.unwrap().unwrap();
+        assert_eq!(loaded.name, "node-1");
+        assert_eq!(loaded.status.phase, NodePhase::Online);
+        assert_eq!(loaded.spec.cpu_millis, 8000);
+        assert_eq!(loaded.spec.capabilities.vmm.len(), 1);
+        assert_eq!(loaded.labels.get("zone").map(String::as_str), Some("a"));
+
+        store.delete_node(loaded.id).await.unwrap();
+        assert!(store.get_node(loaded.id).await.unwrap().is_none());
+    }
+
+    /// Two nodes with the same name cannot both exist: the name is how
+    /// a node is addressed.
+    #[tokio::test]
+    async fn a_node_name_is_unique() {
+        let (_db, store) = store().await;
+        store.create_node(&a_node("node-1")).await.unwrap();
+        let second = store.create_node(&a_node("node-1")).await;
+        assert!(second.is_err(), "the second node must be refused");
+    }
+
+    /// An image is written and read back with its kind and status.
+    #[tokio::test]
+    async fn an_image_survives_the_round_trip() {
+        let (_db, store) = store().await;
+        let image = Image {
+            id: ImageId(0),
+            name: "ubuntu-24.04".to_string(),
+            kind: ImageKind::Rootfs,
+            status: ImageStatus::Ready,
+            pool_id: StoragePoolId(0),
+            path: "/var/lib/gita/images/ubuntu.qcow2".to_string(),
+            size_bytes: 4096,
+            digest: "sha256:abc".to_string(),
+            format: "qcow2".to_string(),
+            arch: "x86_64".to_string(),
+            owner: OwnerRef::system(),
+            tags: vec!["latest".to_string()],
+            metadata: BTreeMap::new(),
+            created_at_ms: 1000,
+            last_used_at_ms: None,
+        };
+        store.create_image(&image).await.unwrap();
+
+        let listed = store.list_images(None).await.unwrap();
+        assert_eq!(listed.len(), 1, "got {listed:?}");
+        let loaded = store.get_image(listed[0].id).await.unwrap().unwrap();
+        assert_eq!(loaded.name, "ubuntu-24.04");
+        assert_eq!(loaded.kind, ImageKind::Rootfs);
+        assert_eq!(loaded.status, ImageStatus::Ready);
+        assert_eq!(loaded.digest, "sha256:abc");
+        assert_eq!(loaded.tags, vec!["latest".to_string()]);
+
+        store.delete_image(loaded.id).await.unwrap();
+        assert!(store.get_image(loaded.id).await.unwrap().is_none());
+    }
+
+    /// The default network is the one flagged as such; there can only be
+    /// one, and the database enforces that.
+    #[tokio::test]
+    async fn the_default_network_is_the_one_that_is_flagged() {
+        let (_db, store) = store().await;
+        assert!(store.get_default_network().await.unwrap().is_none());
+
+        store.create_network(&a_network("other", false)).await.unwrap();
+        assert!(
+            store.get_default_network().await.unwrap().is_none(),
+            "a network that is not the default must not be returned"
+        );
+
+        store.create_network(&a_network("default", true)).await.unwrap();
+        let default = store
+            .get_default_network()
+            .await
+            .unwrap()
+            .expect("the default network must be there");
+        assert_eq!(default.name, "default");
+        assert!(default.is_default);
+    }
+
+    /// Two default networks cannot exist.
+    #[tokio::test]
+    async fn there_can_be_only_one_default_network() {
+        let (_db, store) = store().await;
+        store.create_network(&a_network("first", true)).await.unwrap();
+        let second = store.create_network(&a_network("second", true)).await;
+        assert!(second.is_err(), "the second default network must be refused");
+    }
+
+    /// An IP lease is handed out, found by IP and by VM, and released.
+    #[tokio::test]
+    async fn an_ip_lease_is_handed_out_and_released() {
+        let (_db, store) = store().await;
+        store.create_network(&a_network("net", false)).await.unwrap();
+        let network_id = store.list_networks(None).await.unwrap()[0].id;
+
+        let lease = IpLease {
+            id: 0,
+            network_id,
+            ip: "10.42.0.10".to_string(),
+            mac: "aa:bb:cc:dd:ee:ff".to_string(),
+            vm_id: Some(VmId(1)),
+            node_id: None,
+            state: LeaseState::Allocated,
+            expires_at_ms: None,
+            created_at_ms: 1000,
+        };
+        let lease_id = store.create_ip_lease(&lease).await.unwrap();
+        assert!(lease_id > 0, "the lease must get an id");
+
+        let by_ip = store
+            .get_ip_lease_by_ip("10.42.0.10")
+            .await
+            .unwrap()
+            .expect("the lease must be found by ip");
+        assert_eq!(by_ip.state, LeaseState::Allocated);
+        assert_eq!(by_ip.mac, "aa:bb:cc:dd:ee:ff");
+
+        let by_vm = store
+            .get_ip_lease_by_vm(VmId(1))
+            .await
+            .unwrap()
+            .expect("the lease must be found by vm");
+        assert_eq!(by_vm.id, lease_id);
+
+        let by_id = store.get_ip_lease_by_id(lease_id).await.unwrap().unwrap();
+        assert_eq!(by_id.ip, "10.42.0.10");
+
+        // Releasing frees the address and forgets the VM it was for.
+        store.release_ip_lease_for_vm(VmId(1)).await.unwrap();
+        let released = store.get_ip_lease_by_id(lease_id).await.unwrap().unwrap();
+        assert_eq!(released.state, LeaseState::Released);
+        assert_eq!(released.vm_id, None);
+        assert!(released.expires_at_ms.is_some());
+    }
+
+    /// An operation is written, found, updated, and listed.
+    #[tokio::test]
+    async fn an_operation_survives_the_round_trip() {
+        let (_db, store) = store().await;
+        let vm = a_vm("vm-1");
+        store.create_vm(&vm).await.unwrap();
+        let vm_id = store.list_vms(None).await.unwrap()[0].id;
+
+        let op = Operation {
+            id: OperationId(0),
+            kind: OperationKind::StartVm,
+            vm_id,
+            node_id: None,
+            steps: vec![OperationStep {
+                name: "start".to_string(),
+                ..Default::default()
+            }],
+            current_step: 0,
+            status: OperationStatus::Pending,
+            created_at_ms: 1000,
+            started_at_ms: None,
+            finished_at_ms: None,
+            error: None,
+            priority: 3,
+        };
+        store.create_operation(&op).await.unwrap();
+
+        let listed = store.list_operations(None).await.unwrap();
+        assert_eq!(listed.len(), 1, "got {listed:?}");
+        let loaded = store.get_operation(listed[0].id).await.unwrap().unwrap();
+        assert_eq!(loaded.kind, OperationKind::StartVm);
+        assert_eq!(loaded.status, OperationStatus::Pending);
+        assert_eq!(loaded.priority, 3);
+        assert_eq!(loaded.steps.len(), 1);
+        assert_eq!(loaded.steps[0].name, "start");
+
+        let mut running = loaded.clone();
+        running.status = OperationStatus::Running;
+        running.current_step = 1;
+        store.update_operation(&running).await.unwrap();
+        let reloaded = store.get_operation(loaded.id).await.unwrap().unwrap();
+        assert_eq!(reloaded.status, OperationStatus::Running);
+        assert_eq!(reloaded.current_step, 1);
+    }
+
+    /// The pending operations are the ones a node picks up: the highest
+    /// priority first, and only the ones that were not started.
+    #[tokio::test]
+    async fn the_pending_operations_are_ordered_by_priority() {
+        let (_db, store) = store().await;
+        let vm = a_vm("vm-1");
+        store.create_vm(&vm).await.unwrap();
+        let vm_id = store.list_vms(None).await.unwrap()[0].id;
+
+        let op = |kind: OperationKind, status: OperationStatus, priority: i32| Operation {
+            id: OperationId(0),
+            kind,
+            vm_id,
+            node_id: None,
+            steps: Vec::new(),
+            current_step: 0,
+            status,
+            created_at_ms: 1000,
+            started_at_ms: None,
+            finished_at_ms: None,
+            error: None,
+            priority,
+        };
+
+        store
+            .create_operation(&op(OperationKind::StartVm, OperationStatus::Pending, 1))
+            .await
+            .unwrap();
+        store
+            .create_operation(&op(OperationKind::StopVm, OperationStatus::Pending, 9))
+            .await
+            .unwrap();
+        store
+            .create_operation(&op(
+                OperationKind::DeleteVm,
+                OperationStatus::Succeeded,
+                100,
+            ))
+            .await
+            .unwrap();
+
+        let pending = store.list_pending_operations(None, 10).await.unwrap();
+        assert_eq!(pending.len(), 2, "got {pending:?}");
+        assert_eq!(pending[0].priority, 9, "the highest priority comes first");
+        assert_eq!(pending[1].priority, 1);
+
+        // The limit is honoured.
+        let limited = store.list_pending_operations(None, 1).await.unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].priority, 9);
+    }
+
+    /// An operation with no node is offered to every node.
+    #[tokio::test]
+    async fn an_operation_without_a_node_is_offered_to_every_node() {
+        let (_db, store) = store().await;
+        let vm = a_vm("vm-1");
+        store.create_vm(&vm).await.unwrap();
+        let vm_id = store.list_vms(None).await.unwrap()[0].id;
+
+        let op = Operation {
+            id: OperationId(0),
+            kind: OperationKind::CreateVm,
+            vm_id,
+            node_id: None,
+            steps: Vec::new(),
+            current_step: 0,
+            status: OperationStatus::Pending,
+            created_at_ms: 1000,
+            started_at_ms: None,
+            finished_at_ms: None,
+            error: None,
+            priority: 0,
+        };
+        store.create_operation(&op).await.unwrap();
+
+        let node = a_node("node-1");
+        store.create_node(&node).await.unwrap();
+        let node_id = store.list_nodes(None).await.unwrap()[0].id;
+
+        let pending = store
+            .list_pending_operations(Some(node_id), 10)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1, "got {pending:?}");
+    }
+
+    /// A quota is written and read back.
+    #[tokio::test]
+    async fn a_quota_survives_the_round_trip() {
+        let (_db, store) = store().await;
+        let quota = Quota {
+            id: 0,
+            scope: QuotaScope::Repo,
+            scope_id: 5,
+            max_concurrent_vms: 3,
+            max_cpu_millis: 4000,
+            max_memory_bytes: 8_000_000_000,
+            max_disk_bytes: 40_000_000_000,
+            max_vm_lifetime_ms: 60_000,
+            created_at_ms: 1000,
+            updated_at_ms: 1000,
+        };
+        store.create_quota(&quota).await.unwrap();
+
+        let loaded = store
+            .get_quota(QuotaScope::Repo, 5)
+            .await
+            .unwrap()
+            .expect("the quota must be there");
+        assert_eq!(loaded.scope, QuotaScope::Repo);
+        assert_eq!(loaded.scope_id, 5);
+        assert_eq!(loaded.max_concurrent_vms, 3);
+        assert_eq!(loaded.max_cpu_millis, 4000);
+
+        let listed = store.list_quotas().await.unwrap();
+        assert_eq!(listed.len(), 1);
+
+        store.delete_quota(QuotaScope::Repo, 5).await.unwrap();
+        assert!(store.get_quota(QuotaScope::Repo, 5).await.unwrap().is_none());
+    }
+
+    /// The usage of a scope counts the VMs that are alive in it.
+    #[tokio::test]
+    async fn the_quota_usage_counts_the_live_vms() {
+        let (_db, store) = store().await;
+
+        let mut running = a_vm("running");
+        running.owner = OwnerRef::repo(1);
+        running.status = VmStatus::Running;
+        let mut stopped = a_vm("stopped");
+        stopped.owner = OwnerRef::repo(1);
+        stopped.status = VmStatus::Stopped;
+        let mut other = a_vm("other");
+        other.owner = OwnerRef::repo(2);
+        other.status = VmStatus::Running;
+
+        store.create_vm(&running).await.unwrap();
+        store.create_vm(&stopped).await.unwrap();
+        store.create_vm(&other).await.unwrap();
+
+        // A stopped VM holds no resources.
+        let usage = store.get_quota_usage(QuotaScope::Repo, 1).await.unwrap();
+        assert_eq!(usage.concurrent_vms, 1, "got {usage:?}");
+        assert_eq!(usage.used_cpu_millis, 1000);
+        assert_eq!(usage.used_memory_bytes, 1024 * 1024);
+        assert_eq!(usage.used_disk_bytes, 2048);
+
+        // The system scope counts every live VM.
+        let usage = store.get_quota_usage(QuotaScope::System, 0).await.unwrap();
+        assert_eq!(usage.concurrent_vms, 2, "got {usage:?}");
+    }
+
+    /// A VM that is being provisioned counts against the quota of the
+    /// repository it belongs to.
+    #[tokio::test]
+    async fn a_provisioning_vm_counts_against_the_repo_quota() {
+        let (_db, store) = store().await;
+        let mut vm = a_vm("provisioning");
+        vm.owner = OwnerRef::repo(1);
+        vm.status = VmStatus::Provisioning;
+        store.create_vm(&vm).await.unwrap();
+
+        let usage = store.get_quota_usage(QuotaScope::Repo, 1).await.unwrap();
+        assert_eq!(usage.concurrent_vms, 1, "got {usage:?}");
+        assert_eq!(usage.used_cpu_millis, 1000);
+    }
+
+    /// The user scope is not implemented; it reports nothing rather
+    /// than everything.
+    #[tokio::test]
+    async fn the_user_quota_usage_is_not_implemented() {
+        let (_db, store) = store().await;
+        let mut vm = a_vm("vm-1");
+        vm.owner = OwnerRef::repo(1);
+        store.create_vm(&vm).await.unwrap();
+
+        let usage = store.get_quota_usage(QuotaScope::User, 1).await.unwrap();
+        assert_eq!(usage, QuotaUsage::default());
+    }
+
+    /// A linked VM records the gita side it belongs to, so that the
+    /// control plane knows who is to reclaim it.
+    #[tokio::test]
+    async fn a_linked_vm_records_its_gita_side() {
+        let (db, store) = store().await;
+        // The linkage points at real gita rows, so the VM can be
+        // reclaimed when the pipeline it belongs to goes away.
+        let user = db.create_user("alice", "alice@example.com", "hash").await.unwrap();
+        let repo = db
+            .create_repository(user.id, "alice", "widgets", "", false, "main", None)
+            .await
+            .unwrap();
+
+        let vm = a_vm("vm-1");
+        let id = store
+            .create_linked_vm(
+                &vm,
+                VmLinkage {
+                    repo_id: Some(repo.id),
+                    pipeline_run_id: None,
+                    job_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(id.0 > 0, "the linked vm must get a real id");
+
+        let linkage = store.get_vm_linkage(id).await.unwrap().unwrap();
+        assert_eq!(linkage.repo_id, Some(repo.id));
+        assert_eq!(linkage.pipeline_run_id, None);
+        assert_eq!(linkage.job_id, None);
+    }
+
+    /// A VM with no linkage has none.
+    #[tokio::test]
+    async fn a_plain_vm_has_no_linkage() {
+        let (_db, store) = store().await;
+        let vm = a_vm("vm-1");
+        store.create_vm(&vm).await.unwrap();
+        let id = store.list_vms(None).await.unwrap()[0].id;
+        let linkage = store.get_vm_linkage(id).await.unwrap().unwrap();
+        assert_eq!(linkage.repo_id, None);
+        assert_eq!(linkage.pipeline_run_id, None);
+        assert_eq!(linkage.job_id, None);
+    }
+
+    /// A cell is optional; a node may or may not belong to one.
+    #[tokio::test]
+    async fn a_node_may_belong_to_a_cell() {
+        let (_db, store) = store().await;
+        let mut node = a_node("node-1");
+        node.cell = Some(CellId(2));
+        store.create_node(&node).await.unwrap();
+        let loaded = store.list_nodes(None).await.unwrap().remove(0);
+        assert_eq!(loaded.cell.map(|c| c.0), Some(2));
     }
 }
