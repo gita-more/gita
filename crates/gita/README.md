@@ -4,7 +4,7 @@
 It is the `gita` binary (workspace member `crates/gita`, sharing the REST
 transport with `gita-admin` through the `gita-client` library) that talks to the Gita REST
 API over `Authorization: Bearer <token>` and stores credentials in the OS
-keyring (never in plaintext config).
+keyring, or an encrypted local file when no keyring works.
 
 ```
 cargo build -p gita      # -> target/debug/gita
@@ -33,7 +33,7 @@ an existing setup keeps working; writes always go to `~/.gita`.
 Token resolution order (highest to lowest):
 
 1. `GITA_TOKEN` env var
-2. the credential store (OS keyring, or the plaintext fallback file)
+2. the credential store (OS keyring, or the encrypted local file)
 3. none (anonymous)
 
 Credentials are keyed by server URL, so several servers can be logged in at
@@ -189,23 +189,35 @@ waits in `request_key()` for a user keyring that `pam_keyinit` never created.
 The CLI treats the keyring as best-effort, so a blocked call is abandoned
 after the deadline.
 
-### Plaintext fallback
+### Encrypted local fallback
 
 A keyring that cannot store the token must not lose the session: the CLI
 would log in successfully and then be anonymous again on the next command. So
 when the keyring is unavailable (missing, timed out, or disabled) the token
-degrades to `~/.gita/credentials.toml`, written with `0600` permissions (the
-directory is `0700`). Reads prefer the keyring and fall back to the file;
-`auth logout` clears both.
+degrades to `~/.gita/credentials.enc` — encrypted with XChaCha20-Poly1305
+under a machine-bound key. The key lives in the OS keyring when the keyring
+works, otherwise in a `0600` `~/.gita/keyfile` (the directory is `0700`).
+Reads prefer the keyring and fall back to the file; `auth logout` clears
+both.
 
-The CLI always says where the secret ended up:
+This is transparent — nothing is asked beyond the login already typed — and
+it protects the realistic threat: the disk's contents leaving the machine
+(backups, images, sync clients). An attacker who can run code as the user
+would simply run `gita` itself, so the local keyfile costs nothing there. A
+store that cannot be decrypted (the key was deleted, the file came from
+another machine) reads as empty rather than failing: the credentials are
+gone either way and the answer is a fresh login. A pre-encryption plaintext
+`credentials.toml` is picked up transparently and migrated to the encrypted
+file on the next write.
+
+The CLI says when the fallback store was used:
 
 ```
-warning: keyring unavailable — the token is stored in plaintext at /home/you/.gita/credentials.toml
+warning: no usable OS keyring on this machine — the token is stored in /home/you/.gita/credentials.enc, encrypted with a local key (~/.gita/keyfile)
 ```
 
 Set `GITA_DISABLE_KEYRING=1` to skip the keyring entirely — no token is read
-from it and nothing is written to it (the plaintext fallback is still used):
+from it and nothing is written to it (the encrypted fallback is still used):
 
 ```bash
 GITA_DISABLE_KEYRING=1 ./target/debug/gita repo list

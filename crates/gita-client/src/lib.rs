@@ -11,6 +11,7 @@
 pub mod api;
 pub mod config;
 pub mod credential;
+pub mod crypt;
 pub mod output;
 
 pub use api::GitaClient;

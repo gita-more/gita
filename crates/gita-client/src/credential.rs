@@ -1,4 +1,4 @@
-//! Credential store: OS keyring with a plaintext-file fallback.
+//! Credential store: OS keyring with an encrypted local fallback.
 //!
 //! ## The keyring
 //!
@@ -27,21 +27,34 @@
 //! degrade, not hang. So every keyring operation runs on a worker thread
 //! with a hard deadline, and the first timeout latches the keyring off for
 //! the rest of the process so the second call fails immediately instead of
-//! paying the timeout again.
+//! paying the timeout again. The failure is also recorded in
+//! `~/.gita/keyring-unavailable` for an hour, so later commands skip the
+//! keyring instead of paying the deadline again; the record expires, so a
+//! keyring that starts working is picked up.
 //!
-//! ## The plaintext fallback
+//! ## The encrypted local fallback
 //!
 //! A keyring that cannot store the token must not lose the session: the
 //! CLI would happily log in and then be anonymous again on the next
 //! command. So when the keyring is unavailable (missing, latched off, or
 //! disabled via `GITA_DISABLE_KEYRING=1`) the token degrades to
-//! `~/.gita/credentials.toml`, written with `0600` permissions. The caller
-//! is told where the secret ended up and must surface it — silently
-//! writing a plaintext secret is a decision the user gets to make.
+//! `~/.gita/credentials.enc` — encrypted with XChaCha20-Poly1305 under a
+//! machine-bound key (see [`crate::crypt`]).
+//!
+//! The key lives in the keyring when the keyring works, otherwise in a
+//! `0600` `~/.gita/keyfile`. The user supplies nothing beyond the login
+//! they already typed: the fallback is fully transparent, and its
+//! protection is aimed at the realistic threat — the disk's contents
+//! leaving the machine (backups, images, sync clients). An attacker who
+//! can run code as the user would simply run `gita` itself, so the local
+//! keyfile costs nothing there.
 //!
 //! Reads prefer the keyring and fall back to the file; `delete_secret`
 //! clears both. `GITA_DISABLE_KEYRING` only switches off the keyring — the
-//! file fallback is exactly the answer to that situation.
+//! file fallback is exactly the answer to that situation. A store that
+//! cannot be decrypted (the key was deleted, the file came from another
+//! machine) reads as empty rather than failing: the credentials are gone
+//! either way and the answer is a fresh login.
 //!
 //! Config and credentials live under `$GITA_CONFIG_DIR` or `~/.gita` (see
 //! [`crate::config::config_dir`]).
@@ -74,14 +87,14 @@ static KEYRING_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 pub enum Store {
     /// The OS keyring.
     Keyring,
-    /// The plaintext credentials file (the keyring was unavailable).
-    PlaintextFile,
+    /// The local encrypted credential file (the keyring was unavailable).
+    EncryptedFile,
 }
 
-/// Path of the plaintext credential fallback, for caller-facing messages.
+/// Path of the local credential file, for caller-facing messages.
 pub fn credentials_file() -> Result<PathBuf> {
     config_dir()
-        .map(|d| d.join("credentials.toml"))
+        .map(|d| d.join("credentials.enc"))
         .context("cannot determine the gita config directory (set HOME or GITA_CONFIG_DIR)")
 }
 
@@ -186,8 +199,16 @@ fn now_secs() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Plaintext credentials file
+// Encrypted credentials file
 // ---------------------------------------------------------------------------
+//
+// The file is never written in plaintext: a machine-bound key encrypts it
+// (see `crate::crypt`). The key comes from the OS keyring when one works,
+// otherwise from a `0600` keyfile beside it, so the user never has to
+// supply anything beyond the login they already typed.
+
+/// Keyring account holding the *encryption key* for the credential file.
+const FILE_KEY_ACCOUNT: &str = "credentials-key";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Credentials {
@@ -203,17 +224,135 @@ struct SiteCredentials {
     username: Option<String>,
 }
 
+/// Path of the local encryption key, used when the keyring cannot hold it.
+pub fn key_file() -> Result<PathBuf> {
+    config_dir()
+        .map(|d| d.join("keyfile"))
+        .context("cannot determine the gita config directory (set HOME or GITA_CONFIG_DIR)")
+}
+
+fn read_file_key() -> Option<[u8; crate::crypt::KEY_LEN]> {
+    let path = key_file().ok()?;
+    let bytes = std::fs::read(path).ok()?;
+    bytes.try_into().ok()
+}
+
+/// Write the keyfile with `0600`, creating the directory `0700` if needed.
+fn write_file_key(key: &[u8; crate::crypt::KEY_LEN]) -> Result<()> {
+    let path = key_file()?;
+    let dir = path
+        .parent()
+        .context("keyfile path has no parent directory")?;
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("create config dir {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    std::fs::write(&path, key).with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// The key that encrypts the credential file, generating one on first use.
+///
+/// Prefers the OS keyring; falls back to the local keyfile. The choice is
+/// returned so the file's header can record which store holds the key.
+fn file_key() -> Result<([u8; crate::crypt::KEY_LEN], crate::crypt::KeySource)> {
+    use crate::crypt::{generate_key, KeySource};
+
+    if !keyring_skipped() {
+        let from_keyring = run_bounded(|| {
+            match Entry::new(SERVICE, FILE_KEY_ACCOUNT)?.get_password() {
+                Ok(encoded) => Ok(Some(encoded)),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(e) => bail!("keyring read failed for the credential key: {e}"),
+            }
+        });
+        match from_keyring {
+            Ok(Some(encoded)) => {
+                if let Some(key) = decode_key(&encoded) {
+                    return Ok((key, KeySource::Keyring));
+                }
+            }
+            Ok(None) => {
+                // No key yet: mint one and keep it in the keyring.
+                let key = generate_key();
+                let encoded = encode_key(&key);
+                let stored = run_bounded(move || {
+                    Entry::new(SERVICE, FILE_KEY_ACCOUNT)?
+                        .set_password(&encoded)
+                        .map_err(Into::into)
+                });
+                if stored.is_ok() {
+                    return Ok((key, KeySource::Keyring));
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    // The keyring is out of the picture: use (or create) the local keyfile.
+    if let Some(key) = read_file_key() {
+        return Ok((key, KeySource::KeyFile));
+    }
+    let key = generate_key();
+    write_file_key(&key)?;
+    Ok((key, KeySource::KeyFile))
+}
+
+fn encode_key(key: &[u8; crate::crypt::KEY_LEN]) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    STANDARD.encode(key)
+}
+
+fn decode_key(encoded: &str) -> Option<[u8; crate::crypt::KEY_LEN]> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let bytes = STANDARD.decode(encoded.trim()).ok()?;
+    bytes.try_into().ok()
+}
+
+/// Read the credential store, decrypting it as needed.
+///
+/// A missing file is an empty store. A file that cannot be decrypted —
+/// the key is gone, the file is damaged, or it was written by another
+/// machine — is treated as empty as well: the credentials are gone either
+/// way, and the caller's answer is the same ("log in again"). It is not
+/// deleted, so a key that comes back restores access.
 fn read_credentials() -> Credentials {
-    let Ok(path) = credentials_file() else {
+    // The encrypted store, if present.
+    if let Ok(path) = credentials_file() {
+        if let Ok(blob) = std::fs::read(&path) {
+            if blob.starts_with(b"GITAENC") {
+                let Ok((key, _)) = file_key() else {
+                    return Credentials::default();
+                };
+                let Ok(plaintext) = crate::crypt::decrypt(&key, &blob) else {
+                    return Credentials::default();
+                };
+                return serde_json::from_slice(&plaintext).unwrap_or_default();
+            }
+            // Not ours (damaged or foreign): fall through to the legacy
+            // file rather than guessing.
+        }
+    }
+
+    // Migration: the pre-encryption plaintext file.
+    let Some(legacy) = config_dir().map(|d| d.join("credentials.toml")) else {
         return Credentials::default();
     };
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Ok(content) = std::fs::read_to_string(legacy) else {
         return Credentials::default();
     };
     toml::from_str(&content).unwrap_or_default()
 }
 
-/// Write the credentials file with `0600` (and its directory `0700`).
+/// Write the credential store, encrypted, with `0600` (directory `0700`).
 fn write_credentials(creds: &Credentials) -> Result<()> {
     let path = credentials_file()?;
     let dir = path
@@ -226,12 +365,21 @@ fn write_credentials(creds: &Credentials) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    let toml = toml::to_string_pretty(creds).context("serialize credentials")?;
-    std::fs::write(&path, toml).with_context(|| format!("write {}", path.display()))?;
+
+    let (key, source) = file_key()?;
+    let plaintext = serde_json::to_vec(creds).context("serialize credentials")?;
+    let blob = crate::crypt::encrypt(&key, source, &plaintext)?;
+    std::fs::write(&path, blob).with_context(|| format!("write {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    // Migration complete: a leftover plaintext store must not linger on
+    // disk once the encrypted one exists.
+    if let Some(legacy) = config_dir().map(|d| d.join("credentials.toml")) {
+        let _ = std::fs::remove_file(legacy);
     }
     Ok(())
 }
@@ -281,9 +429,8 @@ pub fn get_secret(url: &str) -> Result<Option<String>> {
 ///
 /// Prefers the keyring; when the keyring cannot be used (unavailable,
 /// latched off after a timeout, or disabled via `GITA_DISABLE_KEYRING`)
-/// the token falls back to the plaintext credentials file — and the
-/// returned [`Store`] tells the caller so it can say where the secret
-/// landed.
+/// the token falls back to the local encrypted file — and the returned
+/// [`Store`] tells the caller so it can say where the secret landed.
 pub fn set_secret(url: &str, token: &str) -> Result<Store> {
     if !keyring_skipped() {
         let url = url.to_string();
@@ -298,7 +445,7 @@ pub fn set_secret(url: &str, token: &str) -> Result<Store> {
         }
     }
     with_site(url, |site| site.token = Some(token.to_string()))?;
-    Ok(Store::PlaintextFile)
+    Ok(Store::EncryptedFile)
 }
 
 /// Store the authenticated username for `url`. Same fallback as
@@ -317,7 +464,7 @@ pub fn set_username(url: &str, username: &str) -> Result<Store> {
         }
     }
     with_site(url, |site| site.username = Some(username.to_string()))?;
-    Ok(Store::PlaintextFile)
+    Ok(Store::EncryptedFile)
 }
 
 /// Read the stored username for `url`.
@@ -467,18 +614,25 @@ mod tests {
     }
 
     /// When the keyring cannot be used the token must not be lost: it
-    /// degrades to the plaintext credentials file, which later reads pick
-    /// up again. Losing the session after a successful login would make
-    /// the CLI useless on any headless machine.
+    /// degrades to the local encrypted file, which later reads pick up
+    /// again. Losing the session after a successful login would make the
+    /// CLI useless on any headless machine.
     #[test]
-    fn tokens_fall_back_to_the_plaintext_file() {
+    fn tokens_fall_back_to_the_encrypted_file() {
         with_config_dir(|dir| {
             KEYRING_UNAVAILABLE.store(true, Ordering::Relaxed);
             let stored = set_secret("http://file-test", "tok").unwrap();
-            assert_eq!(stored, Store::PlaintextFile);
+            assert_eq!(stored, Store::EncryptedFile);
             assert_eq!(
                 get_secret("http://file-test").unwrap().as_deref(),
                 Some("tok")
+            );
+
+            // The file is encrypted: the token must not appear in it.
+            let on_disk = std::fs::read(credentials_file().unwrap()).unwrap();
+            assert!(
+                !on_disk.windows(3).any(|w| w == b"tok"),
+                "the token must not be stored in plaintext"
             );
 
             // The file must be private.
@@ -499,13 +653,13 @@ mod tests {
         });
     }
 
-    /// Username storage shares the fallback path.
+    /// Username storage shares the encrypted fallback path.
     #[test]
-    fn usernames_fall_back_to_the_plaintext_file() {
+    fn usernames_fall_back_to_the_encrypted_file() {
         with_config_dir(|_| {
             KEYRING_UNAVAILABLE.store(true, Ordering::Relaxed);
             let stored = set_username("http://file-test", "alice").unwrap();
-            assert_eq!(stored, Store::PlaintextFile);
+            assert_eq!(stored, Store::EncryptedFile);
             assert_eq!(
                 get_username("http://file-test").unwrap().as_deref(),
                 Some("alice")
@@ -524,7 +678,7 @@ mod tests {
         with_config_dir(|_| {
             std::env::set_var("GITA_DISABLE_KEYRING", "1");
             let stored = set_secret("http://env-test", "tok").unwrap();
-            assert_eq!(stored, Store::PlaintextFile);
+            assert_eq!(stored, Store::EncryptedFile);
             assert_eq!(
                 get_secret("http://env-test").unwrap().as_deref(),
                 Some("tok")
@@ -553,6 +707,66 @@ mod tests {
             )
             .unwrap();
             assert!(!keyring_marked_broken());
+        });
+    }
+
+    /// A pre-encryption plaintext store is picked up transparently, and
+    /// the first write migrates it: the plaintext file disappears, the
+    /// token lives on in the encrypted file, and nothing was lost.
+    #[test]
+    fn the_legacy_plaintext_store_is_migrated() {
+        with_config_dir(|dir| {
+            KEYRING_UNAVAILABLE.store(true, Ordering::Relaxed);
+            std::fs::write(
+                dir.join("credentials.toml"),
+                "[sites.\"http://legacy-test\"]\ntoken = \"old-tok\"\nusername = \"old-user\"\n",
+            )
+            .unwrap();
+
+            // Reads serve the legacy content as-is.
+            assert_eq!(
+                get_secret("http://legacy-test").unwrap().as_deref(),
+                Some("old-tok")
+            );
+            assert!(dir.join("credentials.toml").exists(), "no write yet");
+
+            // The first write moves everything into the encrypted file.
+            set_secret("http://legacy-test", "new-tok").unwrap();
+            assert!(
+                !dir.join("credentials.toml").exists(),
+                "the plaintext file must not survive the migration"
+            );
+            assert_eq!(
+                get_secret("http://legacy-test").unwrap().as_deref(),
+                Some("new-tok")
+            );
+            let on_disk = std::fs::read(dir.join("credentials.enc")).unwrap();
+            assert!(
+                !on_disk.windows(7).any(|w| w == b"new-tok"),
+                "the migrated token must not be readable in the file"
+            );
+            KEYRING_UNAVAILABLE.store(false, Ordering::Relaxed);
+        });
+    }
+
+    /// Deleting the encryption key must not leave the store claiming
+    /// tokens it cannot read: reads return empty, so the caller falls
+    /// back to a clean login instead of a broken session.
+    #[test]
+    fn a_lost_key_leaves_no_usable_tokens() {
+        with_config_dir(|_| {
+            KEYRING_UNAVAILABLE.store(true, Ordering::Relaxed);
+            set_secret("http://lost-key-test", "tok").unwrap();
+            assert_eq!(
+                get_secret("http://lost-key-test").unwrap().as_deref(),
+                Some("tok")
+            );
+
+            // The key is gone (deleted, or from another machine).
+            std::fs::remove_file(key_file().unwrap()).unwrap();
+            // A new key cannot decrypt the old blob.
+            assert_eq!(get_secret("http://lost-key-test").unwrap(), None);
+            KEYRING_UNAVAILABLE.store(false, Ordering::Relaxed);
         });
     }
 }

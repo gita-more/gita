@@ -130,7 +130,7 @@ git push -u origin main
 Gita ships with a `gh`-like command-line client named `gita` (workspace
 member `crates/gita`, with the shared REST transport in `crates/gita-client`).
 It talks to the Gita REST API over `Authorization: Bearer <token>` and stores
-credentials in the OS keyring (never plaintext).
+credentials in the OS keyring, or an encrypted local file when no keyring works.
 
 Build it once:
 
@@ -162,7 +162,7 @@ Server URL resolution: `--url` / `GITA_URL` env > `~/.gita/config.toml` > error
 Keyring access is bounded by a 3-second deadline — on Linux the keyring can
 block forever in a headless session — and `GITA_DISABLE_KEYRING=1` turns it off
 entirely. When the keyring cannot be used the token falls back to a `0600`
-`~/.gita/credentials.toml` file. See
+`~/.gita/credentials.enc` file (machine-bound key, XChaCha20-Poly1305). See
 [crates/gita/README.md](crates/gita/README.md#credential-store).
 
 ### Common commands

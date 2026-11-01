@@ -241,12 +241,14 @@ fn is_known_server(url: &str) -> bool {
 fn store_token(base_url: &str, token: &str) {
     match credential::set_secret(base_url, token) {
         Ok(credential::Store::Keyring) => {}
-        Ok(credential::Store::PlaintextFile) => {
+        Ok(credential::Store::EncryptedFile) => {
             let path = credential::credentials_file()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "~/.gita/credentials.toml".to_string());
-            eprintln!("warning: no usable OS keyring on this machine — the token is stored in plaintext at {path} (mode 0600)");
-            eprintln!("hint: a Secret Service (gnome-keyring, kwallet) would keep it in the keyring instead");
+                .unwrap_or_else(|_| "~/.gita/credentials.enc".to_string());
+            eprintln!(
+                "warning: no usable OS keyring on this machine — the token is stored in {path}, encrypted with a local key (~/.gita/keyfile)"
+            );
+            eprintln!("hint: a Secret Service (gnome-keyring, kwallet) would keep the key in the keyring instead");
         }
         Err(e) => eprintln!(
             "warning: the token could not be stored ({e}); export GITA_TOKEN for subsequent commands"

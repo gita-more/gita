@@ -19,6 +19,8 @@ toml = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+rand = { workspace = true }
+chacha20poly1305 = { workspace = true }
 
 # `keyring` needs a platform-specific backend. The workspace dep ships with
 # no backend enabled; select the right one per target so cross-compiled
