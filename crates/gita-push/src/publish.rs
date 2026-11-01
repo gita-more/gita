@@ -375,3 +375,160 @@ async fn changed_paths_for_push(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gita_git::GitManager;
+
+    fn run_git(args: &[&str], cwd: &std::path::Path) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git spawn");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A bare repository with one commit holding `files` (path → content).
+    ///
+    /// Returns the git manager and the commit sha.
+    async fn repo_with_files(files: &[(&str, &str)]) -> (tempfile::TempDir, GitManager, String) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let git = GitManager::new(dir.path().to_path_buf());
+        git.create_repo("alice", "widgets", "main")
+            .await
+            .expect("create repo");
+        let bare = dir.path().join("alice").join("widgets.git");
+        let url = format!("file://{}", bare.display());
+
+        let work = tempfile::TempDir::new().expect("work tree");
+        run_git(&["init", "-q", "-b", "main"], work.path());
+        run_git(&["remote", "add", "origin", &url], work.path());
+        for (path, content) in files {
+            let dest = work.path().join(path);
+            std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std::fs::write(&dest, content).unwrap();
+        }
+        run_git(&["add", "-A"], work.path());
+        run_git(&["commit", "-q", "-m", "test commit"], work.path());
+        run_git(&["push", "-q", "origin", "main"], work.path());
+
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "main"])
+            .current_dir(work.path())
+            .output()
+            .expect("rev-parse");
+        let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (dir, git, sha)
+    }
+
+    /// The branch filters in `.gita-ci.yml` name the branch without the
+    /// `refs/heads/` prefix; a tag ref keeps its full name.
+    #[test]
+    fn a_branch_name_is_shortened_and_a_tag_is_not() {
+        assert_eq!(short_branch_name("refs/heads/main"), "main");
+        assert_eq!(short_branch_name("refs/heads/feature/x"), "feature/x");
+        assert_eq!(short_branch_name("refs/tags/v1"), "refs/tags/v1");
+    }
+
+    /// Only the workflow files directly under `.github/workflows/` count:
+    /// a nested directory is not a workflow, and neither is a file with
+    /// another extension.
+    #[tokio::test]
+    async fn only_top_level_yaml_workflow_files_are_listed() {
+        let (_dir, git, sha) = repo_with_files(&[
+            (".github/workflows/ci.yml", "name: ci\n"),
+            (".github/workflows/other.yaml", "name: other\n"),
+            (".github/workflows/notes.txt", "not a workflow\n"),
+            (".github/workflows/nested/deep.yml", "name: deep\n"),
+            ("README.md", "hello\n"),
+        ])
+        .await;
+
+        let files = list_workflow_files(&git, "alice", "widgets", &sha).expect("list");
+        let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                ".github/workflows/ci.yml",
+                ".github/workflows/other.yaml"
+            ],
+            "got {paths:?}"
+        );
+    }
+
+    /// A repository with no workflows directory yields no workflows, and
+    /// no error.
+    #[tokio::test]
+    async fn a_repository_without_workflows_yields_no_workflows() {
+        let (_dir, git, sha) = repo_with_files(&[("README.md", "hello\n")]).await;
+        let files = list_workflow_files(&git, "alice", "widgets", &sha).expect("list");
+        assert!(files.is_empty(), "got {files:?}");
+    }
+
+    /// A branch that did not exist before has no previous commit, so
+    /// every file in the tree counts as changed.
+    #[tokio::test]
+    async fn a_new_branch_reports_every_file_as_changed() {
+        let (_dir, git, sha) = repo_with_files(&[("a.txt", "a\n"), ("dir/b.txt", "b\n")]).await;
+        let upd = RefUpdate {
+            old_sha: "0".repeat(40),
+            new_sha: sha.clone(),
+            ref_name: "refs/heads/new".to_string(),
+        };
+        let mut changed = changed_paths_for_push(&git, "alice", "widgets", &upd).await;
+        changed.sort();
+        assert_eq!(changed, vec!["a.txt".to_string(), "dir/b.txt".to_string()]);
+    }
+
+    /// A push that only changes one file reports only that file.
+    #[tokio::test]
+    async fn a_push_reports_only_the_files_that_changed() {
+        let (dir, git, sha) = repo_with_files(&[("a.txt", "a\n"), ("b.txt", "b\n")]).await;
+        let bare = dir.path().join("alice").join("widgets.git");
+        let url = format!("file://{}", bare.display());
+        let work = tempfile::TempDir::new().expect("work tree");
+        run_git(&["clone", "-q", &url, "."], work.path());
+        std::fs::write(work.path().join("a.txt"), "a changed\n").unwrap();
+        run_git(&["commit", "-q", "-am", "second"], work.path());
+        run_git(&["push", "-q", "origin", "main"], work.path());
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "main"])
+            .current_dir(work.path())
+            .output()
+            .expect("rev-parse");
+        let second = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+        let upd = RefUpdate {
+            old_sha: sha,
+            new_sha: second,
+            ref_name: "refs/heads/main".to_string(),
+        };
+        let changed = changed_paths_for_push(&git, "alice", "widgets", &upd).await;
+        assert_eq!(changed, vec!["a.txt".to_string()]);
+    }
+
+    /// A diff that cannot be computed yields no paths rather than an
+    /// error: the caller treats an empty list as "nothing matched".
+    #[tokio::test]
+    async fn an_unreadable_diff_yields_no_paths() {
+        let (_dir, git, _sha) = repo_with_files(&[("a.txt", "a\n")]).await;
+        let upd = RefUpdate {
+            old_sha: "1".repeat(40),
+            new_sha: "2".repeat(40),
+            ref_name: "refs/heads/main".to_string(),
+        };
+        let changed = changed_paths_for_push(&git, "alice", "widgets", &upd).await;
+        assert!(changed.is_empty(), "got {changed:?}");
+    }
+}

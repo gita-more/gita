@@ -113,3 +113,94 @@ mod tests {
         assert!(parse_receive_pack_commands(&[0xff, 0xfe, 0xfd]).is_empty());
     }
 }
+
+#[cfg(test)]
+mod pkt_line_tests {
+    use super::*;
+
+    fn pkt_line(s: &str) -> Vec<u8> {
+        let mut line = s.as_bytes().to_vec();
+        line.push(b'\n');
+        let len = line.len() + 4;
+        let mut out = format!("{len:04x}").into_bytes();
+        out.extend_from_slice(&line);
+        out
+    }
+
+    const CMD: &str = "1111111111111111111111111111111111111111 2222222222222222222222222222222222222222 refs/heads/main";
+
+    /// A packet whose declared length is shorter than the length header
+    /// itself is malformed; the parser must stop rather than read a
+    /// length of its own header as a payload.
+    #[test]
+    fn a_length_below_the_header_size_stops_the_parse() {
+        // "0002" claims a two-byte packet, which cannot hold a header.
+        let body = b"0002ab";
+        assert!(parse_receive_pack_commands(body).is_empty());
+    }
+
+    /// A packet that claims more bytes than the body holds is
+    /// truncated; the parser must not read past the end.
+    #[test]
+    fn a_truncated_packet_stops_the_parse() {
+        let mut body = format!("{:04x}", CMD.len() + 5).into_bytes();
+        body.extend_from_slice( CMD.as_bytes());
+        assert!(parse_receive_pack_commands(&body).is_empty());
+    }
+
+    /// The length is four ASCII hex digits; anything else is garbage.
+    #[test]
+    fn a_non_hex_length_stops_the_parse() {
+        let mut body = b"zzzz".to_vec();
+        body.extend_from_slice(CMD.as_bytes());
+        assert!(parse_receive_pack_commands(&body).is_empty());
+    }
+
+    /// A command list without a terminating flush packet still parses:
+    /// the commands arrived, only the end marker is missing.
+    #[test]
+    fn a_command_list_without_a_flush_packet_still_parses() {
+        let body = pkt_line(CMD);
+        let updates = parse_receive_pack_commands(&body);
+        assert_eq!(updates.len(), 1, "got {updates:?}");
+        assert_eq!(updates[0].ref_name, "refs/heads/main");
+    }
+
+    /// The command section ends at the first flush packet; anything
+    /// after it (the pack data) is not a command.
+    #[test]
+    fn only_the_commands_before_the_flush_packet_are_parsed() {
+        let mut body = pkt_line(CMD);
+        body.extend(b"0000");
+        body.extend(pkt_line(
+            "3333333333333333333333333333333333333333 4444444444444444444444444444444444444444 refs/heads/after",
+        ));
+        let updates = parse_receive_pack_commands(&body);
+        assert_eq!(updates.len(), 1, "got {updates:?}");
+        assert_eq!(updates[0].ref_name, "refs/heads/main");
+    }
+
+    /// A line that does not carry the three fields is not a command and
+    /// is skipped without ending the parse.
+    #[test]
+    fn a_malformed_command_is_skipped() {
+        let mut body = pkt_line("garbage");
+        body.extend(pkt_line(CMD));
+        body.extend(b"0000");
+        let updates = parse_receive_pack_commands(&body);
+        assert_eq!(updates.len(), 1, "got {updates:?}");
+        assert_eq!(updates[0].ref_name, "refs/heads/main");
+    }
+
+    /// The leading flush packet a client sends before the commands is
+    /// consumed, not mistaken for a command.
+    #[test]
+    fn a_leading_flush_packet_is_consumed() {
+        let mut body = b"0000".to_vec();
+        body.extend(pkt_line(CMD));
+        body.extend(b"0000");
+        let updates = parse_receive_pack_commands(&body);
+        assert_eq!(updates.len(), 1, "got {updates:?}");
+        assert_eq!(updates[0].ref_name, "refs/heads/main");
+    }
+}
