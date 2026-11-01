@@ -141,14 +141,19 @@ impl VmmDriver for QemuDriver {
             tokio::fs::write(&user_data_file, user_data).await.map_err(|e| Error::Io(e))?;
             tokio::fs::write(&meta_data_file, meta_data).await.map_err(|e| Error::Io(e))?;
 
-            let _ = Command::new(&self.cloud_localds_bin)
+            let ci_output = Command::new(&self.cloud_localds_bin)
                 .args([ci_iso.to_string_lossy().as_ref(), user_data_file.to_string_lossy().as_ref(), meta_data_file.to_string_lossy().as_ref()])
                 .output()
                 .await
                 .map_err(|e| Error::ProcessError(e.to_string()))?;
 
-            if !output.status.success() {
-                tracing::warn!("cloud-localds failed: {}", String::from_utf8_lossy(&output.stderr));
+            // The status to look at is the one of the command that just
+            // ran: the disk image was built by an earlier command, and
+            // its status says nothing about this one.
+            if !ci_output.status.success() {
+                return Err(Error::OperationFailed(
+                    String::from_utf8_lossy(&ci_output.stderr).into()
+                ));
             }
         }
 
