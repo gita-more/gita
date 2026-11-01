@@ -333,3 +333,292 @@ impl Default for QemuDriver {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gita_vm_api::vm::VmSpec;
+
+    fn driver(dir: &Path) -> QemuDriver {
+        QemuDriver::new().with_work_dir(dir.to_path_buf())
+    }
+
+    fn spec() -> VmSpec {
+        VmSpec {
+            cpu_millis: 4000,
+            memory_bytes: 2 * 1024 * 1024 * 1024,
+            disk_bytes: 10 * 1024 * 1024 * 1024,
+            ..Default::default()
+        }
+    }
+
+    /// The arguments of the command that starts the VM. The driver
+    /// builds it without running it, so the arguments can be read.
+    fn args_of(cmd: &Command) -> Vec<String> {
+        cmd.as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect()
+    }
+
+    /// The value of an option, and the one after it.
+    fn option<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+        let idx = args.iter().position(|a| a == name)?;
+        args.get(idx + 1).map(String::as_str)
+    }
+
+    /// The VM's files live in a directory named after the VM.
+    #[test]
+    fn the_vm_files_live_under_the_vm_directory() {
+        let dir = Path::new("/var/lib/gita/vm");
+        let d = driver(dir);
+        assert_eq!(d.vm_dir("vm-1"), dir.join("vm-1"));
+        assert_eq!(d.pid_file("vm-1"), dir.join("vm-1").join("qemu.pid"));
+        assert_eq!(d.socket_path("vm-1"), dir.join("vm-1").join("qmp.sock"));
+    }
+
+    /// The command names the VM, points at its disk, and gives it the
+    /// resources the spec asks for.
+    #[test]
+    fn the_command_carries_the_vm_and_its_resources() {
+        let dir = Path::new("/var/lib/gita/vm");
+        let cmd = driver(dir).generate_qemu_cmd("vm-1", &spec()).unwrap();
+        let args = args_of(&cmd);
+
+        assert_eq!(option(&args, "-name"), Some("vm-1"));
+        assert_eq!(
+            option(&args, "-pidfile"),
+            Some("/var/lib/gita/vm/vm-1/qemu.pid")
+        );
+        assert_eq!(
+            option(&args, "-drive"),
+            Some("file=/var/lib/gita/vm/vm-1/disk.qcow2,format=qcow2,if=virtio,cache=writeback")
+        );
+        assert_eq!(
+            option(&args, "-qmp"),
+            Some("unix:/var/lib/gita/vm/vm-1/qmp.sock,server,nowait")
+        );
+        assert_eq!(option(&args, "-m"), Some("2048M"));
+    }
+
+    /// The CPU count is the number of cores the spec asks for, capped
+    /// at eight.
+    #[test]
+    fn the_cpu_count_is_capped_at_eight_cores() {
+        let dir = Path::new("/var/lib/gita/vm");
+        let mut big = spec();
+        big.cpu_millis = 64_000;
+        let cmd = driver(dir).generate_qemu_cmd("vm-1", &big).unwrap();
+        let args = args_of(&cmd);
+        let smp = option(&args, "-smp").expect("the smp option");
+        assert!(smp.starts_with("64,cores=8"), "got {smp}");
+
+        let mut small = spec();
+        small.cpu_millis = 1500;
+        let cmd = driver(dir).generate_qemu_cmd("vm-1", &small).unwrap();
+        let args = args_of(&cmd);
+        let smp = option(&args, "-smp").expect("the smp option");
+        assert!(smp.starts_with("1,cores=1"), "got {smp}");
+    }
+
+    /// A memory size below a megabyte rounds down to nothing, and the
+    /// command then asks for zero megabytes.
+    #[test]
+    fn the_memory_is_given_in_megabytes() {
+        let dir = Path::new("/var/lib/gita/vm");
+        let mut tiny = spec();
+        tiny.memory_bytes = 512 * 1024;
+        let cmd = driver(dir).generate_qemu_cmd("vm-1", &tiny).unwrap();
+        let args = args_of(&cmd);
+        assert_eq!(option(&args, "-m"), Some("0M"));
+    }
+
+    /// The cloud-init disk is only attached when there is user data
+    /// *and* the image was built.
+    #[test]
+    fn the_cloud_init_disk_is_only_attached_when_it_exists() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        let mut with_data = spec();
+        with_data.user_data = Some("instance: yes\n".to_string());
+        let cmd = driver(dir).generate_qemu_cmd("vm-1", &with_data).unwrap();
+        let args = args_of(&cmd);
+        assert!(
+            !args.iter().any(|a| a.contains("cidata.iso")),
+            "the drive must not be attached before the image exists"
+        );
+
+        // Build the image the way define_vm would.
+        std::fs::create_dir_all(dir.join("vm-1")).unwrap();
+        std::fs::write(dir.join("vm-1").join("cidata.iso"), b"iso").unwrap();
+        let cmd = driver(dir).generate_qemu_cmd("vm-1", &with_data).unwrap();
+        let args = args_of(&cmd);
+        assert!(
+            args.iter().any(|a| a.contains("cidata.iso")),
+            "the drive must be attached once the image exists"
+        );
+
+        // Without user data the image is not attached even if it is there.
+        let cmd = driver(dir).generate_qemu_cmd("vm-1", &spec()).unwrap();
+        let args = args_of(&cmd);
+        assert!(!args.iter().any(|a| a.contains("cidata.iso")));
+    }
+
+    /// Defining a VM creates its directory and its disk.
+    #[tokio::test]
+    async fn defining_a_vm_creates_its_disk() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        d.define_vm("vm-1", &spec(), tmp.path()).await.unwrap();
+
+        let disk = tmp.path().join("vm-1").join("disk.qcow2");
+        assert!(disk.exists(), "the disk must be created");
+    }
+
+    /// A disk tool that fails makes the definition fail.
+    #[tokio::test]
+    async fn a_failing_disk_tool_fails_the_definition() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path()).with_qemu_img_bin("/bin/false");
+        let err = d
+            .define_vm("vm-1", &spec(), tmp.path())
+            .await
+            .expect_err("the definition must fail");
+        assert!(
+            matches!(err, Error::OperationFailed(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// A disk tool that is not there at all is a process error.
+    #[tokio::test]
+    async fn a_missing_disk_tool_is_a_process_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path()).with_qemu_img_bin("/nonexistent/qemu-img");
+        let err = d
+            .define_vm("vm-1", &spec(), tmp.path())
+            .await
+            .expect_err("the definition must fail");
+        assert!(matches!(err, Error::ProcessError(_)), "got {err:?}");
+    }
+
+    /// A VM that was never defined cannot be started.
+    #[tokio::test]
+    async fn starting_a_vm_that_was_never_defined_fails() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        let err = d.start_vm("vm-1").await.expect_err("the start must fail");
+        assert!(matches!(err, Error::NotFound(_)), "got {err:?}");
+    }
+
+    /// A VM whose spec file cannot be parsed cannot be started either.
+    #[tokio::test]
+    async fn starting_a_vm_with_a_broken_spec_fails() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("vm-1")).unwrap();
+        std::fs::write(tmp.path().join("vm-1").join("spec.json"), b"{not json").unwrap();
+        let err = d.start_vm("vm-1").await.expect_err("the start must fail");
+        assert!(matches!(err, Error::ConfigGeneration(_)), "got {err:?}");
+    }
+
+    /// Stopping a VM that is not running succeeds: the caller asked for
+    /// it to be stopped, and it is.
+    #[tokio::test]
+    async fn stopping_a_vm_that_is_not_running_succeeds() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        d.stop_vm("vm-1", false).await.unwrap();
+        d.stop_vm("vm-1", true).await.unwrap();
+    }
+
+    /// A pid file that does not hold a pid cannot be acted on.
+    #[tokio::test]
+    async fn a_pid_file_that_is_not_a_pid_is_an_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("vm-1")).unwrap();
+        std::fs::write(tmp.path().join("vm-1").join("qemu.pid"), b"not a pid").unwrap();
+
+        let err = d.stop_vm("vm-1", false).await.expect_err("the stop must fail");
+        assert!(matches!(err, Error::OperationFailed(_)), "got {err:?}");
+
+        let err = d.get_vm_status("vm-1").await.expect_err("the status must fail");
+        assert!(matches!(err, Error::OperationFailed(_)), "got {err:?}");
+    }
+
+    /// A VM with no pid file is off.
+    #[tokio::test]
+    async fn a_vm_with_no_pid_file_is_off() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        assert_eq!(d.get_vm_status("vm-1").await.unwrap(), VmPowerState::Shutoff);
+    }
+
+    /// A VM whose pid is alive is running.
+    #[tokio::test]
+    async fn a_vm_whose_pid_is_alive_is_running() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("vm-1")).unwrap();
+        // The pid of this test process is alive by definition.
+        let pid = std::process::id();
+        std::fs::write(
+            tmp.path().join("vm-1").join("qemu.pid"),
+            pid.to_string(),
+        )
+        .unwrap();
+        assert_eq!(d.get_vm_status("vm-1").await.unwrap(), VmPowerState::Running);
+    }
+
+    /// The console is the QMP socket, and only if it is there.
+    #[tokio::test]
+    async fn the_console_is_the_qmp_socket() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        assert_eq!(d.get_console("vm-1").await.unwrap(), None);
+
+        std::fs::create_dir_all(tmp.path().join("vm-1")).unwrap();
+        std::fs::write(tmp.path().join("vm-1").join("qmp.sock"), b"").unwrap();
+        let console = d.get_console("vm-1").await.unwrap().expect("the console");
+        assert!(console.contains("qmp+unix://"), "got {console}");
+    }
+
+    /// Hotplugging is not implemented; saying so is better than
+    /// pretending it worked.
+    #[tokio::test]
+    async fn hotplug_is_not_implemented() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        let err = d
+            .hotplug("vm-1", Some(1000), None)
+            .await
+            .expect_err("the hotplug must fail");
+        assert!(matches!(err, Error::OperationFailed(_)), "got {err:?}");
+    }
+
+    /// A disk tool that fails makes the resize fail.
+    #[tokio::test]
+    async fn a_failing_disk_tool_fails_the_resize() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path()).with_qemu_img_bin("/bin/false");
+        let err = d
+            .resize_disk("vm-1", 1024)
+            .await
+            .expect_err("the resize must fail");
+        assert!(matches!(err, Error::OperationFailed(_)), "got {err:?}");
+    }
+
+    /// Deleting a VM removes its directory.
+    #[tokio::test]
+    async fn deleting_a_vm_removes_its_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path());
+        d.define_vm("vm-1", &spec(), tmp.path()).await.unwrap();
+        assert!(tmp.path().join("vm-1").exists());
+
+        d.delete_vm("vm-1").await.unwrap();
+        assert!(!tmp.path().join("vm-1").exists());
+    }
+}

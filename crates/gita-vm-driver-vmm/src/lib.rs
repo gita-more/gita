@@ -93,4 +93,15 @@ mod tests {
         let driver = create_driver(VmmKind::Qemu);
         assert_eq!(driver.kind(), VmmKind::Qemu);
     }
+
+    /// The power state is shown to whoever looks at a VM; the words
+    /// are what they read.
+    #[test]
+    fn the_power_state_is_shown_as_a_word() {
+        assert_eq!(VmPowerState::Undefined.to_string(), "undefined");
+        assert_eq!(VmPowerState::Shutoff.to_string(), "shutoff");
+        assert_eq!(VmPowerState::Running.to_string(), "running");
+        assert_eq!(VmPowerState::Paused.to_string(), "paused");
+        assert_eq!(VmPowerState::Crashed.to_string(), "crashed");
+    }
 }
