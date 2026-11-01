@@ -125,6 +125,15 @@ pub enum AuthCommand {
         #[command(subcommand)]
         cmd: TokenCommand,
     },
+    /// Git credential helper: serve `git credential fill/store/erase`.
+    ///
+    /// Configure with:
+    ///   git config --global credential.helper "gita auth credential"
+    Credential {
+        /// The operation git asks for: `get`, `store` or `erase`.
+        #[arg(default_value = "get")]
+        operation: String,
+    },
 }
 
 #[derive(Debug, clap::Subcommand)]

@@ -59,6 +59,162 @@ pub async fn dispatch(
             crate::args::TokenCommand::List => token_list(client, json).await,
             crate::args::TokenCommand::Delete { id } => token_delete(client, id, json).await,
         },
+        crate::args::AuthCommand::Credential { operation } => {
+            credential_helper(&operation)
+        }
+    }
+}
+
+/// A git credential-helper request.
+#[derive(Debug, Default)]
+struct CredentialRequest {
+    protocol: Option<String>,
+    host: Option<String>,
+    path: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+impl CredentialRequest {
+    /// Read git's `key=value` request format from stdin.
+    fn read() -> Result<Self> {
+        let mut req = CredentialRequest::default();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = std::io::stdin().read_line(&mut line)?;
+            if n == 0 {
+                break;
+            }
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                break;
+            }
+            let Some((key, value)) = trimmed.split_once('=') else {
+                continue;
+            };
+            match key {
+                "protocol" => req.protocol = Some(value.to_string()),
+                "host" => req.host = Some(value.to_string()),
+                "path" => req.path = Some(value.to_string()),
+                "username" => req.username = Some(value.to_string()),
+                "password" => req.password = Some(value.to_string()),
+                _ => {}
+            }
+        }
+        Ok(req)
+    }
+
+    /// The server URL this request refers to, without the repository path.
+    fn server_url(&self) -> Option<String> {
+        let protocol = self.protocol.as_deref()?;
+        let host = self.host.as_deref()?;
+        Some(format!("{protocol}://{host}"))
+    }
+}
+
+/// Serve git's credential helper protocol.
+///
+/// Git calls the helper as `git credential <op>` with a `key=value` request
+/// on stdin; `get` must print `username=`/`password=` lines, `store` and
+/// `erase` take the same request shape. The point of the helper is that
+/// the token the user already logged in with is reused for HTTPS pushes,
+/// so nobody has to paste a token into git's prompt again.
+pub(crate) fn credential_helper(operation: &str) -> Result<()> {
+    let req = CredentialRequest::read()?;
+    match operation {
+        "get" => {
+            let (username, token) = lookup_credential(&req);
+            match (username, token) {
+                (Some(username), Some(token)) => {
+                    println!("username={username}");
+                    println!("password={token}");
+                }
+                // Nothing stored: exit cleanly with no output, which git
+                // treats as "no credential here" and answers with its own
+                // prompt.
+                _ => {}
+            }
+            Ok(())
+        }
+        "store" => {
+            let Some(url) = req.server_url() else {
+                return Ok(());
+            };
+            if let Some(username) = req.username.as_deref() {
+                let _ = credential::set_username(&url, username);
+            }
+            if let Some(password) = req.password.as_deref() {
+                let _ = credential::set_secret(&url, password);
+            }
+            Ok(())
+        }
+        "erase" => {
+            if let Some(url) = req.server_url() {
+                let _ = credential::delete_secret(&url);
+            }
+            Ok(())
+        }
+        other => bail!("unknown credential operation {other}; expected get, store or erase"),
+    }
+}
+
+/// Find the username and token to hand to git for `req`.
+///
+/// First the file fallback, matched by scheme and host. Then the default
+/// server's own entry — the keyring has no "list" operation, so a token
+/// that lives only in the keyring is reachable through the default URL.
+fn lookup_credential(req: &CredentialRequest) -> (Option<String>, Option<String>) {
+    if let (Some(protocol), Some(host)) = (req.protocol.as_deref(), req.host.as_deref()) {
+        if let Ok(Some(site)) = credential::lookup_by_host(protocol, host) {
+            if site.token.is_some() {
+                return (site.username, site.token);
+            }
+        }
+    }
+    // Fall back to the default server.
+    if let Ok(config) = gita_client::config::Config::load(None) {
+        let token = credential::get_secret(&config.server_url).ok().flatten();
+        let username = credential::get_username(&config.server_url).ok().flatten();
+        if token.is_some() {
+            return (username, token);
+        }
+    }
+    (None, None)
+}
+
+/// Store the token for `base_url`, telling the user where it landed.
+///
+/// The keyring is best-effort: when it is unavailable the token degrades
+/// to the plaintext credentials file, which the user must know about —
+/// and if neither store works, later commands need `GITA_TOKEN`, so that
+/// must be said too.
+fn store_token(base_url: &str, token: &str) {
+    match credential::set_secret(base_url, token) {
+        Ok(credential::Store::Keyring) => {}
+        Ok(credential::Store::PlaintextFile) => {
+            let path = credential::credentials_file()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "~/.gita/credentials.toml".to_string());
+            eprintln!("warning: keyring unavailable — the token is stored in plaintext at {path}");
+        }
+        Err(e) => eprintln!(
+            "warning: the token could not be stored ({e}); export GITA_TOKEN for subsequent commands"
+        ),
+    }
+}
+
+/// Remember the server just logged into as the default.
+///
+/// Credentials are keyed by server URL, so a login against `--url` that is
+/// not the configured default would leave later commands (which resolve
+/// the default) unable to find the token. `gh auth login` behaves the same
+/// way. Failures are non-fatal: the session itself is already stored.
+fn make_default_server(client: &GitaClient, json: bool) {
+    if let Err(e) = gita_client::config::Config::save_url(&client.base_url) {
+        eprintln!("warning: could not save the default server URL: {e}");
+    } else if !json {
+        println!("Default server set to {}", client.base_url);
     }
 }
 
@@ -67,14 +223,11 @@ async fn login(client: &GitaClient, _url: Option<&str>, json: bool) -> Result<()
     let username = prompt("username: ")?;
     let password = prompt_password("password: ")?;
     let auth = client.login(&username, &password).await?;
-    // Keyring is best-effort: in CI/headless there may be no Secret Service,
-    // but the token was still obtained from the server.
-    if let Err(e) = credential::set_secret(&client.base_url, &auth.token) {
-        eprintln!("warning: could not store token in keyring: {e}");
-    }
+    store_token(&client.base_url, &auth.token);
     if let Err(e) = credential::set_username(&client.base_url, &auth.user.username) {
-        eprintln!("warning: could not store username in keyring: {e}");
+        eprintln!("warning: could not store username: {e}");
     }
+    make_default_server(client, json);
     if json {
         output::print_json(&auth)?;
     } else {
@@ -104,14 +257,11 @@ async fn register(
         .or_else(|| prompt_password("password: ").ok())
         .context("password required")?;
     let auth = client.register(&username, &email, &password).await?;
-    // Keyring is best-effort: in CI/headless there may be no Secret Service,
-    // but the token was still obtained from the server.
-    if let Err(e) = credential::set_secret(&client.base_url, &auth.token) {
-        eprintln!("warning: could not store token in keyring: {e}");
-    }
+    store_token(&client.base_url, &auth.token);
     if let Err(e) = credential::set_username(&client.base_url, &auth.user.username) {
-        eprintln!("warning: could not store username in keyring: {e}");
+        eprintln!("warning: could not store username: {e}");
     }
+    make_default_server(client, json);
     if json {
         output::print_json(&auth)?;
     } else {
@@ -131,7 +281,7 @@ async fn logout(client: &GitaClient, _json: bool) -> Result<()> {
         }
     }
     if let Err(e) = credential::delete_secret(&client.base_url) {
-        eprintln!("warning: could not clear keyring entry: {e}");
+        eprintln!("warning: could not clear the stored credentials: {e}");
     }
     println!("Logged out.");
     Ok(())
@@ -235,11 +385,7 @@ async fn token_create(
         println!("Save it somewhere safe — it will not be shown again.");
     }
     if store {
-        if let Err(e) = credential::set_secret(&client.base_url, &token.token) {
-            eprintln!("warning: could not store token in keyring: {e}");
-        } else {
-            println!("Stored as the active token for {}", client.base_url);
-        }
+        store_token(&client.base_url, &token.token);
     }
     Ok(())
 }
@@ -281,16 +427,20 @@ fn prompt(msg: &str) -> Result<String> {
 }
 
 /// Prompt for a password without echo.
-// Prefers the `GITA_PASSWORD` env var (scripting). Otherwise reads a line
-// from stdin with echo on — acceptable for interactive use on a trusted
-// terminal; for no-echo, pipe the password via `GITA_PASSWORD` or stdin.
+/// Prefers the `GITA_PASSWORD` env var (scripting). Uses rpassword on TTY;
+/// falls back to reading stdin (with echo) when not on a TTY (e.g. piped input).
 fn prompt_password(msg: &str) -> Result<String> {
     if let Ok(pw) = std::env::var("GITA_PASSWORD") {
         return Ok(pw);
     }
     print!("{msg}");
     std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_string())
+    use std::io::{stdin, IsTerminal};
+    if stdin().is_terminal() {
+        Ok(rpassword::read_password()?)
+    } else {
+        let mut line = String::new();
+        stdin().read_line(&mut line)?;
+        Ok(line.trim().to_string())
+    }
 }

@@ -63,7 +63,9 @@ pub fn gita_admin(port: u16, token: &str, args: &[&str]) -> std::process::Output
     let mut cmd = AssertCmd::new(gita_admin_bin());
     cmd.env("GITA_URL", format!("http://127.0.0.1:{port}"))
         .env("GITA_TOKEN", token)
-        .env("GITA_DISABLE_KEYRING", "1");
+        .env("GITA_DISABLE_KEYRING", "1")
+        .env("GITA_CONFIG_DIR", test_config_dir());
+
     for a in args {
         cmd.arg(a);
     }
@@ -89,15 +91,32 @@ pub fn gita_admin_ok(port: u16, token: &str, args: &[&str]) -> std::process::Out
 /// Linux that store can block indefinitely (a locked Secret Service, or a
 /// kernel keyring with no user keyring). The tests only ever care about
 /// the token they pass in, so the keyring is switched off entirely.
+///
+/// `GITA_CONFIG_DIR` is pointed at a throwaway directory so that commands
+/// writing client state (`config set-url`, the plaintext credential
+/// fallback) cannot pollute the real `~/.gita`.
 pub fn gita(port: u16, token: &str, args: &[&str]) -> std::process::Output {
     let mut cmd = AssertCmd::new(gita_bin());
     cmd.env("GITA_URL", format!("http://127.0.0.1:{port}"))
         .env("GITA_TOKEN", token)
-        .env("GITA_DISABLE_KEYRING", "1");
+        .env("GITA_DISABLE_KEYRING", "1")
+        .env("GITA_CONFIG_DIR", test_config_dir());
     for a in args {
         cmd.arg(a);
     }
     cmd.output().expect("spawn gita")
+}
+
+/// A private per-test-run directory standing in for `~/.config`.
+pub fn test_config_dir() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("gita-cli-test-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create test config dir");
+        dir
+    })
+    .clone()
 }
 
 /// Assert that a `gita` invocation succeeds.

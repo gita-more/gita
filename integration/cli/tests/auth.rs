@@ -1,6 +1,7 @@
 mod common;
 
 use common::*;
+use assert_cmd::Command as AssertCmd;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_auth_repo_pr_issue() {
@@ -142,4 +143,56 @@ async fn e2e_auth_me_update() {
         !out.status.success(),
         "auth me with nothing to update should fail"
     );
+}
+
+/// The git credential helper must hand git the stored username and token.
+///
+/// This is what makes `git push` work without pasting a token into git's
+/// prompt: git asks the helper for the credentials of the host it is
+/// talking to, and the helper answers from the credential store.
+#[test]
+fn e2e_credential_helper_serves_stored_credentials() {
+    let dir = test_config_dir();
+    std::fs::create_dir_all(&dir).expect("create config dir");
+    std::fs::write(
+        dir.join("credentials.toml"),
+        "[sites.\"http://127.0.0.1:3100\"]\ntoken = \"helper-token\"\nusername = \"helper-user\"\n",
+    )
+    .expect("write credentials");
+
+    let mut cmd = AssertCmd::new(gita_bin());
+    cmd.env("GITA_DISABLE_KEYRING", "1")
+        .env("GITA_CONFIG_DIR", &dir)
+        .args(["auth", "credential", "get"])
+        .write_stdin("protocol=http\nhost=127.0.0.1:3100\npath=owner/repo.git\n\n");
+    let out = cmd.output().expect("spawn gita");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("username=helper-user"),
+        "expected the stored username, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("password=helper-token"),
+        "expected the stored token, got: {stdout}"
+    );
+
+    // An unknown host must yield no credential — git then falls back to
+    // its own prompt.
+    let mut cmd = AssertCmd::new(gita_bin());
+    cmd.env("GITA_DISABLE_KEYRING", "1")
+        .env("GITA_CONFIG_DIR", &dir)
+        .args(["auth", "credential", "get"])
+        .write_stdin("protocol=https\nhost=unknown.example.com\n\n");
+    let out = cmd.output().expect("spawn gita");
+    assert!(
+        out.status.success(),
+        "an unknown host must not fail the helper"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        "an unknown host must yield no credential"
+    );
+
+    // Clean up so other tests in this binary do not see the fake entry.
+    std::fs::remove_file(dir.join("credentials.toml")).ok();
 }
