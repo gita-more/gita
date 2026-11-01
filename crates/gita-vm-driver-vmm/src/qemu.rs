@@ -503,6 +503,21 @@ mod tests {
         assert!(matches!(err, Error::ProcessError(_)), "got {err:?}");
     }
 
+    /// A cloud-init builder that fails must fail the definition: the VM
+    /// would otherwise start without the user data it was given.
+    #[tokio::test]
+    async fn a_failing_cloud_init_builder_fails_the_definition() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut with_data = spec();
+        with_data.user_data = Some("instance: yes\n".to_string());
+        let d = driver(tmp.path()).with_cloud_localds_bin("/bin/false");
+        let err = d
+            .define_vm("vm-1", &with_data, tmp.path())
+            .await
+            .expect_err("the definition must fail");
+        assert!(matches!(err, Error::OperationFailed(_)), "got {err:?}");
+    }
+
     /// A VM that was never defined cannot be started.
     #[tokio::test]
     async fn starting_a_vm_that_was_never_defined_fails() {
