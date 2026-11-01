@@ -245,7 +245,8 @@ fn store_token(base_url: &str, token: &str) {
             let path = credential::credentials_file()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "~/.gita/credentials.toml".to_string());
-            eprintln!("warning: keyring unavailable — the token is stored in plaintext at {path}");
+            eprintln!("warning: no usable OS keyring on this machine — the token is stored in plaintext at {path} (mode 0600)");
+            eprintln!("hint: a Secret Service (gnome-keyring, kwallet) would keep it in the keyring instead");
         }
         Err(e) => eprintln!(
             "warning: the token could not be stored ({e}); export GITA_TOKEN for subsequent commands"
@@ -321,18 +322,29 @@ async fn register(
 
 /// Log out: revoke the session server-side, forget the local token.
 async fn logout(client: &GitaClient, _json: bool) -> Result<()> {
-    match client.logout().await {
-        Ok(msg) => println!("{}", msg.message),
+    // The server answers with its own message ("logged out"); printing
+    // ours as well would say the same thing twice.
+    let revoked = match client.logout().await {
+        Ok(msg) => {
+            let message = msg.message.trim();
+            if !message.is_empty() {
+                println!("{message}");
+            }
+            true
+        }
         Err(e) => {
             // Logout with a PAT returns a message rather than an error;
             // surface it and still clear the local copy.
             eprintln!("{e:#}");
+            false
         }
-    }
+    };
     if let Err(e) = credential::delete_secret(&client.base_url) {
         eprintln!("warning: could not clear the stored credentials: {e}");
     }
-    println!("Logged out.");
+    if !revoked {
+        println!("Logged out locally; the server session was already gone.");
+    }
     Ok(())
 }
 

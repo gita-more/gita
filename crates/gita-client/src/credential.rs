@@ -121,6 +121,10 @@ where
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
             KEYRING_UNAVAILABLE.store(true, Ordering::Relaxed);
+            // Remember it beyond this process: the next command should
+            // not pay the same deadline to rediscover that the keyring
+            // blocks on this machine.
+            mark_keyring_broken();
             bail!("keyring operation timed out after {}s", OP_TIMEOUT.as_secs());
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -131,7 +135,54 @@ where
 
 /// Whether a keyring read attempt should even be made.
 fn keyring_skipped() -> bool {
-    disabled_by_env() || KEYRING_UNAVAILABLE.load(Ordering::Relaxed)
+    disabled_by_env() || KEYRING_UNAVAILABLE.load(Ordering::Relaxed) || keyring_marked_broken()
+}
+
+/// How long a recorded keyring failure keeps the keyring out of the way.
+const KEYRING_MARKER_TTL_SECS: u64 = 3600;
+
+/// The file that records "the keyring did not work here".
+fn keyring_marker_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("keyring-unavailable"))
+}
+
+/// Whether an earlier run recorded the keyring as unusable.
+///
+/// The marker is per machine, not per process: the in-process latch only
+/// helps within one command, so every login would otherwise pay the full
+/// deadline again to rediscover that the keyring blocks. The marker
+/// expires, so a keyring that starts working (a Secret Service finally
+/// running) is picked up again.
+fn keyring_marked_broken() -> bool {
+    let Some(path) = keyring_marker_path() else {
+        return false;
+    };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(until) = content.trim().parse::<u64>() else {
+        return false;
+    };
+    now_secs() < until
+}
+
+/// Record that the keyring did not work, so the next command can skip it.
+fn mark_keyring_broken() {
+    let Some(path) = keyring_marker_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let until = now_secs() + KEYRING_MARKER_TTL_SECS;
+    let _ = std::fs::write(path, until.to_string());
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -480,6 +531,28 @@ mod tests {
             );
             delete_secret("http://env-test").unwrap();
             std::env::remove_var("GITA_DISABLE_KEYRING");
+        });
+    }
+
+    /// A keyring failure recorded by an earlier run keeps the keyring out
+    /// of the way — otherwise every command would pay the full deadline
+    /// again to rediscover that the keyring blocks on this machine. The
+    /// record expires, so a keyring that starts working is picked up.
+    #[test]
+    fn a_recorded_keyring_failure_skips_the_keyring() {
+        with_config_dir(|dir| {
+            assert!(!keyring_marked_broken(), "no marker to begin with");
+            mark_keyring_broken();
+            assert!(keyring_marked_broken());
+            assert!(keyring_skipped(), "the keyring must be skipped");
+
+            // An expired marker does not skip the keyring.
+            std::fs::write(
+                dir.join("keyring-unavailable"),
+                now_secs().saturating_sub(1).to_string(),
+            )
+            .unwrap();
+            assert!(!keyring_marked_broken());
         });
     }
 }
