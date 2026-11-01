@@ -978,4 +978,61 @@ impl GitaClient {
         self.request(reqwest::Method::GET, "/api/health", None)
             .await
     }
+    // ------------------------------------------------------------------
+    // VM cluster (/api/v1/vm/*)
+    // ------------------------------------------------------------------
+
+    /// List VM templates.
+    pub async fn vm_list_templates(&self) -> Result<VmTemplatesResponse> {
+        self.request(reqwest::Method::GET, "/api/v1/vm/templates", None)
+            .await
+    }
+
+    /// Create a VM template.
+    pub async fn vm_create_template(
+        &self,
+        name: &str,
+        description: &str,
+        spec: &serde_json::Value,
+    ) -> Result<VmTemplate> {
+        self.request(
+            reqwest::Method::POST,
+            "/api/v1/vm/templates",
+            Some(&json!({ "name": name, "description": description, "spec": spec })),
+        )
+        .await
+    }
+
+    /// Delete a VM template.
+    pub async fn vm_delete_template(&self, id: i64) -> Result<()> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/vm/templates/{id}"),
+            None,
+        )
+        .await
+    }
+
+    /// List cluster nodes.
+    pub async fn vm_list_nodes(&self) -> Result<VmNodesResponse> {
+        self.request(reqwest::Method::GET, "/api/v1/vm/nodes", None)
+            .await
+    }
+
+    /// List VM instances.
+    pub async fn vm_list_instances(&self) -> Result<VmInstancesResponse> {
+        self.request(reqwest::Method::GET, "/api/v1/vm/vms", None)
+            .await
+    }
+
+    /// Reclaim (delete) a VM instance.
+    pub async fn vm_delete_instance(&self, id: i64) -> Result<()> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/vm/vms/{id}"),
+            None,
+        )
+        .await
+    }
+
 }

@@ -245,6 +245,56 @@ pub struct UsersResponse {
     pub users: Vec<User>,
 }
 
+// ----- VM cluster ----------------------------------------------------
+
+/// A cluster VM template — the named spec that `vm:` blocks in
+/// `.gita-ci.yml` reference.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VmTemplate {
+    pub id: i64,
+    pub name: String,
+    pub version: u64,
+    pub spec: serde_json::Value,
+    pub description: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VmTemplatesResponse {
+    pub templates: Vec<VmTemplate>,
+}
+
+/// A hypervisor node registered with the cluster.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VmNode {
+    pub id: i64,
+    pub name: String,
+    pub spec: serde_json::Value,
+    pub status: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VmNodesResponse {
+    pub nodes: Vec<VmNode>,
+}
+
+/// A virtual machine instance.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VmInstance {
+    pub id: i64,
+    pub name: String,
+    pub status: String,
+    pub node: Option<i64>,
+    pub ip_address: Option<String>,
+    pub created_at_ms: i64,
+    pub expires_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VmInstancesResponse {
+    pub vms: Vec<VmInstance>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PrsResponse {
     pub prs: Vec<PullRequest>,

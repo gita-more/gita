@@ -48,6 +48,101 @@ pub enum Command {
         #[command(subcommand)]
         cmd: crate::users::UsersCmd,
     },
+    /// VM cluster management (templates, nodes, instances)
+    Vm {
+        #[command(subcommand)]
+        cmd: VmCmd,
+    },
+}
+
+/// VM cluster subcommands.
+///
+/// The commands talk to the gita server's own VM control plane
+/// (`/api/v1/vm/*`), so they work against a server that has
+/// `[server.vm] enabled` — the same server that runs the CI jobs.
+#[derive(Subcommand, Debug)]
+pub enum VmCmd {
+    /// List VM templates (what `vm:` blocks in .gita-ci.yml reference)
+    Templates {
+        /// gita server URL
+        #[arg(long, default_value = "http://127.0.0.1:3000")]
+        server_url: String,
+        /// Access token (PAT or JWT) of an administrator
+        #[arg(long, env = "GITA_TOKEN")]
+        token: Option<String>,
+    },
+    /// Create a VM template
+    Create {
+        /// gita server URL
+        #[arg(long, default_value = "http://127.0.0.1:3000")]
+        server_url: String,
+        /// Access token (PAT or JWT) of an administrator
+        #[arg(long, env = "GITA_TOKEN")]
+        token: Option<String>,
+        /// Template name (referenced by `vm: template:` in .gita-ci.yml)
+        #[arg(long)]
+        name: String,
+        /// Base image name (as registered in the image catalog)
+        #[arg(long)]
+        image: String,
+        /// CPU cores
+        #[arg(long, default_value_t = 2)]
+        cpu: u64,
+        /// Memory, e.g. 4G
+        #[arg(long, default_value = "4G")]
+        memory: String,
+        /// Disk size, e.g. 20G
+        #[arg(long, default_value = "20G")]
+        disk: String,
+        /// VMM backend (qemu, cloud-hypervisor, firecracker)
+        #[arg(long, default_value = "qemu")]
+        backend: String,
+        /// Human-readable description
+        #[arg(long, default_value = "")]
+        description: String,
+    },
+    /// Delete a VM template
+    DeleteTemplate {
+        /// gita server URL
+        #[arg(long, default_value = "http://127.0.0.1:3000")]
+        server_url: String,
+        /// Access token (PAT or JWT) of an administrator
+        #[arg(long, env = "GITA_TOKEN")]
+        token: Option<String>,
+        /// Template id
+        #[arg(long)]
+        id: i64,
+    },
+    /// List cluster nodes (hypervisors)
+    Nodes {
+        /// gita server URL
+        #[arg(long, default_value = "http://127.0.0.1:3000")]
+        server_url: String,
+        /// Access token (PAT or JWT) of an administrator
+        #[arg(long, env = "GITA_TOKEN")]
+        token: Option<String>,
+    },
+    /// List virtual machine instances
+    Instances {
+        /// gita server URL
+        #[arg(long, default_value = "http://127.0.0.1:3000")]
+        server_url: String,
+        /// Access token (PAT or JWT) of an administrator
+        #[arg(long, env = "GITA_TOKEN")]
+        token: Option<String>,
+    },
+    /// Reclaim (delete) a virtual machine instance
+    Reclaim {
+        /// gita server URL
+        #[arg(long, default_value = "http://127.0.0.1:3000")]
+        server_url: String,
+        /// Access token (PAT or JWT) of an administrator
+        #[arg(long, env = "GITA_TOKEN")]
+        token: Option<String>,
+        /// Instance id
+        #[arg(long)]
+        id: i64,
+    },
 }
 
 #[derive(Subcommand, Debug)]

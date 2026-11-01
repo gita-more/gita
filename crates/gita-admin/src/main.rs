@@ -4,7 +4,7 @@
 //! Regular users should use `gita` instead.
 
 use clap::Parser;
-use gita_admin::{run, worker_register, image, template, runner, users, Args, Command, Config, WorkerCommand};
+use gita_admin::{run, worker_register, image, template, runner, users, vm, Args, Command, Config, WorkerCommand};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -35,5 +35,6 @@ async fn main() -> anyhow::Result<()> {
             runner::run(cmd, &config).await
         }
         Command::Users { cmd } => users::run(cmd).await,
+        Command::Vm { cmd } => vm::run(cmd).await,
     }
 }
