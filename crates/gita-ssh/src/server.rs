@@ -130,3 +130,62 @@ pub async fn start(
         _join: join,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A shutdown requested before the listener waits must still be seen:
+    /// the request is remembered, not lost.
+    #[tokio::test]
+    async fn a_shutdown_requested_before_the_wait_is_seen() {
+        let signal = ShutdownSignal::default();
+        signal.request();
+        tokio::time::timeout(Duration::from_secs(1), signal.wait())
+            .await
+            .expect("the wait must return");
+    }
+
+    /// A shutdown requested while the listener waits must wake it.
+    #[tokio::test]
+    async fn a_shutdown_requested_while_waiting_wakes_the_wait() {
+        let signal = ShutdownSignal::default();
+        let waiter = signal.clone();
+        let handle = tokio::spawn(async move {
+            waiter.wait().await;
+        });
+        // Give the waiter a moment to block on the notification.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        signal.request();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("the wait must be woken")
+            .expect("the task must not panic");
+    }
+
+    /// Requesting a shutdown twice is harmless: the second request finds
+    /// no waiter to wake, and the wait still returns.
+    #[tokio::test]
+    async fn a_repeated_shutdown_request_is_harmless() {
+        let signal = ShutdownSignal::default();
+        signal.request();
+        signal.request();
+        tokio::time::timeout(Duration::from_secs(1), signal.wait())
+            .await
+            .expect("the wait must return");
+    }
+
+    /// The signal is shared behind an `Arc`: dropping one handle does not
+    /// stop the server, and the other handle still sees the shutdown.
+    #[tokio::test]
+    async fn dropping_a_handle_does_not_stop_the_signal() {
+        let signal = ShutdownSignal::default();
+        let other = signal.clone();
+        drop(signal);
+        other.request();
+        tokio::time::timeout(Duration::from_secs(1), other.wait())
+            .await
+            .expect("the wait must return");
+    }
+}
