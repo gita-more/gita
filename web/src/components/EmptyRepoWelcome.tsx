@@ -112,13 +112,17 @@ export function EmptyRepoWelcome({
           >
             {t('repo.empty.protoHttps')}
           </button>
+          {/* The SSH tab stays clickable when the server has no SSH
+              listener: switching to it shows the "SSH is not configured"
+              notice (and an empty URL), which tells the user far more
+              than a dead button. Disabling it made that notice
+              unreachable — it could never be displayed at all. */}
           <button
             type="button"
             role="tab"
             aria-selected={proto === 'ssh'}
             className={`proto-toggle-btn${proto === 'ssh' ? ' active' : ''}`}
             onClick={() => setProto('ssh')}
-            disabled={!sshUrl}
           >
             {t('repo.empty.protoSsh')}
           </button>
