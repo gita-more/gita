@@ -1665,6 +1665,7 @@ name = "gita-integration-api"
 version = "0.0.1"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "futures-util",
@@ -1905,6 +1906,8 @@ dependencies = [
  "prometheus",
  "serde",
  "serde_json",
+ "tokio",
+ "tower",
  "tracing",
 ]
 

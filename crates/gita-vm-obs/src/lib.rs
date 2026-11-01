@@ -144,3 +144,65 @@ mod tests {
         let _reg = MetricsRegistry::new();
     }
 }
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    /// Counting an event makes its counter grow, by exactly the number
+    /// of events counted under that kind.
+    #[test]
+    fn counting_events_grows_the_counter() {
+        let before = METRIC_EVENTS_TOTAL
+            .with_label_values(&["test"])
+            .get();
+        inc_events_total("test");
+        inc_events_total("test");
+        inc_events_total("test");
+        let after = METRIC_EVENTS_TOTAL.with_label_values(&["test"]).get();
+        assert_eq!(after - before, 3, "each counted event must be counted once");
+    }
+
+    /// The metrics endpoint serves the metrics in the Prometheus text
+    /// format.
+    #[tokio::test]
+    async fn the_metrics_endpoint_serves_prometheus_text() {
+        // A vector metric exports nothing until one of its label
+        // combinations is touched.
+        METRIC_VMS_TOTAL.with_label_values(&["running"]).set(1);
+        inc_events_total("test");
+
+        let registry = MetricsRegistry::new();
+        let app = registry.router();
+
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            content_type.starts_with("text/plain"),
+            "the exposition format is text, got {content_type}"
+        );
+
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains("gita_vm_vms_total"),
+            "the vm counter must be exported, got:\n{body}"
+        );
+        assert!(
+            body.contains("gita_vm_events_total"),
+            "the events counter must be exported, got:\n{body}"
+        );
+    }
+}

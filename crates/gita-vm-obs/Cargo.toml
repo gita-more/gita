@@ -13,5 +13,9 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 lazy_static = "1.4"
 
+[dev-dependencies]
+tower = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true

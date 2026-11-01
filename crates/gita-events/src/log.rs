@@ -80,3 +80,63 @@ impl EventLogSubscriber {
 
 /// A simple typed event map used for routing in tests.
 pub type EventMap = HashMap<EventType, Vec<Event>>;
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+    use crate::bus::EventBus;
+
+    fn event(id: i64) -> Event {
+        let mut e = Event::new(EventType::Push, Some(1), Some(2), serde_json::json!({}));
+        e.id = id;
+        e
+    }
+
+    /// An empty log reports nothing, and asking it for more than it
+    /// holds yields what it holds.
+    #[test]
+    fn an_empty_log_reports_nothing() {
+        let log = InMemoryEventLog::default();
+        assert!(log.is_empty());
+        assert!(log.recent(10).is_empty());
+        assert_eq!(log.len(), 0);
+    }
+
+    /// The most recent events come back, newest first, at most as many
+    /// as were asked for.
+    #[test]
+    fn the_recent_events_come_back_newest_first() {
+        let log = InMemoryEventLog::default();
+        log.push(event(1));
+        log.push(event(2));
+        log.push(event(3));
+
+        let recent = log.recent(2);
+        let ids: Vec<i64> = recent.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![3, 2], "newest first, at most the limit");
+
+        let recent = log.recent(10);
+        let ids: Vec<i64> = recent.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![3, 2, 1], "a limit past the end yields everything");
+    }
+
+    /// A subscriber that never spawns its listener keeps nothing: the
+    /// log only fills once the listener task is running.
+    #[tokio::test]
+    async fn an_unspawned_subscriber_records_nothing() {
+        let bus = EventBus::default();
+        let log = Arc::new(InMemoryEventLog::default());
+
+        let _subscriber = EventLogSubscriber::new(&bus, log.clone());
+        bus.publish(EventType::Push, Some(1), Some(2), serde_json::json!({}));
+
+        // Give the channel a moment; the subscriber holds a receiver
+        // but nobody drains it.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            log.is_empty(),
+            "only spawn_listener records events, got {:?}",
+            log.recent(10)
+        );
+    }
+}

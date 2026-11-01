@@ -348,3 +348,59 @@ mod tests {
         assert!(String::from_utf8_lossy(&bytes).contains("SPA Index"));
     }
 }
+
+#[cfg(test)]
+mod spa_route_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn get(app: axum::Router, uri: &str) -> (axum::http::StatusCode, String) {
+        let res = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    /// A path that looks like a client-side route gets the SPA shell,
+    /// whatever follows the `?`.
+    #[tokio::test]
+    async fn a_query_string_does_not_stop_a_route_from_getting_the_shell() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html>shell</html>").unwrap();
+        let app = web_router(Some(dir.path().to_path_buf()));
+
+        let (status, body) = get(app, "/groups?tab=1").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "got {body}");
+        assert!(body.contains("shell"), "got {body}");
+    }
+
+    /// An `.html` path is a route too.
+    #[tokio::test]
+    async fn an_html_path_gets_the_shell() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html>shell</html>").unwrap();
+        let app = web_router(Some(dir.path().to_path_buf()));
+
+        let (status, body) = get(app, "/some/page.html").await;
+        assert_eq!(status, axum::http::StatusCode::OK, "got {body}");
+        assert!(body.contains("shell"), "got {body}");
+    }
+
+    /// A path with an extension is an asset, and a missing asset is a
+    /// 404 — not the shell.
+    #[tokio::test]
+    async fn a_missing_asset_is_not_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html>shell</html>").unwrap();
+        let app = web_router(Some(dir.path().to_path_buf()));
+
+        let (status, body) = get(app, "/assets/nope.js").await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND, "got {body}");
+        assert!(!body.contains("shell"), "the shell must not be served: {body}");
+    }
+}

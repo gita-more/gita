@@ -79,3 +79,21 @@ impl EventBus {
         Vec::new()
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    /// The snapshot is a documented no-op without a database-backed
+    /// log: the answer is always nothing, never something stale.
+    #[test]
+    fn the_snapshot_is_a_no_op() {
+        let bus = EventBus::default();
+        bus.publish(gita_core::EventType::Push, Some(1), Some(2), serde_json::json!({}));
+        bus.publish(gita_core::EventType::Push, Some(1), Some(2), serde_json::json!({}));
+        assert!(
+            bus.recent_snapshot(10).is_empty(),
+            "the snapshot must be empty without a database"
+        );
+    }
+}
