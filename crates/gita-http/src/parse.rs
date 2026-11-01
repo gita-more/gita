@@ -88,3 +88,122 @@ pub(crate) fn is_write_request(path_info: &str, query_string: &Option<String>) -
 pub(crate) fn is_read_request(path_info: &str, query_string: &Option<String>) -> bool {
     !is_write_request(path_info, query_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The repo segment is the one ending in `.git`; everything before it
+    /// is the owner path. A group repository has a nested owner path, so
+    /// the parser must not assume exactly one owner segment.
+    #[test]
+    fn a_plain_owner_and_repo_are_parsed() {
+        assert_eq!(
+            parse_repo_from_path("/alice/widgets.git/info/refs"),
+            (Some("alice".to_string()), Some("widgets".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_nested_group_owner_is_parsed() {
+        assert_eq!(
+            parse_repo_from_path("/groupa/subgroupa/widgets.git/info/refs"),
+            (
+                Some("groupa/subgroupa".to_string()),
+                Some("widgets".to_string())
+            )
+        );
+    }
+
+    /// A path that addresses no repository at all yields no owner and no
+    /// name — the caller then treats the request as not-a-git-request.
+    #[test]
+    fn a_path_without_a_git_segment_is_not_a_repository() {
+        assert_eq!(
+            parse_repo_from_path("/alice/widgets/info/refs"),
+            (None, None)
+        );
+    }
+
+    /// A single segment cannot be both owner and repo.
+    #[test]
+    fn a_single_segment_path_is_not_a_repository() {
+        assert_eq!(parse_repo_from_path("/alice"), (None, None));
+    }
+
+    /// The repo segment may not be the first one: there would be no
+    /// owner to address the repository to.
+    #[test]
+    fn a_leading_repo_segment_has_no_owner() {
+        assert_eq!(
+            parse_repo_from_path("/widgets.git/info/refs"),
+            (None, None)
+        );
+    }
+
+    /// The leading slash is optional — the router hands over the path
+    /// with or without it.
+    #[test]
+    fn a_path_without_the_leading_slash_parses_the_same() {
+        assert_eq!(
+            parse_repo_from_path("alice/widgets.git/info/refs"),
+            (Some("alice".to_string()), Some("widgets".to_string()))
+        );
+    }
+
+    /// Only the segment ending in `.git` is the repository; a later
+    /// segment that also ends in `.git` is not.
+    #[test]
+    fn the_first_git_segment_is_the_repository() {
+        assert_eq!(
+            parse_repo_from_path("/alice/widgets.git/objects/x.git/"),
+            (Some("alice".to_string()), Some("widgets".to_string()))
+        );
+    }
+
+    /// The verb is the segment *after* the repository, so a repository
+    /// literally named `git-receive-pack` is not a write request.
+    #[test]
+    fn the_verb_is_the_segment_after_the_repository() {
+        assert_eq!(
+            request_verb("/alice/widgets.git/git-receive-pack"),
+            Some("git-receive-pack")
+        );
+        // The verb is one segment: `info/refs` is spelled `info` plus
+        // `refs`, and only the first segment is the verb.
+        assert_eq!(
+            request_verb("/alice/git-receive-pack.git/info/refs"),
+            Some("info")
+        );
+    }
+
+    #[test]
+    fn a_path_without_a_verb_after_the_repository_has_no_verb() {
+        assert_eq!(request_verb("/alice/widgets.git"), None);
+        assert_eq!(request_verb("/alice/widgets.git/"), None);
+    }
+
+    /// A write is the receive-pack service, by path or by query.
+    #[test]
+    fn only_receive_pack_is_a_write() {
+        assert!(is_write_request(
+            "/alice/widgets.git/git-receive-pack",
+            &None
+        ));
+        assert!(is_write_request(
+            "/alice/widgets.git/info/refs",
+            &Some("service=git-receive-pack".to_string())
+        ));
+        assert!(!is_write_request("/alice/widgets.git/info/refs", &None));
+    }
+
+    /// Everything else under a repository path reads the repository —
+    /// including the dumb-HTTP object endpoints, which carry neither
+    /// verb. Failing closed here is what keeps a private repository's
+    /// objects from being served to an anonymous client.
+    #[test]
+    fn the_object_endpoints_read_the_repository() {
+        assert!(is_read_request("/alice/widgets.git/objects/info/packs", &None));
+        assert!(is_read_request("/alice/widgets.git/HEAD", &None));
+    }
+}
