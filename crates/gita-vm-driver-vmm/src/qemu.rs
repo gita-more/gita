@@ -13,6 +13,11 @@ use tokio::process::Command;
 
 pub struct QemuDriver {
     qemu_bin: String,
+    /// The disk tool. Injectable so that the error paths can be
+    /// exercised without a working QEMU installation.
+    qemu_img_bin: String,
+    /// The cloud-init image builder.
+    cloud_localds_bin: String,
     work_dir: std::path::PathBuf,
 }
 
@@ -20,12 +25,26 @@ impl QemuDriver {
     pub fn new() -> Self {
         Self {
             qemu_bin: "qemu-system-x86_64".into(),
+            qemu_img_bin: "qemu-img".into(),
+            cloud_localds_bin: "cloud-localds".into(),
             work_dir: std::path::PathBuf::from("/var/lib/gita/vm"),
         }
     }
 
     pub fn with_bin(mut self, bin: impl Into<String>) -> Self {
         self.qemu_bin = bin.into();
+        self
+    }
+
+    /// The disk tool to use instead of `qemu-img`.
+    pub fn with_qemu_img_bin(mut self, bin: impl Into<String>) -> Self {
+        self.qemu_img_bin = bin.into();
+        self
+    }
+
+    /// The cloud-init image builder to use instead of `cloud-localds`.
+    pub fn with_cloud_localds_bin(mut self, bin: impl Into<String>) -> Self {
+        self.cloud_localds_bin = bin.into();
         self
     }
 
@@ -100,7 +119,7 @@ impl VmmDriver for QemuDriver {
 
         // 这里简化：实际应该从镜像仓库拉取 base image
         // 暂时创建一个空磁盘
-        let output = Command::new("qemu-img")
+        let output = Command::new(&self.qemu_img_bin)
             .args(["create", "-f", "qcow2", &disk_path.to_string_lossy(), &format!("{}", spec.disk_bytes)])
             .output()
             .await
@@ -122,7 +141,7 @@ impl VmmDriver for QemuDriver {
             tokio::fs::write(&user_data_file, user_data).await.map_err(|e| Error::Io(e))?;
             tokio::fs::write(&meta_data_file, meta_data).await.map_err(|e| Error::Io(e))?;
 
-            let _ = Command::new("cloud-localds")
+            let _ = Command::new(&self.cloud_localds_bin)
                 .args([ci_iso.to_string_lossy().as_ref(), user_data_file.to_string_lossy().as_ref(), meta_data_file.to_string_lossy().as_ref()])
                 .output()
                 .await
@@ -262,7 +281,7 @@ impl VmmDriver for QemuDriver {
 
     async fn resize_disk(&self, vm_id: &str, new_size_bytes: u64) -> Result<()> {
         let disk_path = self.vm_dir(vm_id).join("disk.qcow2");
-        let output = Command::new("qemu-img")
+        let output = Command::new(&self.qemu_img_bin)
             .args(["resize", &disk_path.to_string_lossy(), &format!("{}", new_size_bytes)])
             .output()
             .await
@@ -278,7 +297,7 @@ impl VmmDriver for QemuDriver {
 
     async fn create_snapshot(&self, vm_id: &str, snapshot_path: &Path) -> Result<()> {
         let disk_path = self.vm_dir(vm_id).join("disk.qcow2");
-        let output = Command::new("qemu-img")
+        let output = Command::new(&self.qemu_img_bin)
             .args(["snapshot", "-c", &snapshot_path.file_name().unwrap().to_string_lossy(), &disk_path.to_string_lossy()])
             .output()
             .await
@@ -294,7 +313,7 @@ impl VmmDriver for QemuDriver {
 
     async fn restore_snapshot(&self, vm_id: &str, snapshot_path: &Path) -> Result<()> {
         let disk_path = self.vm_dir(vm_id).join("disk.qcow2");
-        let output = Command::new("qemu-img")
+        let output = Command::new(&self.qemu_img_bin)
             .args(["snapshot", "-a", &snapshot_path.file_name().unwrap().to_string_lossy(), &disk_path.to_string_lossy()])
             .output()
             .await
