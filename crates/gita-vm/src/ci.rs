@@ -2,7 +2,7 @@
 
 use gita_vm_api::ids::{OwnerRef, TemplateId, VmId};
 use gita_vm_api::template::{VmSpecOverrides, VmTemplate};
-use gita_vm_api::vm::{Vm, VmSpec, VmStatus};
+use gita_vm_api::vm::{Vm, VmLinkage, VmSpec, VmStatus};
 use gita_vm_core::repository::Repository;
 use gita_vm_core::{Error, Result};
 use gita_vm_store::VmStore;
@@ -103,13 +103,22 @@ impl CiVmHelper {
             expires_at_ms: opts.expires_at_ms,
         };
 
-        self.store.create_vm(&vm).await?;
+        // The VM is linked to the run it belongs to, so that the
+        // control plane knows who is to reclaim it.
+        let linkage = VmLinkage {
+            repo_id: opts.repo_id,
+            pipeline_run_id: opts.pipeline_run_id,
+            job_id: opts.job_id,
+        };
+        // `create_vm` does not report the id it was given, and the
+        // caller needs it: it waits for the VM and reclaims it.
+        let vm_id = self.store.create_linked_vm(&vm, linkage).await?;
 
         // 4. 触发调度与创建（由控制面 reconcile 循环完成）
         // 这里返回 VM ID，由调用方 wait_ready
 
         Ok(VmResult {
-            vm_id: vm.id,
+            vm_id,
             ip: None,
             console_url: None,
         })
