@@ -220,7 +220,7 @@ mod tests {
                 memory_bytes: mem,
                 disk_bytes: disk,
                 capabilities: NodeCapabilities {
-                    vmm: vec![VmmKind::Qemu, VmmKind::CloudHypervisor],
+                    vmm: vec![VmmKind::Qemu],
                     arch: vec!["x86_64".into()],
                     nested_virt: true,
                     gpu_passthrough: false,
@@ -364,16 +364,6 @@ mod tests {
         let nodes = vec![n];
         let mut sp = spec(2000, 2_000_000_000, 10_000_000_000);
         sp.arch = Some("x86_64".into());
-        assert!(s.place(&sp, &nodes).is_err());
-    }
-
-    #[test]
-    fn unsupported_backend_filters_node() {
-        let s = Scheduler::default();
-        let n = healthy_node(1, "n1", 8000, 8_000_000_000, 100_000_000_000);
-        let nodes = vec![n];
-        let mut sp = spec(2000, 2_000_000_000, 10_000_000_000);
-        sp.backend = VmmKind::Firecracker;
         assert!(s.place(&sp, &nodes).is_err());
     }
 

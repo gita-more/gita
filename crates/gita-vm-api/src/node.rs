@@ -8,17 +8,14 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum VmmKind {
+    /// 目前唯一实现的后端；cloud-hypervisor / firecracker 待后续再接入。
     Qemu,
-    CloudHypervisor,
-    Firecracker,
 }
 
 impl VmmKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             VmmKind::Qemu => "qemu",
-            VmmKind::CloudHypervisor => "cloud-hypervisor",
-            VmmKind::Firecracker => "firecracker",
         }
     }
 }
@@ -34,9 +31,9 @@ impl std::str::FromStr for VmmKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "qemu" => Ok(VmmKind::Qemu),
-            "cloud-hypervisor" | "cloudhypervisor" | "ch" => Ok(VmmKind::CloudHypervisor),
-            "firecracker" | "fc" => Ok(VmmKind::Firecracker),
-            _ => Err(format!("unknown VMM kind: {s}")),
+            _ => Err(format!(
+                "unknown VMM kind: {s} (only qemu is supported for now)"
+            )),
         }
     }
 }
@@ -218,9 +215,21 @@ impl Node {
     /// 可分配资源 = 总量 - 已分配 - 系统预留
     pub fn allocatable(&self, system_reserved: &Resources) -> Resources {
         Resources {
-            cpu_millis: self.spec.cpu_millis.saturating_sub(self.status.alloc_cpu_millis).saturating_sub(system_reserved.cpu_millis),
-            memory_bytes: self.spec.memory_bytes.saturating_sub(self.status.alloc_memory_bytes).saturating_sub(system_reserved.memory_bytes),
-            disk_bytes: self.spec.disk_bytes.saturating_sub(self.status.alloc_disk_bytes).saturating_sub(system_reserved.disk_bytes),
+            cpu_millis: self
+                .spec
+                .cpu_millis
+                .saturating_sub(self.status.alloc_cpu_millis)
+                .saturating_sub(system_reserved.cpu_millis),
+            memory_bytes: self
+                .spec
+                .memory_bytes
+                .saturating_sub(self.status.alloc_memory_bytes)
+                .saturating_sub(system_reserved.memory_bytes),
+            disk_bytes: self
+                .spec
+                .disk_bytes
+                .saturating_sub(self.status.alloc_disk_bytes)
+                .saturating_sub(system_reserved.disk_bytes),
         }
     }
 
@@ -231,20 +240,28 @@ impl Node {
 
     /// 是否健康
     pub fn is_healthy(&self) -> bool {
-        self.conditions.iter().any(|c| c.kind == NodeConditionType::Ready && c.status == ConditionStatus::True)
+        self.conditions
+            .iter()
+            .any(|c| c.kind == NodeConditionType::Ready && c.status == ConditionStatus::True)
     }
 
     /// 负载比例（取 CPU/内存/磁盘最大值）
     pub fn load_ratio(&self) -> f64 {
         let cpu = if self.spec.cpu_millis > 0 {
             self.status.alloc_cpu_millis as f64 / self.spec.cpu_millis as f64
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let mem = if self.spec.memory_bytes > 0 {
             self.status.alloc_memory_bytes as f64 / self.spec.memory_bytes as f64
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let disk = if self.spec.disk_bytes > 0 {
             self.status.alloc_disk_bytes as f64 / self.spec.disk_bytes as f64
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         cpu.max(mem).max(disk)
     }
 }
@@ -259,7 +276,11 @@ pub struct Resources {
 
 impl Resources {
     pub fn new(cpu_millis: u64, memory_bytes: u64, disk_bytes: u64) -> Self {
-        Self { cpu_millis, memory_bytes, disk_bytes }
+        Self {
+            cpu_millis,
+            memory_bytes,
+            disk_bytes,
+        }
     }
 
     pub fn zero() -> Self {

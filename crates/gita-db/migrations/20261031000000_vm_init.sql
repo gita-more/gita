@@ -56,7 +56,7 @@ CREATE TABLE vm_nodes (
     memory_bytes        BIGINT NOT NULL,
     disk_bytes          BIGINT NOT NULL,
     -- 能力
-    capabilities_vmm    TEXT[] NOT NULL DEFAULT '{}', -- 支持的 VMM: qemu, cloud-hypervisor, firecracker
+    capabilities_vmm    TEXT[] NOT NULL DEFAULT '{}', -- 支持的 VMM: 目前仅 qemu
     capabilities_arch   TEXT[] NOT NULL DEFAULT '{}', -- 支持的架构
     nested_virt         BOOLEAN NOT NULL DEFAULT FALSE,
     gpu_passthrough     BOOLEAN NOT NULL DEFAULT FALSE,

@@ -94,7 +94,7 @@ pub enum VmCmd {
         /// Disk size, e.g. 20G
         #[arg(long, default_value = "20G")]
         disk: String,
-        /// VMM backend (qemu, cloud-hypervisor, firecracker)
+        /// VMM backend (qemu only for now)
         #[arg(long, default_value = "qemu")]
         backend: String,
         /// Human-readable description

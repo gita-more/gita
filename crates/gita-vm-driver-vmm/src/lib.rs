@@ -1,16 +1,12 @@
 //! # gita-vm-driver-vmm
 //!
-//! VMM 抽象层：定义统一接口，实现 qemu、cloud-hypervisor、firecracker 后端。
+//! VMM 抽象层：统一接口，qemu 后端实现。
 
 pub mod error;
 pub mod qemu;
-pub mod cloud_hypervisor;
-pub mod firecracker;
 
 pub use error::{Error, Result};
 pub use qemu::QemuDriver;
-pub use cloud_hypervisor::CloudHypervisorDriver;
-pub use firecracker::FirecrackerDriver;
 
 use async_trait::async_trait;
 use gita_vm_api::node::VmmKind;
@@ -42,7 +38,12 @@ pub trait VmmDriver: Send + Sync {
     async fn get_console(&self, vm_id: &str) -> Result<Option<String>>;
 
     /// 热插 CPU/内存
-    async fn hotplug(&self, vm_id: &str, cpu_millis: Option<u64>, memory_bytes: Option<u64>) -> Result<()>;
+    async fn hotplug(
+        &self,
+        vm_id: &str,
+        cpu_millis: Option<u64>,
+        memory_bytes: Option<u64>,
+    ) -> Result<()>;
 
     /// 扩容磁盘
     async fn resize_disk(&self, vm_id: &str, new_size_bytes: u64) -> Result<()>;
@@ -80,8 +81,6 @@ impl std::fmt::Display for VmPowerState {
 pub fn create_driver(kind: VmmKind) -> Box<dyn VmmDriver> {
     match kind {
         VmmKind::Qemu => Box::new(QemuDriver::new()),
-        VmmKind::CloudHypervisor => Box::new(CloudHypervisorDriver::new()),
-        VmmKind::Firecracker => Box::new(FirecrackerDriver::new()),
     }
 }
 
@@ -93,17 +92,5 @@ mod tests {
     fn create_driver_qemu() {
         let driver = create_driver(VmmKind::Qemu);
         assert_eq!(driver.kind(), VmmKind::Qemu);
-    }
-
-    #[test]
-    fn create_driver_ch() {
-        let driver = create_driver(VmmKind::CloudHypervisor);
-        assert_eq!(driver.kind(), VmmKind::CloudHypervisor);
-    }
-
-    #[test]
-    fn create_driver_fc() {
-        let driver = create_driver(VmmKind::Firecracker);
-        assert_eq!(driver.kind(), VmmKind::Firecracker);
     }
 }

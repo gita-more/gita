@@ -1,6 +1,6 @@
 [package]
 name = "gita-vm-driver-vmm"
-description = "VMM driver abstraction: qemu, cloud-hypervisor, firecracker"
+description = "VMM driver abstraction: qemu implementation (+ trait)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
