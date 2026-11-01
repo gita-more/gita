@@ -46,7 +46,6 @@ allow_insecure_password_reset = ${GITA_SERVER_ALLOW_INSECURE_PASSWORD_RESET:-fal
 [server.vm]
 enabled = ${GITA_SERVER_VM_ENABLED:-false}
 data_dir = "${GITA_SERVER_VM_DATA_DIR:-/data/vm}"
-api_key = "${GITA_SERVER_VM_API_KEY:-}"
 reconcile_interval_secs = ${GITA_SERVER_VM_RECONCILE_INTERVAL_SECS:-5}
 overload_ratio = ${GITA_SERVER_VM_OVERLOAD_RATIO:-0.8}
 heartbeat_timeout_secs = ${GITA_SERVER_VM_HEARTBEAT_TIMEOUT_SECS:-30}

@@ -13,8 +13,9 @@ pub struct NodeConfig {
     #[arg(long, env = "GITA_NODE_NAME")]
     pub node_name: Option<String>,
 
-    /// API key（控制面内部接口认证）
-    #[arg(long, env = "GITA_VM_API_KEY", default_value = "")]
+    /// API key（控制面内部接口认证）。部署未显式配置时用
+    /// `gita-admin vm api-key` 从控制面读出生成的值。
+    #[arg(long, default_value = "")]
     pub api_key: String,
 
     /// 工作目录（VM 磁盘、配置存放）

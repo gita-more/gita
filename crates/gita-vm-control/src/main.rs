@@ -25,8 +25,9 @@ pub struct Args {
     #[arg(long, env = "GITA_JWT_SECRET", default_value = "dev-secret-change-me")]
     pub jwt_secret: String,
 
-    /// 节点代理使用的 API key（访问 /internal/* 接口）
-    #[arg(long, env = "GITA_VM_API_KEY", default_value = "")]
+    /// 节点代理使用的 API key（访问 /internal/* 接口）。不传则由
+    /// 控制面生成随机值并持久化，用 `gita-admin vm api-key` 读回。
+    #[arg(long, default_value = "")]
     pub vm_api_key: String,
 }
 

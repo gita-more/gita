@@ -45,8 +45,9 @@ enabled = false
 # Defaults to <data_dir>/vm.
 # data_dir = "data/vm"
 # API key for node agents (they call /api/v1/vm/internal/*).
-# Set a strong random value in production: anyone holding it can
-# register a node and receive operations to execute.
+# Leave unset to let the control plane generate a strong random value
+# on first start and persist it; read it back with
+# `gita-admin vm api-key`. Set this only to pin a known key.
 # api_key = "change-me"
 # How often the control plane reconciles pending VMs onto nodes.
 reconcile_interval_secs = 5
