@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api, type Group, type Repository } from '../lib/api'
 import { GroupTree, type GroupTreeChild } from './GroupTree'
 import {
@@ -10,12 +10,14 @@ import {
 import { FolderIcon, PlusIcon } from './Icons'
 import { useI18n, useErrorTranslator } from '../i18n'
 
-export function GroupDetail() {
+export function GroupDetail({ groupPath }: { groupPath: string }) {
   const { t } = useI18n()
   const translateError = useErrorTranslator()
   const navigate = useNavigate()
-  const params = useParams<{ group: string }>()
-  const group = params.group!
+  // The group's full path — may span several segments for nested groups
+  // (e.g. "gita/tests"). The namespace layout resolved it: the URL is
+  // clean ("/gita/tests"), with no "/groups" prefix.
+  const group = groupPath
   const [groupInfo, setGroupInfo] = useState<Group | null>(null)
   const [repos, setRepos] = useState<Repository[]>([])
   const [subgroups, setSubgroups] = useState<Group[]>([])

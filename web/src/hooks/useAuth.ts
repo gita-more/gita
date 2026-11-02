@@ -101,7 +101,26 @@ export function useAuth() {
     }
   }, [])
 
-  return { user, token: tokenValue, login, register, init, logout, refresh }
+  /**
+   * Reconcile the cached user with the server, without logging out on
+   * failure.
+   *
+   * `refresh` drops the local session when /api/auth/me fails — right for a
+   * deliberate "reload my profile" action, wrong for a background sync: a
+   * network hiccup must not sign the user out. This variant keeps the cached
+   * user when the call fails, and is what the app calls on startup.
+   */
+  const sync = useCallback(async () => {
+    if (!currentToken) return
+    try {
+      const me = await api.me()
+      persist(me, currentToken)
+    } catch {
+      // Keep the cached user: the server may just be unreachable.
+    }
+  }, [])
+
+  return { user, token: tokenValue, login, register, init, logout, refresh, sync }
 }
 
 // Keep token exported for non-hook usage.

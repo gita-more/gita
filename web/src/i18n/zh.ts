@@ -32,6 +32,7 @@ export const messages = {
     pipelines: '流水线',
     pages: 'Pages',
     settings: '设置',
+    admin: '管理',
   },
   auth: {
     username: '用户名',
@@ -284,6 +285,7 @@ export const messages = {
     tokenCreatedTime: '创建时间',
   },
   admin: {
+    pageTitle: '系统管理',
     title: '用户管理',
     subtitle: '管理本系统的用户账号（仅管理员可见）',
     createUser: '创建用户',
@@ -302,6 +304,7 @@ export const messages = {
   },
   vm: {
     title: 'VM 集群',
+    subtitle: '模板、宿主机节点和运行中的虚拟机',
     disabled: 'VM 集群未启用。在服务器配置的 [server.vm] 段设置 enabled = true 后重启即可开启。',
     templatesTitle: '模板',
     noTemplates: '还没有模板。VM 模板定义 CI 任务运行用的虚拟机规格（gita-admin vm template create）。',

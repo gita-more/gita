@@ -32,6 +32,7 @@ export const messages = {
     pipelines: 'Pipelines',
     pages: 'Pages',
     settings: 'Settings',
+    admin: 'Administration',
   },
   auth: {
     username: 'Username',
@@ -284,6 +285,7 @@ export const messages = {
     tokenCreatedTime: 'Created',
   },
   admin: {
+    pageTitle: 'System administration',
     title: 'User administration',
     subtitle: 'Manage the accounts of this instance (admins only)',
     createUser: 'Create user',
@@ -302,6 +304,7 @@ export const messages = {
   },
   vm: {
     title: 'VM cluster',
+    subtitle: 'Templates, hypervisor nodes and running virtual machines',
     disabled: 'The VM cluster is not enabled. Set enabled = true under [server.vm] in the server config and restart.',
     templatesTitle: 'Templates',
     noTemplates: 'No templates yet. A VM template defines the machine a CI vm: job runs on (gita-admin vm template create).',

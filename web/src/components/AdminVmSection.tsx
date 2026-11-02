@@ -94,7 +94,7 @@ export function AdminVmSection() {
 
   if (disabled) {
     return (
-      <div className="settings-section" data-testid="vm-section-disabled">
+      <div className="settings-section" id="vm" data-testid="vm-section-disabled">
         <h3>{t('vm.title')}</h3>
         <p>{t('vm.disabled')}</p>
       </div>
@@ -102,7 +102,7 @@ export function AdminVmSection() {
   }
 
   return (
-    <div className="settings-section" data-testid="vm-section">
+    <div className="settings-section" id="vm" data-testid="vm-section">
       <h3>{t('vm.title')}</h3>
       {error && <div className="alert alert-error">{error}</div>}
       {notice && <div className="alert alert-success">{notice}</div>}

@@ -5,6 +5,7 @@ import {
   BookIcon,
   CircleCheckIcon,
   CircleDotIcon,
+  CodeIcon,
   FolderIcon,
   GitCommitIcon,
   GitPullRequestIcon,
@@ -13,8 +14,11 @@ import {
   PersonIcon,
   RefreshIcon,
   RocketIcon,
+  ServerIcon,
   SettingsIcon,
   ShieldAlertIcon,
+  ShieldIcon,
+  UsersIcon,
   XIcon,
 } from './Icons'
 import { useAuth } from '../hooks/useAuth'
@@ -55,6 +59,51 @@ const GLOBAL_NAV: { key: GlobalNavTarget; labelKey: string; icon: typeof HomeIco
   { key: 'issues', labelKey: 'nav.issuesGlobal', icon: CircleDotIcon },
 ]
 
+/** Where each top-level nav entry lives. The lists are clean URLs: the
+ * project list is the site root, the others carry their own name. */
+const GLOBAL_NAV_PATHS: Record<GlobalNavTarget, string> = {
+  projects: '/',
+  groups: '/groups',
+  issues: '/issues',
+}
+
+/** A single item inside a page-local navigation section. */
+export type SidebarItem = { key: string; labelKey: string; icon: typeof HomeIcon }
+
+/** 一组带分组标题的页面侧边栏项，例如「设置」下的「语言 / 访问令牌」。 */
+export type SidebarSection = {
+  /** 分组标题的 i18n key，例如 "common.settings"。三层联动：Topbar 的
+   * 入口文案、Sidebar 的分组标题和页面标题都用这个 key 的翻译值。 */
+  groupLabelKey: string
+  /** 分组本身的图标，用于面包屑。 */
+  icon: typeof HomeIcon
+  items: SidebarItem[]
+}
+
+/** Settings page: the sections the left nav links to. */
+export const SETTINGS_SECTIONS: SidebarSection[] = [
+  {
+    groupLabelKey: 'common.settings',
+    icon: SettingsIcon,
+    items: [
+      { key: 'language', labelKey: 'settings.language', icon: GlobeIcon },
+      { key: 'tokens', labelKey: 'settings.tokensTitle', icon: CodeIcon },
+    ],
+  },
+]
+
+/** Admin page: the sections the left nav links to. */
+export const ADMIN_SECTIONS: SidebarSection[] = [
+  {
+    groupLabelKey: 'nav.admin',
+    icon: ShieldIcon,
+    items: [
+      { key: 'users', labelKey: 'admin.title', icon: UsersIcon },
+      { key: 'vm', labelKey: 'vm.title', icon: ServerIcon },
+    ],
+  },
+]
+
 const SIDEBAR_NAV: { key: NavTarget; labelKey: string; icon: typeof HomeIcon; countKey?: 'prs' | 'issues' }[] = [
   { key: 'files', labelKey: 'nav.files', icon: BookIcon },
   { key: 'commits', labelKey: 'nav.commits', icon: GitCommitIcon },
@@ -64,6 +113,22 @@ const SIDEBAR_NAV: { key: NavTarget; labelKey: string; icon: typeof HomeIcon; co
   { key: 'pages', labelKey: 'nav.pages', icon: GlobeIcon },
   { key: 'settings', labelKey: 'nav.settings', icon: SettingsIcon },
 ]
+
+/**
+ * One breadcrumb entry.
+ *
+ * The label is what the user reads ("Settings"), the path is where it
+ * points ("/settings"). Keeping them apart lets a page show a localized
+ * name while linking to the raw URL segment it lives at. The icon is the
+ * one belonging to that page — each page carries its own, never a generic
+ * house.
+ */
+export interface Crumb {
+  label: string
+  path: string
+  /** The page's own icon; shown next to the label. */
+  icon?: typeof HomeIcon
+}
 
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
@@ -96,7 +161,7 @@ function Avatar({ username }: { username: string }) {
   )
 }
 
-function UserMenu({ user, onClose }: { user: { username: string; email: string } | null; onClose: () => void }) {
+function UserMenu({ user, onClose }: { user: { username: string; email: string; is_admin: boolean } | null; onClose: () => void }) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const { logout } = useAuth()
@@ -118,11 +183,19 @@ function UserMenu({ user, onClose }: { user: { username: string; email: string }
       <hr className="user-menu-divider" />
       <ul className="user-menu-list">
         <li>
-          <Link className="user-menu-item" to="/settings" onClick={onClose}>
+          <Link className="user-menu-item" to="/settings/language" onClick={onClose}>
             <SettingsIcon size={16} />
             <span>{t('common.settings')}</span>
           </Link>
         </li>
+        {user?.is_admin && (
+          <li>
+            <Link className="user-menu-item" to="/admin/users" onClick={onClose}>
+              <ShieldIcon size={16} />
+              <span>{t('nav.admin')}</span>
+            </Link>
+          </li>
+        )}
         <li>
           <button className="user-menu-item" onClick={handleLogout}>
             <PersonIcon size={16} />
@@ -140,9 +213,9 @@ export function Topbar({
   onToggleSidebar,
   sidebarOpen,
 }: {
-  /** Breadcrumb path segments (e.g. ["gita", "tests", "myrepo"]); middle
-   * segments link to their group pages. Absent on top-level pages. */
-  crumbs?: string[]
+  /** Breadcrumb entries (e.g. "gita" → "tests"). The label is what the user
+   * reads, the path is where the entry links to. Absent on top-level pages. */
+  crumbs?: Crumb[]
   actions?: ReactNode
   onToggleSidebar?: () => void
   sidebarOpen?: boolean
@@ -191,25 +264,30 @@ export function Topbar({
       {crumbs && crumbs.length > 0 ? (
         <nav className="breadcrumbs" aria-label="Breadcrumb">
           <ol className="breadcrumb-list">
-            <li className="breadcrumb-item">
-              <Link to="/">
-                <HomeIcon size={14} />
-                <span>{t('nav.home')}</span>
-              </Link>
-            </li>
             {crumbs.map((c, i) => {
               const isLast = i === crumbs.length - 1
-              const href = `/${crumbs.slice(0, i + 1).join('/')}`
+              const href = c.path
+              // Only the first level carries an icon: it identifies the page
+              // (the gear for Settings, the shield for Administration).
+              // Deeper levels are the sections inside that page and would
+              // only add noise.
+              const Icon = i === 0 ? c.icon : undefined
               return (
                 <Fragment key={href}>
-                  <li className="breadcrumb-sep" aria-hidden="true">/</li>
+                  {i > 0 && (
+                    <li className="breadcrumb-sep" aria-hidden="true">/</li>
+                  )}
                   {isLast ? (
                     <li className="breadcrumb-item current" aria-current="page">
-                      {c}
+                      {Icon && <Icon size={14} />}
+                      {c.label}
                     </li>
                   ) : (
                     <li className="breadcrumb-item">
-                      <Link to={href}>{c}</Link>
+                      <Link to={href}>
+                        {Icon && <Icon size={14} />}
+                        {c.label}
+                      </Link>
                     </li>
                   )}
                 </Fragment>
@@ -246,14 +324,17 @@ export function Sidebar({
   variant,
   active,
   globalActive,
-  onGlobalNavigate,
   counts,
+  sections,
 }: {
   variant: SidebarVariant
   active?: NavTarget
   globalActive?: GlobalNavTarget
-  onGlobalNavigate?: (target: GlobalNavTarget) => void
   counts?: Partial<Record<'prs' | 'issues', number>>
+  /** Page-local navigation sections (Settings / Admin). When given, the
+   * sidebar renders each section with its group label, and each item
+   * scrolls to the section of the same id on the current page. */
+  sections?: SidebarSection[]
 }) {
   const { t } = useI18n()
   const location = useLocation()
@@ -276,32 +357,52 @@ export function Sidebar({
     ? `/${params.owner}/${params.repo}`
     : undefined
 
+  // Page-local navigation: each item is its own page under the section's
+  // base path (e.g. /settings/language). The active item is the one whose
+  // path the browser is on.
+  const basePath = `/${location.pathname.split('/').filter(Boolean)[0] ?? ''}`
+
   return (
     <aside className="sidebar">
       <nav className="sidebar-nav" aria-label={t('common.mainNav')}>
-        {variant === 'global' &&
+        {sections && sections.length > 0 ? (
+          sections.map((section) => (
+            <div className="sidebar-group" key={section.groupLabelKey}>
+              <h2 className="sidebar-group-label">{t(section.groupLabelKey)}</h2>
+              {section.items.map((item) => {
+                const path = `${basePath}/${item.key}`
+                const isActive = location.pathname === path
+                return (
+                  <Link
+                    key={item.key}
+                    className={`sidebar-link${isActive ? ' active' : ''}`}
+                    to={path}
+                    title={t(item.labelKey)}
+                  >
+                    <item.icon size={16} />
+                    <span>{t(item.labelKey)}</span>
+                  </Link>
+                )
+              })}
+            </div>
+          ))
+        ) : variant === 'global' ? (
           GLOBAL_NAV.map((item) => {
             const Icon = item.icon
             const isActive = activeKey === item.key
-            const handleClick = item.key === 'projects'
-              ? () => navigate('/')
-              : () => {
-                  onGlobalNavigate?.(item.key)
-                  navigate(item.key === 'groups' ? '/groups' : '/issues')
-                }
             return (
-              <button
+              <Link
                 key={item.key}
                 className={`sidebar-link${isActive ? ' active' : ''}`}
-                onClick={handleClick}
+                to={GLOBAL_NAV_PATHS[item.key]}
                 title={t(item.labelKey)}
               >
                 <Icon size={16} />
                 <span>{t(item.labelKey)}</span>
-              </button>
+              </Link>
             )
-          })}
-        {variant === 'repo' &&
+          })
+        ) : (
           SIDEBAR_NAV.map((item) => {
             const Icon = item.icon
             // Tab is a URL path segment (/owner/repo/issues); the index
@@ -344,7 +445,8 @@ export function Sidebar({
                 )}
               </button>
             )
-          })}
+          })
+        )}
       </nav>
     </aside>
   )
@@ -354,16 +456,16 @@ export function AppLayout({
   variant = 'repo',
   active,
   globalActive,
-  onGlobalNavigate,
   crumbs,
+  sections,
   counts,
   children,
 }: {
   variant?: SidebarVariant
   active?: NavTarget
   globalActive?: GlobalNavTarget
-  onGlobalNavigate?: (target: GlobalNavTarget) => void
-  crumbs?: string[]
+  crumbs?: Crumb[]
+  sections?: SidebarSection[]
   counts?: Partial<Record<'prs' | 'issues', number>>
   children: ReactNode
 }) {
@@ -380,11 +482,6 @@ export function AppLayout({
     }
   }
 
-  const handleGlobalNavigate = (target: GlobalNavTarget) => {
-    setSidebarOpen(false)
-    onGlobalNavigate?.(target)
-  }
-
   return (
     <>
       <Topbar
@@ -399,8 +496,8 @@ export function AppLayout({
             variant={variant}
             active={active}
             globalActive={globalActive}
-            onGlobalNavigate={handleGlobalNavigate}
             counts={counts}
+            sections={sections}
           />
         </div>
         <main className="main">

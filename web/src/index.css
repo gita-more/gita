@@ -272,7 +272,7 @@ select {
   padding: 0 16px;
   background: var(--bg-canvas);
   border-bottom: 1px solid var(--border-default);
-  gap: 8px;
+  gap: 12px;
 }
 
 .topbar-left {

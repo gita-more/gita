@@ -10,7 +10,7 @@
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 afterEach(cleanup)
@@ -66,14 +66,12 @@ function LocationProbe() {
   return <div data-testid="location">{loc.pathname}</div>
 }
 
-function setup(path = '/acme') {
+function setup(groupPath = 'acme') {
   const user = userEvent.setup()
   render(
-    <MemoryRouter initialEntries={[path]}>
+    <MemoryRouter initialEntries={['/groups']}>
       <I18nProvider>
-        <Routes>
-          <Route path="/:group" element={<GroupDetail />} />
-        </Routes>
+        <GroupDetail groupPath={groupPath} />
         <LocationProbe />
       </I18nProvider>
     </MemoryRouter>,
@@ -102,10 +100,26 @@ describe('GroupDetail', () => {
   it('调用 API 时带上路由里的群组路径', async () => {
     getGroup.mockResolvedValue({ group: makeGroup(), repos: [], subgroups: [] })
 
-    setup('/acme')
+    setup('acme')
 
     await waitFor(() => {
       expect(getGroup).toHaveBeenCalledWith('acme')
+    })
+  })
+
+  it('嵌套群组的多段路径完整传给 API', async () => {
+    // /groups/gita/tests 是三段路径；它曾被 /:owner/:repo 抢走，导致
+    // 嵌套群组详情页打不开。
+    getGroup.mockResolvedValue({
+      group: makeGroup({ full_path: 'gita/tests' }),
+      repos: [],
+      subgroups: [],
+    })
+
+    setup('gita/tests')
+
+    await waitFor(() => {
+      expect(getGroup).toHaveBeenCalledWith('gita/tests')
     })
   })
 
