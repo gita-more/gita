@@ -147,6 +147,7 @@ export function Groups({
         <GroupTree
           nodes={tree.roots}
           getChildren={(g) => tree.childrenOf(g.id)}
+          childrenMode="static"
           onOpenGroup={(path) => navigate(`/${path}`)}
         />
       )}

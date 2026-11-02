@@ -24,6 +24,20 @@ export type GroupTreeChildrenFn = (
   group: Group,
 ) => GroupTreeChild[] | Promise<GroupTreeChild[]>
 
+/**
+ * How the children of a group row are obtained.
+ *
+ * - `static`: the provider answers synchronously, so the tree already knows
+ *   every child and the expand arrow only shows for groups that have some.
+ * - `lazy`: the provider is only called when the row is expanded.
+ *
+ * The mode has to be declared rather than sniffed: telling the two apart
+ * would mean calling the provider during render, which for a lazy provider
+ * fires its request for every group row of the page instead of only for the
+ * rows the user actually opens.
+ */
+export type GroupTreeChildrenMode = 'static' | 'lazy'
+
 function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
   return typeof (value as Promise<T> | undefined)?.then === 'function'
 }
@@ -46,6 +60,7 @@ function sortTreeChildren(children: GroupTreeChild[]): GroupTreeChild[] {
 export function GroupTree({
   nodes,
   getChildren,
+  childrenMode = 'static',
   onOpenGroup,
   onOpenRepo,
 }: {
@@ -53,6 +68,8 @@ export function GroupTree({
   nodes: GroupTreeChild[]
   /** How to obtain the children of a group row. */
   getChildren?: GroupTreeChildrenFn
+  /** Whether the provider answers synchronously or lazily. */
+  childrenMode?: GroupTreeChildrenMode
   onOpenGroup?: (fullPath: string) => void
   onOpenRepo?: (owner: string, name: string) => void
 }) {
@@ -63,6 +80,7 @@ export function GroupTree({
           key={node.kind === 'group' ? `g-${node.group.id}` : `r-${node.repo.id}`}
           node={node}
           getChildren={getChildren}
+          childrenMode={childrenMode}
           onOpenGroup={onOpenGroup}
           onOpenRepo={onOpenRepo}
         />
@@ -74,11 +92,13 @@ export function GroupTree({
 function GroupTreeNode({
   node,
   getChildren,
+  childrenMode,
   onOpenGroup,
   onOpenRepo,
 }: {
   node: GroupTreeChild
   getChildren?: GroupTreeChildrenFn
+  childrenMode: GroupTreeChildrenMode
   onOpenGroup?: (fullPath: string) => void
   onOpenRepo?: (owner: string, name: string) => void
 }) {
@@ -89,11 +109,11 @@ function GroupTreeNode({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  // A static provider answers synchronously during render, so we know up
-  // front whether the row is expandable. A lazy provider returns a Promise
-  // and every group row gets an arrow, resolved on first expand.
+  // A static provider answers synchronously, so the tree already knows every
+  // child and the expand arrow only shows for groups that have some. A lazy
+  // provider is not called at all until the row is expanded.
   let known: GroupTreeChild[] | null = null
-  if (node.kind === 'group' && getChildren) {
+  if (node.kind === 'group' && getChildren && childrenMode === 'static') {
     const result = getChildren(node.group)
     if (!isPromise(result)) known = sortTreeChildren(result)
   }
@@ -106,6 +126,11 @@ function GroupTreeNode({
       setOpen(false)
       return
     }
+    // Open the panel *before* the request: the loading note and the error
+    // note both live inside the opened panel, so opening only after the
+    // request settled would hide the spinner and swallow the error message
+    // (a failed lazy load would look like the click did nothing).
+    setOpen(true)
     if (children === null && known === null) {
       setLoading(true)
       setError('')
@@ -113,12 +138,10 @@ function GroupTreeNode({
         setChildren(sortTreeChildren(await getChildren(node.group)))
       } catch (err) {
         setError(translateError(err))
-        return
       } finally {
         setLoading(false)
       }
     }
-    setOpen(true)
   }
 
   const isGroup = node.kind === 'group'
@@ -185,6 +208,7 @@ function GroupTreeNode({
                 key={child.kind === 'group' ? `g-${child.group.id}` : `r-${child.repo.id}`}
                 node={child}
                 getChildren={getChildren}
+                childrenMode={childrenMode}
                 onOpenGroup={onOpenGroup}
                 onOpenRepo={onOpenRepo}
               />
