@@ -39,5 +39,9 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 clap = { workspace = true }
 
+[dev-dependencies]
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+
 [lints]
 workspace = true
