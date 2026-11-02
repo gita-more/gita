@@ -283,6 +283,126 @@ mod tests {
         assert_eq!(ip1, ip2);
     }
 
+    /// A reserved address is held for whoever asked for it: the next
+    /// allocation steps over it.
+    #[tokio::test]
+    async fn a_reserved_address_is_not_handed_out() {
+        let net = test_network();
+        let repo = MockRepo::new();
+        let ipam = Ipam::new(&repo, &net);
+
+        ipam.reserve("10.42.0.100", "52:54:00:2a:00:64").await.unwrap();
+
+        let (ip, _) = ipam.allocate(VmId(1), None).await.unwrap();
+        assert_eq!(ip, "10.42.0.101", "the reserved address must be skipped");
+    }
+
+    /// The same address cannot be reserved twice.
+    #[tokio::test]
+    async fn an_address_cannot_be_reserved_twice() {
+        let net = test_network();
+        let repo = MockRepo::new();
+        let ipam = Ipam::new(&repo, &net);
+
+        ipam.reserve("10.42.0.100", "52:54:00:2a:00:64").await.unwrap();
+        let err = ipam
+            .reserve("10.42.0.100", "52:54:00:2a:00:64")
+            .await
+            .expect_err("the second reservation must fail");
+        assert!(matches!(err, crate::Error::AlreadyExists(_)), "got {err:?}");
+    }
+
+    /// An address outside the range the network hands out is refused:
+    /// it belongs to something else.
+    #[tokio::test]
+    async fn an_address_outside_the_range_is_refused() {
+        let net = test_network();
+        let repo = MockRepo::new();
+        let ipam = Ipam::new(&repo, &net);
+
+        let err = ipam
+            .reserve("10.42.0.250", "52:54:00:2a:00:fa")
+            .await
+            .expect_err("the reservation must fail");
+        assert!(matches!(err, crate::Error::Validation(_)), "got {err:?}");
+    }
+
+    /// An address that is not an address at all is refused.
+    #[tokio::test]
+    async fn something_that_is_not_an_address_is_refused() {
+        let net = test_network();
+        let repo = MockRepo::new();
+        let ipam = Ipam::new(&repo, &net);
+
+        let err = ipam
+            .reserve("not an ip", "52:54:00:2a:00:64")
+            .await
+            .expect_err("the reservation must fail");
+        assert!(matches!(err, crate::Error::Validation(_)), "got {err:?}");
+    }
+
+    /// When every address is taken, the allocator says so rather than
+    /// handing out one twice.
+    #[tokio::test]
+    async fn a_pool_with_nothing_left_says_so() {
+        let mut net = test_network();
+        // A range of one address: it is taken after the first VM.
+        net.dhcp_start = Some("10.42.0.100".into());
+        net.dhcp_end = Some("10.42.0.100".into());
+
+        let repo = MockRepo::new();
+        let ipam = Ipam::new(&repo, &net);
+
+        let (ip, _) = ipam.allocate(VmId(1), None).await.unwrap();
+        assert_eq!(ip, "10.42.0.100");
+
+        let err = ipam
+            .allocate(VmId(2), None)
+            .await
+            .expect_err("the pool is empty");
+        assert!(matches!(err, crate::Error::IpPoolExhausted(_)), "got {err:?}");
+    }
+
+    /// A network that says nothing about a range hands out nothing.
+    #[tokio::test]
+    async fn a_network_without_a_range_hands_out_nothing() {
+        let mut net = test_network();
+        net.dhcp_start = None;
+        net.dhcp_end = None;
+
+        let repo = MockRepo::new();
+        let ipam = Ipam::new(&repo, &net);
+
+        let err = ipam
+            .allocate(VmId(1), None)
+            .await
+            .expect_err("there is no range to pick from");
+        assert!(matches!(err, crate::Error::Validation(_)), "got {err:?}");
+    }
+
+    /// The lease of a VM is the one that was handed to it.
+    #[tokio::test]
+    async fn the_lease_of_a_vm_is_found() {
+        let net = test_network();
+        let repo = MockRepo::new();
+        let ipam = Ipam::new(&repo, &net);
+
+        let (ip, _) = ipam.allocate(VmId(1), Some(7)).await.unwrap();
+        let lease = ipam.get_lease(VmId(1)).await.unwrap().expect("a lease");
+        assert_eq!(lease.ip, ip);
+        assert_eq!(lease.node_id, Some(gita_vm_api::ids::NodeId(7)));
+    }
+
+    /// A VM that was never given an address has no lease.
+    #[tokio::test]
+    async fn a_vm_without_an_address_has_no_lease() {
+        let net = test_network();
+        let repo = MockRepo::new();
+        let ipam = Ipam::new(&repo, &net);
+
+        assert!(ipam.get_lease(VmId(99)).await.unwrap().is_none());
+    }
+
     #[test]
     fn mac_generation() {
         let ip = Ipv4Addr::new(10, 42, 0, 100);
