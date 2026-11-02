@@ -1822,6 +1822,7 @@ name = "gita-vm-control"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "clap",
  "gita-api",
@@ -1837,6 +1838,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
@@ -1882,6 +1884,7 @@ name = "gita-vm-node"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "clap",
  "gita-vm-api",
