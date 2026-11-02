@@ -70,7 +70,9 @@ test.describe('VM 集群面板', () => {
     const isAdmin = await initAdmin(page)
     test.skip(!isAdmin, '服务器已初始化，无法通过 init 获得管理员账号')
 
-    await page.goto('/settings')
+    // The VM cluster is its own administration page now (/admin/vm), not a
+    // section of /settings.
+    await page.goto('/admin/vm')
     const section = page.getByTestId('vm-section')
     const disabled = page.getByTestId('vm-section-disabled')
     await expect(section.or(disabled).first()).toBeVisible()
@@ -85,7 +87,7 @@ test.describe('VM 集群面板', () => {
       await expect(section.locator('h4').first()).toBeVisible()
     }
   })
-  test('普通用户在设置页看不到 VM 集群面板', async ({ page }) => {
+  test('普通用户在管理页看不到 VM 集群面板', async ({ page }) => {
     // 每次运行用全新账号：注册接口不授予管理员，所以这个账号一定是
     // 非 admin，断言「面板不可见」不依赖部署里已有用户的角色。
     const username = `vmnonadmin-${Date.now()}`
@@ -94,7 +96,7 @@ test.describe('VM 集群面板', () => {
       password: 'testpass123',
     })
 
-    await page.goto('/settings')
+    await page.goto('/admin/vm')
     await expect(page.locator('h3', { hasText: /VM|虚拟机/ })).toHaveCount(0)
     await expect(page.getByTestId('vm-section')).toHaveCount(0)
     await expect(page.getByTestId('vm-section-disabled')).toHaveCount(0)
