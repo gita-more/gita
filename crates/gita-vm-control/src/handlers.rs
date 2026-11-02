@@ -179,15 +179,32 @@ async fn delete_template(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn list_vms(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+/// The VMs of the cluster are listed.
+///
+/// The list is every VM of every tenant, with their names and their
+/// addresses, so it is an administrator's view of the cluster. A user
+/// who wants to know what a repository of theirs runs does not get it
+/// here — there is no such endpoint yet, and adding one that filters by
+/// owner is the right answer, not opening this one to everyone.
+async fn list_vms(
+    State(state): State<AppState>,
+    user: VmUser,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_admin().map_err(auth_err)?;
     let vms = state.repo.list_vms(None).await.map_err(ApiError::from)?;
     Ok(Json(json!({ "vms": vms })))
 }
 
+/// One VM of the cluster.
+///
+/// A VM belongs to a tenant and carries its address and its name, so
+/// reading one is the same question as reading the whole list.
 async fn get_vm(
     State(state): State<AppState>,
+    user: VmUser,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    user.require_admin().map_err(auth_err)?;
     let vm = state
         .repo
         .get_vm(gita_vm_api::ids::VmId(id))
@@ -222,7 +239,15 @@ async fn delete_vm(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn list_nodes(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+/// The nodes of the cluster are listed.
+///
+/// The nodes are the infrastructure: their names, their sizes and how
+/// much of them is in use. That is an administrator's view.
+async fn list_nodes(
+    State(state): State<AppState>,
+    user: VmUser,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_admin().map_err(auth_err)?;
     let nodes = state.repo.list_nodes(None).await.map_err(ApiError::from)?;
     Ok(Json(json!({ "nodes": nodes })))
 }
@@ -249,8 +274,10 @@ async fn get_api_key(
 
 async fn get_node(
     State(state): State<AppState>,
+    user: VmUser,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    user.require_admin().map_err(auth_err)?;
     let node = state
         .repo
         .get_node(gita_vm_api::ids::NodeId(id))
@@ -260,12 +287,31 @@ async fn get_node(
     Ok(Json(serde_json::to_value(node).unwrap()))
 }
 
-async fn list_images(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+async fn list_images(
+    State(state): State<AppState>,
+    user: VmUser,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_admin().map_err(auth_err)?;
     let images = state.repo.list_images(None).await.map_err(ApiError::from)?;
     Ok(Json(json!({ "images": images })))
 }
 
-async fn list_quotas(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+/// The quotas of the cluster are listed.
+///
+/// The quotas are the limits every tenant of the cluster lives under:
+/// how many VMs, how much CPU, how much memory. Reading them tells a
+/// user about the other tenants' allowances and their usage, so the
+/// list is for administrators.
+///
+/// A user who wants to know what they themselves may still create does
+/// not need this endpoint: the quota engine checks the request when the
+/// VM is created and refuses it there, with the limit and the current
+/// usage in the error.
+async fn list_quotas(
+    State(state): State<AppState>,
+    user: VmUser,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_admin().map_err(auth_err)?;
     let quotas = state.repo.list_quotas().await.map_err(ApiError::from)?;
     Ok(Json(json!({ "quotas": quotas })))
 }

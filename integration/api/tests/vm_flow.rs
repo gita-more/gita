@@ -264,14 +264,14 @@ async fn the_quotas_are_listed() {
     assert_eq!(quotas[0]["max_concurrent_vms"], 10);
 }
 
-/// The quotas are for authenticated callers, on either identity: a
-/// user token or the node key both read them.
+/// The quotas of the cluster are an administrator's view.
 ///
-/// Whether an ordinary user should see the limits of the whole cluster
-/// is a policy question; today the answer is yes, and this test pins
-/// it so that a change is a decision, not an accident.
+/// They are the limits every tenant lives under — how many VMs, how
+/// much CPU, how much memory — so reading them tells a user about the
+/// other tenants' allowances. A user who wants to know what they may
+/// still create is told when the VM is created, not here.
 #[tokio::test]
-async fn the_quotas_are_visible_to_any_authenticated_caller() {
+async fn the_quotas_are_for_the_administrators() {
     let (app, _guard) = vm_enabled_app().await;
     let user = common::register_user(&app, "vmquotauser").await;
 
@@ -283,11 +283,32 @@ async fn the_quotas_are_visible_to_any_authenticated_caller() {
         Some(&user.token),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
 
-    // And nobody at all is turned away.
+    // And nobody at all is turned away at the door.
     let (status, _) = call(&app, Method::GET, "/api/v1/vm/quotas", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// The instances of the cluster are an administrator's view too.
+///
+/// They carry their names and their addresses, and they belong to the
+/// tenants that made them.
+#[tokio::test]
+async fn the_instances_are_for_the_administrators() {
+    let (app, _guard) = vm_enabled_app().await;
+    let user = common::register_user(&app, "vmvmuser").await;
+
+    for uri in [
+        "/api/v1/vm/vms",
+        "/api/v1/vm/vms/1",
+        "/api/v1/vm/nodes",
+        "/api/v1/vm/nodes/1",
+        "/api/v1/vm/images",
+    ] {
+        let (status, body) = call(&app, Method::GET, uri, None, Some(&user.token)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri} must be admin-only, got {body}");
+    }
 }
 
 /// The node API key is only for the node endpoints: a user token must
