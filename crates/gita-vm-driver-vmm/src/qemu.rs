@@ -195,10 +195,37 @@ impl VmmDriver for QemuDriver {
         let spec: VmSpec = serde_json::from_str(&spec_json).map_err(|e| Error::ConfigGeneration(e.to_string()))?;
 
         let mut cmd = self.generate_qemu_cmd(vm_id, &spec)?;
-        let _output = cmd.spawn().map_err(|e| Error::ProcessError(e.to_string()))?;
+        // QEMU is started with `-daemonize`: the process that is run
+        // here forks the real VM and exits once the child is up. Its
+        // exit status is therefore the answer to "did the VM start",
+        // and a failure to start comes back as a non-zero status.
+        //
+        // Waiting for it is what tells a failed start from a started
+        // one. Spawning and walking away would report success for a
+        // QEMU that died on the spot — no KVM, a bad disk, a wrong
+        // argument — and the VM would be silently missing.
+        //
+        // The output goes to a file rather than to a pipe: the daemon
+        // that QEMU forks inherits the descriptors, so a pipe would
+        // stay open for as long as the VM runs and reading it to the
+        // end would wait for the VM to stop.
+        let log_path = vm_dir.join("qemu.log");
+        let log = std::fs::File::create(&log_path).map_err(|e| Error::Io(e))?;
+        cmd.stdout(Stdio::null()).stderr(Stdio::from(log));
 
-        // 等待启动确认
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        let status = cmd.status().await.map_err(|e| Error::ProcessError(e.to_string()))?;
+        if !status.success() {
+            let stderr = tokio::fs::read_to_string(&log_path)
+                .await
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            return Err(Error::OperationFailed(if stderr.is_empty() {
+                format!("qemu exited with {status}")
+            } else {
+                stderr
+            }));
+        }
 
         Ok(())
     }
@@ -553,6 +580,128 @@ mod tests {
         std::fs::write(tmp.path().join("vm-1").join("spec.json"), b"{not json").unwrap();
         let err = d.start_vm("vm-1").await.expect_err("the start must fail");
         assert!(matches!(err, Error::ConfigGeneration(_)), "got {err:?}");
+    }
+
+    /// Write a stand-in for QEMU: a script that records the arguments
+    /// it was given and exits with the given code.
+    fn fake_qemu(dir: &Path, exit_code: u8) -> std::path::PathBuf {
+        let path = dir.join("fake-qemu.sh");
+        let record = dir.join("fake-qemu.args");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\necho \"$@\" > {}\necho 'qemu: could not start' >&2\nexit {}\n",
+                record.display(),
+                exit_code
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// A VM that starts is a VM that runs.
+    ///
+    /// The QEMU here is a stand-in — the point is the driver's own
+    /// contract: it runs the hypervisor with the VM's resources and
+    /// comes back without an error.
+    #[tokio::test]
+    async fn a_vm_that_starts_runs_qemu_with_its_resources() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let qemu = fake_qemu(tmp.path(), 0);
+        let d = driver(tmp.path()).with_bin(qemu.to_string_lossy().to_string());
+
+        std::fs::create_dir_all(tmp.path().join("vm-1")).unwrap();
+        std::fs::write(
+            tmp.path().join("vm-1").join("spec.json"),
+            serde_json::to_vec(&spec()).unwrap(),
+        )
+        .unwrap();
+
+        d.start_vm("vm-1").await.expect("the start must succeed");
+
+        // QEMU was given the VM and the resources it asked for.
+        let args = std::fs::read_to_string(tmp.path().join("fake-qemu.args")).unwrap();
+        assert!(args.contains("vm-1"), "got {args}");
+        assert!(args.contains("-name"), "got {args}");
+        // 4000 millicores is four cores.
+        assert!(args.contains("4,cores=4"), "the cpu count is missing: {args}");
+        // Two gigabytes of memory.
+        assert!(args.contains("2048M"), "the memory is missing: {args}");
+    }
+
+    /// A QEMU that refuses to start is a failed start.
+    ///
+    /// Reporting success here would leave the caller believing a VM
+    /// exists that was never created — the failure would only surface
+    /// much later, when something asked the VM for its state.
+    #[tokio::test]
+    async fn a_qemu_that_fails_to_start_fails_the_start() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let qemu = fake_qemu(tmp.path(), 1);
+        let d = driver(tmp.path()).with_bin(qemu.to_string_lossy().to_string());
+
+        std::fs::create_dir_all(tmp.path().join("vm-1")).unwrap();
+        std::fs::write(
+            tmp.path().join("vm-1").join("spec.json"),
+            serde_json::to_vec(&spec()).unwrap(),
+        )
+        .unwrap();
+
+        let err = d.start_vm("vm-1").await.expect_err("the start must fail");
+        match &err {
+            Error::OperationFailed(msg) => {
+                assert!(msg.contains("could not start"), "got {msg}");
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    /// A QEMU that is not there at all is a process error, not a
+    /// successful start.
+    #[tokio::test]
+    async fn a_missing_qemu_is_a_process_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = driver(tmp.path()).with_bin("/nonexistent/qemu-system-x86_64");
+
+        std::fs::create_dir_all(tmp.path().join("vm-1")).unwrap();
+        std::fs::write(
+            tmp.path().join("vm-1").join("spec.json"),
+            serde_json::to_vec(&spec()).unwrap(),
+        )
+        .unwrap();
+
+        let err = d.start_vm("vm-1").await.expect_err("the start must fail");
+        assert!(matches!(err, Error::ProcessError(_)), "got {err:?}");
+    }
+
+    /// A VM that is already running is not started again: the second
+    /// start is a no-op, and QEMU is not run a second time.
+    #[tokio::test]
+    async fn a_vm_that_is_already_running_is_not_started_again() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let qemu = fake_qemu(tmp.path(), 0);
+        let d = driver(tmp.path()).with_bin(qemu.to_string_lossy().to_string());
+
+        std::fs::create_dir_all(tmp.path().join("vm-1")).unwrap();
+        std::fs::write(
+            tmp.path().join("vm-1").join("spec.json"),
+            serde_json::to_vec(&spec()).unwrap(),
+        )
+        .unwrap();
+        // The pid of this test process: it is certainly alive.
+        std::fs::write(
+            tmp.path().join("vm-1").join("qemu.pid"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+
+        d.start_vm("vm-1").await.expect("the start must succeed");
+        assert!(
+            !tmp.path().join("fake-qemu.args").exists(),
+            "QEMU must not be run for a VM that is already up"
+        );
     }
 
     /// Stopping a VM that is not running succeeds: the caller asked for
