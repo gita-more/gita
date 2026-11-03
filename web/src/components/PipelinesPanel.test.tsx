@@ -12,7 +12,7 @@
 //  4. the trigger button must call the trigger endpoint and refresh;
 //  5. a failed trigger must show the error.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -140,6 +140,43 @@ describe('PipelinesPanel', () => {
 
     await waitFor(() => {
       expect(listRuns).toHaveBeenCalledWith('alice', 'widgets', '.gita-ci.yml')
+    })
+  })
+
+  it('一个仓库有多个工作流时，可以切换并只拉取选中的那个', async () => {
+    listRuns.mockResolvedValue({ runs: [] })
+
+    // `.gita-ci.yml` and a GitHub-style workflow live side by side; the
+    // panel must not silently show only the first — that is how a workflow
+    // run becomes invisible in the UI.
+    const { user } = setup([
+      makePipeline({ path: '.gita-ci.yml' }),
+      makePipeline({ path: '.github/workflows/ci.yml' }),
+    ])
+
+    await waitFor(() => {
+      expect(listRuns).toHaveBeenCalledWith('alice', 'widgets', '.gita-ci.yml')
+    })
+
+    const picker = screen.getByTestId('pipeline-picker')
+    await user.click(within(picker).getByText('.github/workflows/ci.yml'))
+
+    await waitFor(() => {
+      expect(listRuns).toHaveBeenCalledWith(
+        'alice',
+        'widgets',
+        '.github/workflows/ci.yml',
+      )
+    })
+  })
+
+  it('只有一个流水线时不显示选择器', async () => {
+    listRuns.mockResolvedValue({ runs: [] })
+
+    setup()
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('pipeline-picker')).toBeNull()
     })
   })
 

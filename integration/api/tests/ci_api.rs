@@ -216,3 +216,61 @@ async fn pipelines_endpoint_lists_the_repo_ci_config() {
         "the listed pipeline should record the ref it was read at"
     );
 }
+
+/// A repository with both a `.gita-ci.yml` and GitHub-style workflow files
+/// lists all of them. Listing only the first format is why workflow runs
+/// were invisible in the UI.
+#[tokio::test]
+async fn pipelines_endpoint_lists_github_workflows_too() {
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "listpip2").await;
+    common::create_repo(&app, &user.token, "bothrepo").await;
+    common::push_files(
+        &app,
+        "listpip2",
+        "bothrepo",
+        &[
+            (
+                ".gita-ci.yml",
+                b"stages: [build]\njobs:\n  build:\n    stage: build\n    script:\n      - echo hi\n"
+                    .as_slice(),
+            ),
+            (
+                ".github/workflows/ci.yml",
+                b"on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+                    .as_slice(),
+            ),
+            (
+                ".github/workflows/notes.txt",
+                b"not a workflow\n".as_slice(),
+            ),
+        ],
+        "main",
+        "add both formats",
+    );
+
+    let (status, body) = common::request(
+        &app,
+        axum::http::Method::GET,
+        "/api/repos/listpip2/bothrepo/pipelines",
+        None,
+        Some(&user.token),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "pipelines: {body}");
+    let paths: Vec<&str> = body["pipelines"]
+        .as_array()
+        .expect("pipelines array")
+        .iter()
+        .map(|p| p["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.contains(&".gita-ci.yml"), "paths: {paths:?}");
+    assert!(
+        paths.contains(&".github/workflows/ci.yml"),
+        "the workflow file should be listed; paths: {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p.ends_with(".txt")),
+        "a non-YAML file under the workflows dir is not a workflow"
+    );
+}

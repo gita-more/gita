@@ -241,6 +241,10 @@ async fn list_pipelines(
             }))
         }
     };
+    let ref_name = format!("refs/heads/{}", repo_row.default_branch);
+    let mut pipelines = Vec::new();
+
+    // `.gita-ci.yml` (the legacy pipeline format).
     let content = state
         .git
         // Argument order is (owner, name, reference, path) — the ref and
@@ -249,31 +253,79 @@ async fn list_pipelines(
         .read_file(owner, repo, &head, ".gita-ci.yml")
         .ok()
         .flatten();
-    let pipelines = match content {
-        Some(file) => {
-            let row = state
-                .db
-                .get_pipeline_by_path(repo_row.id, ".gita-ci.yml")
-                .await?;
-            // Always synthesize a synthetic record from the file content;
-            // if a DB row exists, prefer its id/timestamps.
-            let (id, created_at, updated_at) = row
-                .map(|r| (r.id, r.created_at, r.updated_at))
-                .unwrap_or((0, String::new(), String::new()));
-            vec![PipelineResponse {
-                id,
-                repo_id: repo_row.id,
-                path: ".gita-ci.yml".into(),
-                r#ref: format!("refs/heads/{}", repo_row.default_branch),
-                ref_sha: head,
-                created_at,
-                updated_at,
-                content: file.content,
-            }]
+    if let Some(file) = content {
+        let row = state
+            .db
+            .get_pipeline_by_path(repo_row.id, ".gita-ci.yml")
+            .await?;
+        pipelines.push(pipeline_response(
+            &repo_row,
+            &ref_name,
+            &head,
+            ".gita-ci.yml",
+            file.content,
+            row,
+        ));
+    }
+
+    // `.github/workflows/*.yml` (GitHub-Actions style). A repo may carry
+    // both formats, so these are listed alongside the pipeline file rather
+    // than replacing it.
+    if let Ok(entries) = state.git.list_tree(owner, repo, &head, ".github/workflows") {
+        let mut paths: Vec<String> = entries
+            .into_iter()
+            .filter(|e| e.kind == "blob")
+            .map(|e| e.path)
+            .filter(|p| {
+                // Only files directly under `.github/workflows/`: a nested
+                // path is not a workflow GitHub would run either.
+                p.starts_with(".github/workflows/")
+                    && !p[".github/workflows/".len()..].contains('/')
+                    && (p.ends_with(".yml") || p.ends_with(".yaml"))
+            })
+            .collect();
+        // A stable order: the tree order is a filesystem detail.
+        paths.sort();
+        for path in paths {
+            let Ok(Some(file)) = state.git.read_file(owner, repo, &head, &path) else {
+                continue;
+            };
+            let row = state.db.get_pipeline_by_path(repo_row.id, &path).await?;
+            pipelines.push(pipeline_response(
+                &repo_row, &ref_name, &head, &path, file.content, row,
+            ));
         }
-        None => Vec::new(),
-    };
+    }
+
     Ok(axum::Json(PipelinesResponse { pipelines }))
+}
+
+/// Layer a config file and its stored pipeline row into a response.
+///
+/// The file is the source of truth for `content`; the row (when there is
+/// one) supplies the id and timestamps, and `id = 0` tells the caller the
+/// pipeline has never been run.
+fn pipeline_response(
+    repo_row: &gita_core::Repository,
+    ref_name: &str,
+    head: &str,
+    path: &str,
+    content: String,
+    row: Option<gita_db::PipelineRow>,
+) -> PipelineResponse {
+    let (id, created_at, updated_at) = row
+        .map(|r| (r.id, r.created_at, r.updated_at))
+        .unwrap_or((0, String::new(), String::new()));
+    PipelineResponse {
+        id,
+        repo_id: repo_row.id,
+        path: path.to_string(),
+        r#ref: ref_name.to_string(),
+        ref_sha: head.to_string(),
+        created_at,
+        updated_at,
+        content,
+    }
 }
 
 async fn list_runs(

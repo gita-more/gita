@@ -18,16 +18,25 @@ export function PipelinesPanel({
   const { t } = useI18n()
   const [runs, setRuns] = useState<PipelineRun[]>([])
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null)
+  // A repository can carry `.gita-ci.yml` and any number of
+  // `.github/workflows/*.yml`; the selected one decides whose runs are
+  // listed. Default to the first, and fall back when the list changes.
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [triggering, setTriggering] = useState(false)
   const [triggerError, setTriggerError] = useState('')
 
+  const activePath =
+    selectedPath && pipelines.some((p) => p.path === selectedPath)
+      ? selectedPath
+      : pipelines[0]?.path ?? null
+
   const refreshRuns = () => {
-    if (pipelines.length === 0) {
+    if (!activePath) {
       setRuns([])
       return
     }
     api
-      .listRuns(owner, name, pipelines[0].path)
+      .listRuns(owner, name, activePath)
       .then((r) => setRuns(r.runs))
       .catch(() => setRuns([]))
   }
@@ -35,14 +44,14 @@ export function PipelinesPanel({
   useEffect(() => {
     refreshRuns()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner, name, pipelines])
+  }, [owner, name, activePath, pipelines])
 
   async function handleTrigger() {
-    if (pipelines.length === 0 || triggering) return
+    if (!activePath || triggering) return
     setTriggering(true)
     setTriggerError('')
     try {
-      await api.triggerRun(owner, name, pipelines[0].path)
+      await api.triggerRun(owner, name, activePath)
       refreshRuns()
     } catch (e) {
       setTriggerError(String(e))
@@ -74,6 +83,23 @@ export function PipelinesPanel({
 
       {triggerError && (
         <div className="alert alert-error">{triggerError}</div>
+      )}
+
+      {pipelines.length > 1 && (
+        <div className="pipeline-picker" data-testid="pipeline-picker">
+          {pipelines.map((p) => (
+            <button
+              key={p.path}
+              className={`btn btn-ghost${p.path === activePath ? ' is-active' : ''}`}
+              onClick={() => {
+                setSelectedPath(p.path)
+                setSelectedRunId(null)
+              }}
+            >
+              {p.path}
+            </button>
+          ))}
+        </div>
       )}
 
       {pipelines.length === 0 ? (
