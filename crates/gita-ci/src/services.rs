@@ -105,13 +105,20 @@ impl Services {
         services: &BTreeMap<String, Service>,
         log: &(dyn Fn(&str) + Sync),
     ) -> anyhow::Result<Self> {
+        // An empty map, or one whose every image is empty, needs no
+        // network. `all` alone is vacuously true on an empty map, which is
+        // why the emptiness is checked too: otherwise every job without
+        // services would still try to tear a network down at the end.
+        if services.values().all(|s| s.image.is_empty()) {
+            return Ok(Self {
+                network: String::new(),
+                started: Vec::new(),
+            });
+        }
         let mut this = Services {
             network: network_name(job_id),
             started: Vec::new(),
         };
-        if services.values().all(|s| s.image.is_empty()) {
-            return Ok(this);
-        }
 
         log(&format!("creating docker network {}", this.network));
         run_docker(&["network", "create", &this.network]).await?;
@@ -254,6 +261,19 @@ mod tests {
         let args = create_args(1, "n", "db", &s);
         let pos = args.iter().position(|a| a == "postgres:17").unwrap();
         assert_eq!(&args[pos + 1..], &["postgres", "-c", "fsync=off"]);
+    }
+
+    /// A job with no services must not touch docker at all — not even to
+    /// remove a network it never created.
+    #[tokio::test]
+    async fn no_services_means_no_network() {
+        let log = |_: &str| {};
+        let started = Services::start(1, &BTreeMap::new(), &log).await.unwrap();
+        assert!(started.started.is_empty());
+        assert!(
+            started.network.is_empty(),
+            "an empty job must not claim a network name"
+        );
     }
 
     /// A service with no image is the conditional-service idiom and must
