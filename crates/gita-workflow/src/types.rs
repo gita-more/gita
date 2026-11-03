@@ -121,7 +121,7 @@ pub struct Service {
 /// When present, GitHub runs the job inside this container instead of
 /// directly on the runner, and services are reached by their network alias
 /// rather than through published ports.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Container {
     pub image: String,
     pub credentials: Option<RegistryCredentials>,

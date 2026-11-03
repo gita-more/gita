@@ -145,7 +145,7 @@ pub async fn execute_workflow_run(
             // A fresh VM per job: build one shell program out of the steps
             // and hand it to the VM executor, which provisions the VM,
             // injects the agent, and reclaims it.
-            let script = build_workflow_script(instance);
+            let script = crate::workflow_exec::build_shell_program(instance);
             // The service declarations travel as JSON: the runner parsed
             // the workflow, the agent only has to start what is described.
             let services_json = serde_json::to_string(&instance.job.services)
@@ -304,88 +304,3 @@ fn template_for_runs_on(runs_on: &gita_workflow::RunOn) -> String {
     }
 }
 
-/// Build one shell program out of a workflow job's steps, so it can run
-/// inside a VM the same way a `.gita-ci.yml` job does.
-fn build_workflow_script(instance: &gita_workflow::WorkflowJobInstance) -> String {
-    use gita_workflow::{evaluate, EvalContext};
-    let job = &instance.job;
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("set -e".to_string());
-
-    // Job-level environment.
-    for (k, v) in &job.env {
-        lines.push(format!("export {}={}", k, shell_quote(v)));
-    }
-    for (k, v) in crate::workflow_exec::github_env(
-        "gita/local",
-        "0",
-        &job.name,
-        "HEAD",
-        "refs/heads/main",
-    ) {
-        lines.push(format!("export {}={}", k, shell_quote(&v)));
-    }
-
-    for step in &job.steps {
-        // `uses: actions/checkout` is a no-op: the VM already has the repo.
-        if let Some(uses) = &step.uses {
-            if uses.starts_with("actions/checkout") {
-                continue;
-            }
-            lines.push(format!(
-                "echo 'unsupported uses: {}' >&2; exit 1",
-                uses
-            ));
-            break;
-        }
-        let run_cmd = match &step.run {
-            Some(r) => r.clone(),
-            None => continue,
-        };
-
-        // Merge step env.
-        let mut step_env = job.env.clone();
-        for (k, v) in &step.env {
-            step_env.insert(k.clone(), v.clone());
-        }
-        let ctx = EvalContext {
-            matrix: instance.matrix.clone(),
-            env: step_env.clone(),
-        };
-        let run_cmd = evaluate(&run_cmd, &ctx);
-
-        // Step-level `if:`.
-        if let Some(cond) = &step.if_condition {
-            let cctx = EvalContext {
-                matrix: instance.matrix.clone(),
-                env: step_env.clone(),
-            };
-            if !gita_workflow::evaluate_condition(cond, &cctx) {
-                continue;
-            }
-        }
-
-        for (k, v) in &step.env {
-            lines.push(format!("export {}={}", k, shell_quote(v)));
-        }
-
-        let cmd = if let Some(rel) = &step.working_directory {
-            format!("( cd {} && {} )", shell_quote(rel), run_cmd)
-        } else {
-            run_cmd
-        };
-        if let Some(name) = &step.name {
-            lines.push(format!("# {}", name));
-        }
-        lines.push(cmd);
-    }
-
-    lines.join("
-")
-}
-
-fn shell_quote(s: &str) -> String {
-    // Single-quote with escaping for single quotes.
-    let escaped = s.replace('\'', "'\''");
-    format!("'{}'", escaped)
-}

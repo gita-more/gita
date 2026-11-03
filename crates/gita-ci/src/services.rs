@@ -20,11 +20,15 @@
 //! exactly as on a GitHub-hosted runner.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gita_workflow::Service;
+use gita_workflow::{Container, Service};
 use tokio::process::Command;
+
+/// Where the job's workspace is mounted inside a `container:` job.
+pub const JOB_CONTAINER_WORKDIR: &str = "/workspace";
 
 /// How long to wait for one service to report healthy.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(180);
@@ -189,6 +193,134 @@ async fn docker_output(args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// The `docker run` argument list for a `container:` job.
+///
+/// Separate from running it so the command line can be asserted without a
+/// Docker daemon. The workspace is bind-mounted at
+/// [`JOB_CONTAINER_WORKDIR`] and the job's script is the `bash -ec` that
+/// runs there.
+pub fn container_run_args(
+    name: &str,
+    network: &str,
+    container: &Container,
+    work_dir: &Path,
+    script: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--name".into(),
+        name.to_string(),
+        "--network".into(),
+        network.to_string(),
+        "-v".into(),
+        format!("{}:{}", work_dir.display(), JOB_CONTAINER_WORKDIR),
+        "-w".into(),
+        JOB_CONTAINER_WORKDIR.to_string(),
+    ];
+    for port in &container.ports {
+        args.push("-p".into());
+        args.push(port.clone());
+    }
+    let mut env: Vec<(&String, &String)> = container.env.iter().collect();
+    env.sort();
+    for (k, v) in env {
+        args.push("-e".into());
+        args.push(format!("{k}={v}"));
+    }
+    for volume in &container.volumes {
+        args.push("-v".into());
+        args.push(volume.clone());
+    }
+    if let Some(options) = &container.options {
+        args.extend(options.split_whitespace().map(str::to_string));
+    }
+    args.push(container.image.clone());
+    args.push("bash".into());
+    args.push("-ec".into());
+    args.push(script.to_string());
+    args
+}
+
+/// Run a job's script inside a Docker container (`container:`).
+///
+/// GitHub runs the job's steps *in* the container instead of on the
+/// runner. The container joins the same per-job network as the services,
+/// so a step reaches `postgres:5432` by name and needs no published port.
+///
+/// The workspace is bind-mounted at [`JOB_CONTAINER_WORKDIR`]; the runner
+/// execs `bash -ec <script>` in it, exactly as it would on the host. The
+/// container is force-removed afterwards, services and network included.
+pub async fn run_in_container(
+    job_id: i64,
+    container: &Container,
+    services: &BTreeMap<String, Service>,
+    work_dir: &Path,
+    script: &str,
+    log: &(dyn Fn(&str) + Sync),
+) -> anyhow::Result<i32> {
+    let mut this = Services {
+        network: network_name(job_id),
+        started: Vec::new(),
+    };
+    log(&format!("creating docker network {}", this.network));
+    run_docker(&["network", "create", &this.network]).await?;
+
+    let result = run_in_container_inner(
+        job_id,
+        container,
+        services,
+        work_dir,
+        script,
+        log,
+        &mut this,
+    )
+    .await;
+    this.stop().await;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_in_container_inner(
+    job_id: i64,
+    container: &Container,
+    services: &BTreeMap<String, Service>,
+    work_dir: &Path,
+    script: &str,
+    log: &(dyn Fn(&str) + Sync),
+    this: &mut Services,
+) -> anyhow::Result<i32> {
+    // Services first: a step must find them ready on its first line.
+    for (label, svc) in services {
+        if svc.image.is_empty() {
+            log(&format!("service '{label}' has an empty image; skipping"));
+            continue;
+        }
+        log(&format!("starting service '{label}' ({})", svc.image));
+        let args = create_args(job_id, &this.network, label, svc);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_docker(&refs).await?;
+        let name = container_name(job_id, label);
+        this.started.push(name.clone());
+        run_docker(&["start", &name]).await?;
+        wait_healthy(&name, HEALTH_TIMEOUT).await?;
+        log(&format!("service '{label}' is healthy"));
+    }
+
+    // The job container.
+    let name = container_name(job_id, "job");
+    let args = container_run_args(&name, &this.network, container, work_dir, script);
+    this.started.push(name.clone());
+    log(&format!(
+        "running the job in container {name} ({})",
+        container.image
+    ));
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let status = Command::new("docker").args(&refs).status().await?;
+    // A signal-killed container has no code; report it as a failure rather
+    // than pretending it succeeded.
+    Ok(status.code().unwrap_or(1))
+}
+
 /// Poll `docker inspect` until the container reports `healthy`.
 ///
 /// A container with no `HEALTHCHECK` reports an empty status; that counts
@@ -274,6 +406,41 @@ mod tests {
             started.network.is_empty(),
             "an empty job must not claim a network name"
         );
+    }
+
+    /// A `container:` job runs `bash -ec <script>` in the image, with the
+    /// workspace mounted and the container on the job network.
+    #[test]
+    fn container_run_args_match_docker_cli() {
+        let container = Container {
+            image: "node:20".into(),
+            env: BTreeMap::from([("NODE_ENV".to_string(), "test".to_string())]),
+            ports: vec!["8080:80".into()],
+            options: Some("--memory 2g".into()),
+            ..Default::default()
+        };
+        let args = container_run_args(
+            "gita-svc-7-job",
+            "gita_job_network_7",
+            &container,
+            Path::new("/tmp/work"),
+            "npm test",
+        );
+        let joined = args.join(" ");
+        assert_eq!(args[0], "run");
+        assert!(joined.contains("--name gita-svc-7-job"));
+        assert!(joined.contains("--network gita_job_network_7"));
+        // The checkout is visible inside at a fixed path, and that path is
+        // the working directory.
+        assert!(joined.contains("-v /tmp/work:/workspace"));
+        assert!(joined.contains("-w /workspace"));
+        assert!(joined.contains("-p 8080:80"));
+        assert!(joined.contains("-e NODE_ENV=test"));
+        assert!(joined.contains("--memory 2g"));
+
+        // The image comes right before `bash -ec <script>`.
+        let image_at = args.iter().position(|a| a == "node:20").unwrap();
+        assert_eq!(&args[image_at + 1..], &["bash", "-ec", "npm test"]);
     }
 
     /// A service with no image is the conditional-service idiom and must
