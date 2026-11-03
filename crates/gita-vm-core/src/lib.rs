@@ -7,14 +7,12 @@
 //!
 //! - [`scheduler`]：调度器（filter → score → 选点）
 //! - [`state`]：虚拟机状态机
-//! - [`operation`]：操作引擎（有序、幂等的步骤）
 //! - [`repository`]：持久化契约（trait）
 //! - [`ipam`]：IP 地址管理
 //! - [`quota`]：配额引擎（分层校验）
 
 pub mod error;
 pub mod ipam;
-pub mod operation;
 pub mod quota;
 pub mod repository;
 pub mod scheduler;
