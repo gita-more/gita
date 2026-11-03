@@ -1,7 +1,7 @@
 mod common;
 
-use common::*;
 use assert_cmd::Command as AssertCmd;
+use common::*;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_auth_repo_pr_issue() {
@@ -152,8 +152,11 @@ async fn e2e_auth_me_update() {
 /// talking to, and the helper answers from the credential store.
 #[test]
 fn e2e_credential_helper_serves_stored_credentials() {
-    let dir = test_config_dir();
-    std::fs::create_dir_all(&dir).expect("create config dir");
+    // This test owns its credential file. The shared test config dir is
+    // written by every other `gita` invocation in this binary; running in
+    // parallel with them truncated the file before the helper read it.
+    let config = tempfile::TempDir::new().expect("create config dir");
+    let dir = config.path().to_path_buf();
     std::fs::write(
         dir.join("credentials.toml"),
         "[sites.\"http://127.0.0.1:3100\"]\ntoken = \"helper-token\"\nusername = \"helper-user\"\n",
@@ -192,7 +195,4 @@ fn e2e_credential_helper_serves_stored_credentials() {
         String::from_utf8_lossy(&out.stdout).trim().is_empty(),
         "an unknown host must yield no credential"
     );
-
-    // Clean up so other tests in this binary do not see the fake entry.
-    std::fs::remove_file(dir.join("credentials.toml")).ok();
 }
