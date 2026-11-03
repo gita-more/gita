@@ -19,9 +19,10 @@
 //! ```
 //!
 //! The model mirrors GitHub's naming (`jobs`, `runs-on`, `steps`, `uses`,
-//! `run`, `env`, `if`, `strategy.matrix`, `needs`) so the subset feels
-//! familiar and stays a subset — anything gita does not support yet is
-//! rejected explicitly rather than silently ignored.
+//! `run`, `env`, `if`, `strategy.matrix`, `needs`, `services`,
+//! `container`) so the subset feels familiar and stays a subset — anything
+//! gita does not support yet is rejected explicitly rather than silently
+//! ignored.
 //!
 //! The crate is pure logic with no I/O, so the whole parser and its
 //! expansion can be unit-tested without a server or database.
