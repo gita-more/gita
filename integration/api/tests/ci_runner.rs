@@ -121,6 +121,7 @@ jobs:
         claim_lease_secs: 300,
         concurrent_jobs: 1,
         job_timeout_secs: 300,
+        workflow_vm: false,
     };
 
     // Pre-clone the repo at head_sha into the run workspace.
@@ -253,6 +254,7 @@ jobs:
         claim_lease_secs: 300,
         concurrent_jobs: 1,
         job_timeout_secs: 300,
+        workflow_vm: false,
     };
     let _ = std::fs::create_dir_all(&runner_config.work_dir);
     let bare = app
@@ -427,6 +429,7 @@ jobs:
         claim_lease_secs: 300,
         concurrent_jobs: 1,
         job_timeout_secs: 300,
+        workflow_vm: false,
     };
     let _ = std::fs::create_dir_all(&runner_config.work_dir);
     let bare = app
@@ -775,6 +778,7 @@ async fn runner_clones_the_repository_using_a_full_ref() {
         claim_lease_secs: 300,
         concurrent_jobs: 1,
         job_timeout_secs: 300,
+        workflow_vm: false,
     };
     // The bare repo lives at <base>/cloneci/cirepo.git, so the clone URL
     // must be built from the parent of the bare repo.

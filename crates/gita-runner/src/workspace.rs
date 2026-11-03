@@ -73,6 +73,7 @@ mod tests {
             claim_lease_secs: 300,
             concurrent_jobs: 1,
             job_timeout_secs: 3600,
+            workflow_vm: false,
         }
     }
 

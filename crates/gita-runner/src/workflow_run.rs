@@ -19,13 +19,16 @@
 //! produces several instances, so the instance's matrix label is appended
 //! to keep the `(run_id, name)` uniqueness constraint satisfied.
 
-use crate::client::RunnerClient;
+use crate::client::{LogLine, RunnerClient};
 use crate::clone::{prepare_run_repo, CloneOutcome};
 use crate::config::RunnerConfig;
 use crate::registry::JobRegistry;
+use crate::workflow_exec::LogSink;
 use anyhow::{Context, Result};
+use chrono::Utc;
 use gita_db::PipelineRunRow;
 use gita_workflow::WorkflowJobInstance;
+use std::sync::Arc;
 
 /// The path prefix that marks a pipeline row as a workflow rather than a
 /// `.gita-ci.yml` pipeline.
@@ -34,6 +37,38 @@ pub const WORKFLOW_PATH_PREFIX: &str = ".github/workflows/";
 /// Whether a pipeline row's path designates a workflow file.
 pub fn is_workflow_path(path: &str) -> bool {
     path.starts_with(WORKFLOW_PATH_PREFIX)
+}
+
+/// A log sink that sends lines to the server.
+struct ApiLogSink {
+    client: RunnerClient,
+    job_id: i64,
+}
+
+impl LogSink for ApiLogSink {
+    fn write(&self, job_id: i64, seq: i64, stream: &str, line: &str) {
+        // The sink is called from the executor's reader tasks; the write
+        // is fire-and-forget so a slow server does not stall the pipe.
+        // The server's insert is idempotent per (job_id, seq), so a
+        // duplicate is a no-op rather than an error.
+        let client = self.client.clone();
+        let job_id = if job_id == 0 { self.job_id } else { job_id };
+        let line = line.to_string();
+        let stream = stream.to_string();
+        tokio::spawn(async move {
+            let _ = client
+                .append_logs(
+                    job_id,
+                    &[LogLine {
+                        seq,
+                        stream,
+                        line,
+                        timestamp: Utc::now().to_rfc3339(),
+                    }],
+                )
+                .await;
+        });
+    }
 }
 
 /// The name recorded for a job instance.
@@ -57,7 +92,7 @@ pub fn instance_job_name(instance: &WorkflowJobInstance) -> String {
 pub async fn execute_workflow_run(
     client: &RunnerClient,
     config: &RunnerConfig,
-    _registry: &JobRegistry,
+    registry: &JobRegistry,
     run: &PipelineRunRow,
     content: &str,
 ) -> Result<()> {
@@ -75,7 +110,7 @@ pub async fn execute_workflow_run(
     };
 
     // ---- 3. Prepare the checkout ----
-    let _repo_dir = match prepare_run_repo(client, config, run).await? {
+    let repo_dir = match prepare_run_repo(client, config, run).await? {
         CloneOutcome::Ready(dir) => dir,
         CloneOutcome::Failed(reason) => {
             tracing::warn!("workflow checkout failed: {reason}");
@@ -102,42 +137,79 @@ pub async fn execute_workflow_run(
             .create_job(run.id, &job_name, &instance.job.name, &[], &[])
             .await?;
 
-        // Run the GitHub-style workflow job inside a VM: build one shell
-        // program out of its steps and hand it to the VM executor, which
-        // provisions the VM, injects the agent, and reclaims it.
-        let script = build_workflow_script(instance);
-        // The service declarations travel as JSON: the runner parsed the
-        // workflow, the agent only has to start what is described.
-        let services_json = serde_json::to_string(&instance.job.services)
-            .context("serialize the job's services")?;
-        let vm = gita_pipeline::VmJob {
-            template: template_for_runs_on(&instance.job.runs_on),
-            cpu: None,
-            memory: None,
-            disk: None,
+        // Two execution modes, chosen by the deployment (see
+        // `RunnerConfig::workflow_vm`). GitHub picks per job from
+        // `runs-on`; until gita has a label-to-template mapping, the
+        // runner cannot, so the mode is a runner-wide setting.
+        let failed = if config.workflow_vm {
+            // A fresh VM per job: build one shell program out of the steps
+            // and hand it to the VM executor, which provisions the VM,
+            // injects the agent, and reclaims it.
+            let script = build_workflow_script(instance);
+            // The service declarations travel as JSON: the runner parsed
+            // the workflow, the agent only has to start what is described.
+            let services_json = serde_json::to_string(&instance.job.services)
+                .context("serialize the job's services")?;
+            let vm = gita_pipeline::VmJob {
+                template: template_for_runs_on(&instance.job.runs_on),
+                cpu: None,
+                memory: None,
+                disk: None,
+            };
+            match crate::vm_exec::run_job_in_vm_with_services(
+                client,
+                config,
+                run,
+                job_id,
+                &vm,
+                &script,
+                &services_json,
+            )
+            .await
+            {
+                Ok(crate::vm_exec::VmJobOutcome::Success) => false,
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::warn!("workflow job {job_name} failed to execute: {e:#}");
+                    true
+                }
+            }
+        } else {
+            // In a per-job workspace on the runner host. The log sink
+            // ships lines to the server; the job's status is set here
+            // because no in-VM agent owns it.
+            client.set_job_status(job_id, "running", None).await?;
+            let sink = Arc::new(ApiLogSink {
+                client: client.clone(),
+                job_id,
+            });
+            match crate::workflow_exec::execute_workflow_job(
+                instance,
+                &repo_dir,
+                job_id,
+                registry,
+                sink,
+            )
+            .await
+            {
+                Ok(res) => {
+                    let status = if res.success { "success" } else { "failed" };
+                    client.set_job_status(job_id, status, res.exit_code).await?;
+                    !res.success
+                }
+                Err(e) => {
+                    tracing::warn!("workflow job {job_name} failed to execute: {e:#}");
+                    true
+                }
+            }
         };
-        let outcome = crate::vm_exec::run_job_in_vm_with_services(
-            client,
-            config,
-            run,
-            job_id,
-            &vm,
-            &script,
-            &services_json,
-        )
-        .await;
 
-        match outcome {
-            Ok(crate::vm_exec::VmJobOutcome::Success) => {}
-            Ok(_) => {
-                let _ = client.set_job_status(job_id, "failed", None).await;
-                any_failed = true;
-            }
-            Err(e) => {
-                tracing::warn!("workflow job {job_name} failed to execute: {e:#}");
-                let _ = client.set_job_status(job_id, "failed", None).await;
-                any_failed = true;
-            }
+        if failed {
+            // A VM job's row may still be 'queued' if the agent never
+            // reported; a local job's row is 'running'. Either way the
+            // failure is the run's failure.
+            let _ = client.set_job_status(job_id, "failed", None).await;
+            any_failed = true;
         }
 
         // Stop at the first failure — matching GitHub's fail-fast default

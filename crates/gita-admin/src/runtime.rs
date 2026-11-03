@@ -102,6 +102,7 @@ pub async fn run(config: Config) -> Result<()> {
         claim_lease_secs: 300,
         concurrent_jobs: 1,
         job_timeout_secs: 3600,
+        workflow_vm: false,
     };
     tokio::spawn(async move {
         if let Err(e) = gita_runner::run(runner_cfg).await {

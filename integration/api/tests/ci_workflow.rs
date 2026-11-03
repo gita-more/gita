@@ -33,6 +33,7 @@ fn runner_config(app: &gita_admin::App, tag: &str) -> RunnerConfig {
         claim_lease_secs: 300,
         concurrent_jobs: 1,
         job_timeout_secs: 300,
+        workflow_vm: false,
     }
 }
 

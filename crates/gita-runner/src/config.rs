@@ -42,6 +42,17 @@ pub struct RunnerConfig {
     /// timeout.
     #[arg(long, env = "GITA_JOB_TIMEOUT_SECS", default_value = "3600")]
     pub job_timeout_secs: u64,
+
+    /// Run every workflow job inside a cluster VM.
+    ///
+    /// GitHub decides this per job from `runs-on`: a hosted label means a
+    /// fresh VM, `self-hosted` means the machine the runner is on. gita has
+    /// no label-to-template mapping yet, so the deployment chooses: with
+    /// this on, a workflow job provisions a VM; with it off, the job runs
+    /// in a per-job workspace on the runner host, which needs no
+    /// hypervisor.
+    #[arg(long, env = "GITA_WORKFLOW_VM", default_value = "false")]
+    pub workflow_vm: bool,
 }
 
 impl RunnerConfig {
@@ -79,6 +90,7 @@ mod tests {
             claim_lease_secs: 300,
             concurrent_jobs: 1,
             job_timeout_secs: 3600,
+            workflow_vm: false,
         }
     }
 
