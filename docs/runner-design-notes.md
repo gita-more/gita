@@ -42,8 +42,8 @@ optional sidecar services, plus clean resource accounting.
 
 | Concern                       | GitHub Actions runner                  | gita-runner (today)                  |
 |-------------------------------|----------------------------------------|---------------------------------------|
-| Execution isolation           | Fresh VM per job (container if `container:`) | Fresh VM per job when `GITA_WORKFLOW_VM` is on; otherwise `sh -c` in a per-job workspace |
-| Network isolation             | Per-job network                       | Per-job Docker network for services  |
+| Execution isolation           | Fresh VM per job (container if `container:`) | Fresh VM when `GITA_WORKFLOW_VM` is on; otherwise a per-job workspace, or a container for a `container:` job |
+| Network isolation             | Per-job network                       | Per-job Docker network for services / container jobs |
 | Sidecar services              | Declarative `services:` block          | **done** — `services:` for both DSLs |
 | Matrix builds                 | First-class                            | None                                 |
 | Artifact upload               | `actions/upload-artifact`              | Logs only (via `logs` table)          |

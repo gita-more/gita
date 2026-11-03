@@ -785,6 +785,32 @@ Semantics, matching GitHub Actions:
 The same keys work in `.github/workflows/*.yml`, where they apply to the
 whole job.
 
+## Running the job inside a container (`container:`)
+
+`.github/workflows/*.yml` jobs may also name an image for the job
+itself, which is where GitHub runs the steps:
+
+```yaml
+test:
+  runs-on: ubuntu-latest
+  container: node:20
+  services:
+    postgres:
+      image: postgres:17
+  steps:
+    - run: npm ci && npm test   # runs inside node:20
+```
+
+- the checkout is bind-mounted at `/workspace`, which is the working
+  directory;
+- the container joins the job's network, so the step reaches the service
+  as `postgres:5432` — no `ports:` needed, exactly as on GitHub;
+- `env`, `ports`, `volumes`, `options` and `credentials` are supported;
+- if the image cannot be pulled or the container cannot start, the job
+  fails rather than falling back to running on the host.
+
+`container:` is not implemented for `.gita-ci.yml`.
+
 ---
 
 ## What's deferred (Phase 2/3)
@@ -798,8 +824,8 @@ whole job.
 | 2 | `artifacts:` | Save job outputs (`paths`, `expire_in`, `expose_as`, `reports`). |
 | 2 | `environment:` | Named deploy targets with on-stop hooks. |
 | 2 | `rules:` | Conditional job inclusion (replaces `only/except`). |
-| 3 | `image:` | Run jobs in Docker. |
-| ✗ | `services:` | **Supported** — see below; the table row was stale. |
+| ✗ | `services:` | **Supported** — see above. |
+| ✗ | `container:` | **Supported for workflows** — see above. |
 | 3 | `include:` | Split config across files. |
 | 3 | `variables:` | Per-pipeline / per-job env. |
 | 3 | `secrets:` | Mount external secrets. |
