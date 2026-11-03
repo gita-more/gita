@@ -111,6 +111,27 @@ pub async fn run(config: Config) -> Result<()> {
     });
     info!("embedded CI runner started");
 
+    // Fail runs whose runner died mid-job. The claim query only ever
+    // looks at `queued` runs, so without this a crashed runner leaves its
+    // run in `running` forever. The grace is wider than the claim lease
+    // (300 s) so a renewal that is merely late is not mistaken for a dead
+    // runner.
+    let reap_db = app.db.clone();
+    let reaper = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            match reap_db.reap_stale_runs(600).await {
+                Ok(ids) if !ids.is_empty() => {
+                    warn!("failed {} run(s) whose runner stopped renewing: {ids:?}", ids.len())
+                }
+                Ok(_) => {}
+                Err(e) => warn!("reaping stale runs failed: {e}"),
+            }
+        }
+    });
+
     // Per-IP login rate limiter: 5 req/s with burst 10 — slows brute force
     // without affecting normal users.
     let limiter = gita_api::build_limiter(5, 10);
@@ -148,6 +169,7 @@ pub async fn run(config: Config) -> Result<()> {
     for handle in vm_loops {
         handle.abort();
     }
+    reaper.abort();
 
     info!("Gita stopped");
     Ok(())

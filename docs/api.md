@@ -599,6 +599,15 @@ Requires a runner token. Returns the id the runner uses for status updates and l
 - 需要认证
 - 响应码：`200`, `401`, `403`
 
+### `POST /api/runner/runs/{run_id}/renew`
+
+Extend the lease on a run being executed
+
+Requires a runner token. The runner calls this periodically while a run executes. A `renewed: false` answer means the run no longer belongs to this runner (finished, canceled, or reaped) and it should stop.
+
+- 需要认证
+- 响应码：`200`, `401`, `403`
+
 ### `POST /api/runner/runs/{run_id}/status`
 
 Set a run's status

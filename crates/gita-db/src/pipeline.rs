@@ -314,6 +314,67 @@ impl Db {
         rows.first().map(row_to_run).transpose()
     }
 
+    /// Extend the lease on a run this runner still owns.
+    ///
+    /// Returns `true` when the row was updated. `false` means the run is no
+    /// longer held by `runner_id` — it was finished, canceled, or reaped —
+    /// and the runner should stop working on it.
+    ///
+    /// This is the counterpart to GitHub's `PATCH agentrequests/{id}` renew
+    /// loop: the lease is what lets the server tell a slow job from a dead
+    /// runner.
+    pub async fn renew_pipeline_run(
+        &self,
+        id: i64,
+        runner_id: &str,
+        lease_seconds: i64,
+    ) -> Result<bool> {
+        let lease_until = (Utc::now() + chrono::Duration::seconds(lease_seconds)).to_rfc3339();
+        let res = sqlx::query(
+            "UPDATE pipeline_runs
+             SET claimed_until = $3
+             WHERE id = $1 AND claimed_by_runner_id = $2 AND status = 'running'",
+        )
+        .bind(id)
+        .bind(runner_id)
+        .bind(&lease_until)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Fail runs whose lease expired long enough ago that their runner is
+    /// certainly gone.
+    ///
+    /// The claim query only ever looks at `status = 'queued'`, so a run a
+    /// crashed runner left in `running` would otherwise stay there
+    /// forever. Every run reachable here was claimed, and the claim sets
+    /// `claimed_until`, so a NULL lease is not a candidate.
+    ///
+    /// `grace_seconds` is subtracted from now before comparing, so a run
+    /// whose renew loop is a little late is not killed.
+    pub async fn reap_stale_runs(&self, grace_seconds: i64) -> Result<Vec<i64>> {
+        let now = Utc::now();
+        let cutoff = (now - chrono::Duration::seconds(grace_seconds)).to_rfc3339();
+        let rows = sqlx::query(
+            "UPDATE pipeline_runs
+             SET status = 'failed',
+                 finished_at = COALESCE(finished_at, $1),
+                 claimed_until = NULL
+             WHERE status = 'running'
+               AND claimed_until IS NOT NULL
+               AND claimed_until < $2
+             RETURNING id",
+        )
+        .bind(now.to_rfc3339())
+        .bind(&cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| r.try_get::<i64, _>("id").map_err(Into::into))
+            .collect()
+    }
+
     /// Update a run's status. If `finished` is true, also stamps
     /// `finished_at` and clears `claimed_until` so the partial-restart
     /// path doesn't try to reclaim.

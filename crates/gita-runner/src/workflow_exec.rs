@@ -326,6 +326,8 @@ mod tests {
             matrix: None,
             shell: None,
             if_condition: None,
+            services: BTreeMap::new(),
+            container: None,
         };
         WorkflowJobInstance {
             job,

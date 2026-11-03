@@ -1125,6 +1125,104 @@ mod tests {
         drop_test_db(&db).await;
     }
 
+    /// Only the runner holding the lease may extend it, and a run that
+    /// finished underneath it cannot be renewed.
+    #[tokio::test]
+    async fn renew_pipeline_run_requires_the_holder() {
+        let db = fresh_db().await;
+        let user = db.create_user("renewer", "r@e.io", "h").await.unwrap();
+        let repo = db
+            .create_repository(user.id, "renewer", "rrepo", "d", false, "main", None)
+            .await
+            .unwrap();
+        let pid = db
+            .upsert_pipeline(repo.id, ".gita-ci.yml", "refs/heads/main", "abc", "s: [b]")
+            .await
+            .unwrap();
+        let run_id = db
+            .insert_pipeline_run(pid, repo.id, "refs/heads/main", "abc", None, None)
+            .await
+            .unwrap();
+
+        let claimed = db
+            .claim_pipeline_run("runner-a", 300)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.id, run_id);
+
+        // Another runner cannot steal the lease by renewing it.
+        assert!(!db
+            .renew_pipeline_run(run_id, "runner-b", 300)
+            .await
+            .unwrap());
+        assert!(db
+            .renew_pipeline_run(run_id, "runner-a", 300)
+            .await
+            .unwrap());
+
+        // Once the run is terminal it is no longer renewable.
+        db.update_pipeline_run_status(run_id, "success")
+            .await
+            .unwrap();
+        assert!(!db
+            .renew_pipeline_run(run_id, "runner-a", 300)
+            .await
+            .unwrap());
+
+        drop_test_db(&db).await;
+    }
+
+    /// A run whose lease lapsed past the grace is failed, so a crashed
+    /// runner cannot leave it `running` forever. A live lease is left
+    /// alone.
+    #[tokio::test]
+    async fn reap_stale_runs_fails_only_expired_leases() {
+        let db = fresh_db().await;
+        let user = db.create_user("reaper", "p@e.io", "h").await.unwrap();
+        let repo = db
+            .create_repository(user.id, "reaper", "prepo", "d", false, "main", None)
+            .await
+            .unwrap();
+        let pid = db
+            .upsert_pipeline(repo.id, ".gita-ci.yml", "refs/heads/main", "abc", "s: [b]")
+            .await
+            .unwrap();
+
+        // A run whose lease expired well before the grace window.
+        let stale = db
+            .insert_pipeline_run(pid, repo.id, "refs/heads/main", "abc", None, None)
+            .await
+            .unwrap();
+        db.claim_pipeline_run("runner-dead", 1).await.unwrap();
+        sqlx::query(
+            "UPDATE pipeline_runs SET claimed_until = $2 WHERE id = $1",
+        )
+        .bind(stale)
+        .bind("2000-01-01T00:00:00+00:00")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // A run held by a live runner.
+        let live = db
+            .insert_pipeline_run(pid, repo.id, "refs/heads/main", "abc", None, None)
+            .await
+            .unwrap();
+        db.claim_pipeline_run("runner-alive", 300).await.unwrap();
+
+        let reaped = db.reap_stale_runs(600).await.unwrap();
+        assert_eq!(reaped, vec![stale]);
+
+        let stale_row = db.get_pipeline_run(stale).await.unwrap().unwrap();
+        assert_eq!(stale_row.status, "failed");
+        assert!(stale_row.finished_at.is_some());
+        let live_row = db.get_pipeline_run(live).await.unwrap().unwrap();
+        assert_eq!(live_row.status, "running");
+
+        drop_test_db(&db).await;
+    }
+
     #[tokio::test]
     async fn pages_crud_roundtrip() {
         let db = fresh_db().await;

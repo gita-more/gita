@@ -1051,6 +1051,34 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/api/runner/runs/{run_id}/renew": {
+      "post": {
+        "tags": ["runner"],
+        "summary": "Extend the lease on a run being executed",
+        "description": "Requires a runner token. The runner calls this periodically while a run executes. A `renewed: false` answer means the run no longer belongs to this runner (finished, canceled, or reaped) and it should stop.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["runner_name"],
+                "properties": {
+                  "runner_name": { "type": "string" },
+                  "lease_secs": { "type": "integer", "default": 300 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Whether the lease was renewed", "content": { "application/json": { "schema": { "type": "object", "properties": { "renewed": { "type": "boolean" } } } } } },
+          "401": { "description": "Missing or invalid token" },
+          "403": { "description": "The token is not a runner token" }
+        }
+      }
+    },
     "/api/runner/runs/{run_id}/jobs": {
       "post": {
         "tags": ["runner"],

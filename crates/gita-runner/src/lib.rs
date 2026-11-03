@@ -96,14 +96,57 @@ pub async fn run(config: RunnerConfig) -> anyhow::Result<()> {
         let cfg = config.clone();
         let registry = JobRegistry::new();
         tokio::spawn(async move {
+            // Keep the claim's lease alive for the whole run. Without
+            // this, the server cannot tell a long job from a dead runner,
+            // and once the reap grace passes the run is failed and taken
+            // away from a runner that is in fact still working.
+            let renew = spawn_lease_renewer(client.clone(), cfg.clone(), run.id);
             let result = if is_workflow {
                 execute_workflow_run(&client, &cfg, &registry, &run, &pipeline.content).await
             } else {
                 execute_pipeline(&client, &cfg, &registry, &run).await
             };
+            renew.abort();
             if let Err(e) = result {
                 error!("run {} failed to execute: {e:#}", run.id);
             }
         });
     }
+}
+
+/// Renew a run's lease every third of its duration until aborted.
+///
+/// Renewing at a third of the lease leaves room for two failed attempts
+/// before the lease lapses. A `renewed: false` answer means the server
+/// moved the run on without us; the task stops renewing, but it cannot
+/// stop the job — the executor notices the status change itself.
+fn spawn_lease_renewer(
+    client: RunnerClient,
+    config: RunnerConfig,
+    run_id: i64,
+) -> tokio::task::JoinHandle<()> {
+    let lease = config.claim_lease_secs.max(3);
+    let interval = std::time::Duration::from_secs(lease / 3);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        ticker.tick().await; // the claim itself already took the lease
+        loop {
+            ticker.tick().await;
+            match client
+                .renew_run(run_id, &config.runner_name, lease)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        run = run_id,
+                        "lease renewal refused; the run no longer belongs to this runner"
+                    );
+                    return;
+                }
+                Err(e) => tracing::warn!(run = run_id, "lease renewal failed: {e:#}"),
+            }
+        }
+    })
 }

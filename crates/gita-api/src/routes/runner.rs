@@ -42,6 +42,7 @@ pub fn runner_routes() -> Router<AppState> {
         .route("/api/runner/claim", post(claim_run))
         .route("/api/runner/runs/{run_id}", get(get_run))
         .route("/api/runner/runs/{run_id}/status", post(set_run_status))
+        .route("/api/runner/runs/{run_id}/renew", post(renew_run))
         .route("/api/runner/runs/{run_id}/jobs", post(create_job))
         .route("/api/runner/jobs/{job_id}", get(get_job))
         .route("/api/runner/jobs/{job_id}/status", post(set_job_status))
@@ -175,10 +176,37 @@ async fn set_run_status(
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RenewRequest {
+    /// The runner that holds the lease; the renew only succeeds from it.
+    pub runner_name: String,
+    #[serde(default = "default_lease")]
+    pub lease_secs: i64,
+}
+
+/// POST /api/runner/runs/{run_id}/renew
+///
+/// Extend the lease on a run the runner is executing. A `false` answer
+/// means the run moved on without this runner (finished, canceled, or
+/// reaped), and it should stop working on it.
+async fn renew_run(
+    State(state): State<AppState>,
+    _user: AuthUserExtractor,
+    headers: HeaderMap,
+    Path(run_id): Path<i64>,
+    Json(req): Json<RenewRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_runner_token(&state, &headers).await?;
+    let renewed = state
+        .db
+        .renew_pipeline_run(run_id, &req.runner_name, req.lease_secs)
+        .await?;
+    Ok(Json(serde_json::json!({ "renewed": renewed })))
+}
+
 // ---------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize)]
 pub struct CreateJobRequest {
     pub name: String,

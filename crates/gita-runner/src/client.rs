@@ -138,6 +138,43 @@ impl RunnerClient {
         }))
     }
 
+    /// Extend the lease on a run this runner is executing.
+    ///
+    /// `Ok(false)` means the server no longer associates the run with this
+    /// runner. The caller is expected to stop: the run finished, was
+    /// canceled, or was reaped while the runner was still working.
+    pub async fn renew_run(
+        &self,
+        run_id: i64,
+        runner_name: &str,
+        lease_secs: u64,
+    ) -> Result<bool> {
+        #[derive(Serialize)]
+        struct RenewRequest<'a> {
+            runner_name: &'a str,
+            lease_secs: i64,
+        }
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/api/runner/runs/{run_id}/renew"),
+            )
+            .json(&RenewRequest {
+                runner_name,
+                lease_secs: lease_secs as i64,
+            })
+            .send()
+            .await
+            .context("renew run")?;
+        let response = self.check(response, "renew").await?;
+        #[derive(Deserialize)]
+        struct RenewResponse {
+            renewed: bool,
+        }
+        let body: RenewResponse = response.json().await.context("decode renew response")?;
+        Ok(body.renewed)
+    }
+
     /// The current state of a run — used to notice a cancellation.
     pub async fn get_run(&self, run_id: i64) -> Result<PipelineRunRow> {
         let response = self
