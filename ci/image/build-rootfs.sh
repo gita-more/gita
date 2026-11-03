@@ -119,7 +119,8 @@ apt-get install -y --no-install-recommends \
   zlib1g-dev \
   libssl-dev \
   libsqlite3-dev \
-  unzip
+  unzip \
+  docker.io
 # 清理 apt 缓存
 apt-get clean
 rm -rf /var/lib/apt/lists/*
@@ -206,22 +207,31 @@ chmod 700 /home/ci/.ssh
 if [[ -n "$AGENT_SCRIPT" ]]; then
   log "安装 CI agent: $AGENT_SCRIPT"
   install -m 0755 "$AGENT_SCRIPT" "$ROOT/usr/local/bin/gita-ci-agent"
-  cat > "$ROOT/etc/systemd/system/gita-ci-agent.service" <<EOF
+  # A template unit, because cloud-init starts `gita-ci-agent@<job>.service`
+  # with the job id as the instance name; the plain unit cannot be started
+  # that way and would leave the VM idle forever.
+  cat > "$ROOT/etc/systemd/system/gita-ci-agent@.service" <<EOF
 [Unit]
-Description=gita CI agent
-After=network-online.target
+Description=gita CI agent (job %i)
+After=network-online.target docker.service
 Wants=network-online.target
+Requires=docker.service
 
 [Service]
 Type=simple
+EnvironmentFile=/etc/gita-agent.env
 ExecStart=/usr/local/bin/gita-ci-agent
-Restart=on-failure
-User=ci
+Restart=no
+User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
-  chroot "$ROOT" /bin/bash -c 'systemctl enable gita-ci-agent'
+  chroot "$ROOT" /bin/bash -c 'systemctl enable gita-ci-agent@.service'
+  # The agent runs as root (it creates Docker networks and containers); it
+  # hands the job script to `ci` by switching user itself, so the service
+  # account does not need docker access.
+  chroot "$ROOT" /bin/bash -c 'systemctl enable docker.service'
 fi
 
 # =============================================================================
