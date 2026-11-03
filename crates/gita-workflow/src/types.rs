@@ -81,6 +81,55 @@ pub struct Step {
     pub if_condition: Option<String>,
 }
 
+/// Credentials for pulling an image from a private registry.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RegistryCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+/// A service container (`jobs.<id>.services.<name>`).
+///
+/// GitHub starts one container per service on a per-job bridge network and
+/// gives it the service's name as a network alias. `ports` use Docker's
+/// `HOST:CONTAINER` spelling; `options` are passed to `docker create`
+/// verbatim (that is where `--health-cmd` lives).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Service {
+    /// The container image, e.g. `postgres:17`. An empty image means the
+    /// service is skipped, matching GitHub's conditional-service idiom.
+    pub image: String,
+    /// Registry credentials, when the image is not public.
+    pub credentials: Option<RegistryCredentials>,
+    /// Environment variables for the container.
+    pub env: BTreeMap<String, String>,
+    /// `HOST:CONTAINER` port mappings, passed to `docker -p`.
+    pub ports: Vec<String>,
+    /// Volume mounts, passed to `docker -v` verbatim.
+    pub volumes: Vec<String>,
+    /// Extra `docker create` options, passed through unchanged.
+    pub options: Option<String>,
+    /// Overrides the image's `CMD`.
+    pub command: Option<String>,
+    /// Overrides the image's `ENTRYPOINT`.
+    pub entrypoint: Option<String>,
+}
+
+/// The container a job's steps run in (`jobs.<id>.container`).
+///
+/// When present, GitHub runs the job inside this container instead of
+/// directly on the runner, and services are reached by their network alias
+/// rather than through published ports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Container {
+    pub image: String,
+    pub credentials: Option<RegistryCredentials>,
+    pub env: BTreeMap<String, String>,
+    pub ports: Vec<String>,
+    pub volumes: Vec<String>,
+    pub options: Option<String>,
+}
+
 /// A job in a workflow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowJob {
@@ -100,6 +149,11 @@ pub struct WorkflowJob {
     pub shell: Option<String>,
     /// A boolean condition controlling whether this job runs.
     pub if_condition: Option<String>,
+    /// Service containers started alongside the job, keyed by the label
+    /// steps use as the network hostname.
+    pub services: BTreeMap<String, Service>,
+    /// The container to run the job's steps in, if any.
+    pub container: Option<Container>,
 }
 
 /// The top-level workflow document.
@@ -157,6 +211,10 @@ pub enum WorkflowError {
     InvalidExpression(usize, String),
     #[error("matrix axis '{0}' has no values")]
     EmptyMatrixAxis(String),
+    #[error("job '{0}' has unsupported key '{1}'")]
+    UnknownJobKey(String, String),
+    #[error("service label '{0}' is not a valid container network alias")]
+    InvalidServiceLabel(String),
 }
 
 use thiserror::Error;

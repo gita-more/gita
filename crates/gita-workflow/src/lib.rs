@@ -37,6 +37,6 @@ pub use expression::{evaluate, evaluate_condition, EvalContext, Evaluated};
 pub use parse::parse_workflow;
 pub use trigger::{should_run_on_push, TriggerDecision, TriggerMatcher};
 pub use types::{
-    Matrix, MatrixAxis, Permission, RunOn, Step, Trigger, TriggerEvent, Workflow, WorkflowError,
-    WorkflowJob, WorkflowJobInstance, WorkflowSpec,
+    Container, Matrix, MatrixAxis, Permission, RegistryCredentials, RunOn, Service, Step, Trigger,
+    TriggerEvent, Workflow, WorkflowError, WorkflowJob, WorkflowJobInstance, WorkflowSpec,
 };

@@ -10,8 +10,8 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::types::{
-    Matrix, MatrixAxis, Permission, RunOn, Step, Trigger, TriggerConfig, TriggerEvent, Workflow,
-    WorkflowError, WorkflowJob,
+    Container, Matrix, MatrixAxis, Permission, RegistryCredentials, RunOn, Service, Step, Trigger,
+    TriggerConfig, TriggerEvent, Workflow, WorkflowError, WorkflowJob,
 };
 
 /// Raw mirror of the workflow YAML document.
@@ -147,6 +147,15 @@ fn parse_job(name: &str, value: &serde_json::Value) -> Result<WorkflowJob, Workf
         WorkflowError::InvalidExpression(0, format!("job '{name}' is not a mapping"))
     })?;
 
+    // Reject keys we do not understand rather than dropping them. A typo
+    // such as `Servies:` would otherwise silently remove a capability the
+    // author asked for, which is how a job "passes" without its services.
+    for key in obj.keys() {
+        if !JOB_KEYS.contains(&key.as_str()) {
+            return Err(WorkflowError::UnknownJobKey(name.to_string(), key.clone()));
+        }
+    }
+
     let runs_on = parse_runs_on(obj.get("runs-on"))?;
     let steps = parse_steps(obj.get("steps"))?;
     if steps.is_empty() {
@@ -175,6 +184,8 @@ fn parse_job(name: &str, value: &serde_json::Value) -> Result<WorkflowJob, Workf
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let if_condition = obj.get("if").and_then(|v| v.as_str()).map(str::to_string);
+    let services = parse_services(obj.get("services"))?;
+    let container = parse_container(obj.get("container"))?;
 
     Ok(WorkflowJob {
         name: name.to_string(),
@@ -185,7 +196,192 @@ fn parse_job(name: &str, value: &serde_json::Value) -> Result<WorkflowJob, Workf
         matrix,
         shell,
         if_condition,
+        services,
+        container,
     })
+}
+
+/// The keys a job mapping may carry. A job with a key outside this set is
+/// an error, not a silent no-op: GitHub accepts a long tail of keys, and a
+/// typo in one of them (`Services:`, `servies:`) would otherwise turn a job
+/// into something weaker than the author wrote. Adding support for a new
+/// key means adding it here.
+const JOB_KEYS: [&str; 14] = [
+    "name",
+    "runs-on",
+    "steps",
+    "needs",
+    "env",
+    "strategy",
+    "shell",
+    "if",
+    "services",
+    "container",
+    "permissions",
+    "concurrency",
+    "outputs",
+    "timeout-minutes",
+];
+
+fn parse_services(
+    value: Option<&serde_json::Value>,
+) -> Result<BTreeMap<String, Service>, WorkflowError> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
+    };
+    let obj = value.as_object().ok_or_else(|| {
+        WorkflowError::InvalidExpression(0, "'services' must be a mapping".to_string())
+    })?;
+
+    let mut services = BTreeMap::new();
+    for (label, def) in obj {
+        if !is_valid_service_label(label) {
+            return Err(WorkflowError::InvalidServiceLabel(label.clone()));
+        }
+        services.insert(label.clone(), parse_service(label, def)?);
+    }
+    Ok(services)
+}
+
+/// A service label becomes a Docker network alias, so it must be a valid
+/// DNS label: lowercase alphanumerics and dashes.
+fn is_valid_service_label(label: &str) -> bool {
+    !label.is_empty()
+        && label
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+}
+
+fn parse_service(label: &str, value: &serde_json::Value) -> Result<Service, WorkflowError> {
+    let obj = value.as_object().ok_or_else(|| {
+        WorkflowError::InvalidExpression(0, format!("service '{label}' is not a mapping"))
+    })?;
+    let image = obj
+        .get("image")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    Ok(Service {
+        image,
+        credentials: parse_credentials(obj.get("credentials"), label)?,
+        env: parse_string_map(obj.get("env"))?,
+        ports: parse_string_list(obj.get("ports"), label, "ports")?,
+        volumes: parse_string_list(obj.get("volumes"), label, "volumes")?,
+        options: obj
+            .get("options")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        command: obj
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        entrypoint: obj
+            .get("entrypoint")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    })
+}
+
+fn parse_container(value: Option<&serde_json::Value>) -> Result<Option<Container>, WorkflowError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    // `container: node:20` is shorthand for `container: { image: node:20 }`.
+    if let Some(image) = value.as_str() {
+        return Ok(Some(Container {
+            image: image.to_string(),
+            credentials: None,
+            env: BTreeMap::new(),
+            ports: Vec::new(),
+            volumes: Vec::new(),
+            options: None,
+        }));
+    }
+    let obj = value.as_object().ok_or_else(|| {
+        WorkflowError::InvalidExpression(0, "'container' must be an image name or a mapping".into())
+    })?;
+    let image = obj
+        .get("image")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            WorkflowError::InvalidExpression(0, "'container' is missing 'image'".to_string())
+        })?
+        .to_string();
+
+    Ok(Some(Container {
+        image,
+        credentials: parse_credentials(obj.get("credentials"), "container")?,
+        env: parse_string_map(obj.get("env"))?,
+        ports: parse_string_list(obj.get("ports"), "container", "ports")?,
+        volumes: parse_string_list(obj.get("volumes"), "container", "volumes")?,
+        options: obj
+            .get("options")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    }))
+}
+
+fn parse_credentials(
+    value: Option<&serde_json::Value>,
+    owner: &str,
+) -> Result<Option<RegistryCredentials>, WorkflowError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let obj = value.as_object().ok_or_else(|| {
+        WorkflowError::InvalidExpression(
+            0,
+            format!("'{owner}': 'credentials' must be a mapping"),
+        )
+    })?;
+    let username = obj
+        .get("username")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            WorkflowError::InvalidExpression(
+                0,
+                format!("'{owner}': 'credentials' is missing 'username'"),
+            )
+        })?
+        .to_string();
+    let password = obj
+        .get("password")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            WorkflowError::InvalidExpression(
+                0,
+                format!("'{owner}': 'credentials' is missing 'password'"),
+            )
+        })?
+        .to_string();
+    Ok(Some(RegistryCredentials { username, password }))
+}
+
+/// A list of strings (`ports:`, `volumes:`). YAML scalars are accepted too,
+/// because `ports: - 5432` is written without quotes more often than not.
+fn parse_string_list(
+    value: Option<&serde_json::Value>,
+    owner: &str,
+    key: &str,
+) -> Result<Vec<String>, WorkflowError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let arr = value.as_array().ok_or_else(|| {
+        WorkflowError::InvalidExpression(0, format!("'{owner}': '{key}' must be a list"))
+    })?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let s = match item {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        out.push(s);
+    }
+    Ok(out)
 }
 
 fn parse_runs_on(value: Option<&serde_json::Value>) -> Result<RunOn, WorkflowError> {
@@ -491,6 +687,112 @@ jobs:
             RunOn::Labels(vec!["self-hosted".into(), "linux".into(), "x64".into()])
         );
         assert_eq!(wf.jobs["b"].runs_on, RunOn::Label("ubuntu-latest".into()));
+    }
+
+    /// A job with `services:` keeps every field the author wrote: image,
+    /// env, the `HOST:CONTAINER` port spelling and the raw docker options.
+    #[test]
+    fn services_are_parsed() {
+        let wf = parse(
+            r#"
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: gita
+        ports:
+          - 55432:5432
+        volumes:
+          - /tmp/data:/var/lib/postgresql/data
+        options: >-
+          --health-cmd "pg_isready"
+          --health-retries 30
+    steps: [{run: echo hi}]
+"#,
+        )
+        .unwrap();
+        let svc = &wf.jobs["test"].services["postgres"];
+        assert_eq!(svc.image, "postgres:17");
+        assert_eq!(svc.env["POSTGRES_DB"], "gita");
+        // YAML reads an unquoted `55432:5432` as a mapping, not a string,
+        // so this also proves the scalar form survives.
+        assert_eq!(svc.ports, vec!["55432:5432".to_string()]);
+        assert_eq!(svc.volumes, vec!["/tmp/data:/var/lib/postgresql/data".to_string()]);
+        assert!(svc.options.as_deref().unwrap().contains("--health-cmd"));
+    }
+
+    /// `container:` accepts both the shorthand image string and the full
+    /// mapping form.
+    #[test]
+    fn container_short_and_long_form() {
+        let wf = parse(
+            r#"
+on: push
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    container: node:20
+    steps: [{run: echo a}]
+  b:
+    runs-on: ubuntu-latest
+    container:
+      image: node:20
+      env:
+        NODE_ENV: test
+    steps: [{run: echo b}]
+"#,
+        )
+        .unwrap();
+        assert_eq!(wf.jobs["a"].container.as_ref().unwrap().image, "node:20");
+        let b = wf.jobs["b"].container.as_ref().unwrap();
+        assert_eq!(b.image, "node:20");
+        assert_eq!(b.env["NODE_ENV"], "test");
+    }
+
+    /// An unknown job key is an error. Silently ignoring it is how a job
+    /// runs without the services it declared.
+    #[test]
+    fn unknown_job_key_is_rejected() {
+        let err = parse(
+            r#"
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    servies:
+      postgres: {image: postgres:17}
+    steps: [{run: echo hi}]
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, WorkflowError::UnknownJobKey(job, key) if job == "test" && key == "servies"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A service label becomes a Docker network alias, so it must be a DNS
+    /// label.
+    #[test]
+    fn invalid_service_label_is_rejected() {
+        let err = parse(
+            r#"
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      "Postgres_DB":
+        image: postgres:17
+    steps: [{run: echo hi}]
+"#,
+        )
+        .unwrap_err();
+        assert!(matches!(err, WorkflowError::InvalidServiceLabel(_)));
     }
 
     #[test]

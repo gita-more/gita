@@ -171,6 +171,8 @@ mod tests {
                 matrix: None,
                 shell: None,
                 if_condition: None,
+                services: BTreeMap::new(),
+                container: None,
             },
             matrix: BTreeMap::new(),
             matrix_label: matrix_label.to_string(),
