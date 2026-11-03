@@ -143,8 +143,18 @@ async fn run_job(
     // transitions while a VM exists.
     if let Some(vm) = &job.vm {
         let script = job.script.join("\n");
-        let outcome =
-            crate::vm_exec::run_job_in_vm(client, config, run, job_id, vm, &script).await?;
+        let services_json = serde_json::to_string(&job.services)
+            .context("serialize the job's services")?;
+        let outcome = crate::vm_exec::run_job_in_vm_with_services(
+            client,
+            config,
+            run,
+            job_id,
+            vm,
+            &script,
+            &services_json,
+        )
+        .await?;
         return Ok(match outcome {
             crate::vm_exec::VmJobOutcome::Success => {
                 // The agent already finished the row; the caller expects
