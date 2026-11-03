@@ -8,7 +8,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use gita_vm_api::node::{Node, NodePhase, NodeStatus};
+use gita_vm_api::node::{
+    ConditionStatus, Node, NodeCondition, NodeConditionType, NodePhase, NodeStatus,
+};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -258,6 +260,14 @@ async fn node_heartbeat(
         node.status.phase = NodePhase::Online;
     }
 
+    // A heartbeat is the node's proof that it is alive and able to take
+    // work, so it is also what makes the node *ready*. The scheduler
+    // places a VM only on a node whose `Ready` condition is true, and
+    // nothing else ever sets it — a registered node that heartbeats
+    // would otherwise stay invisible to the scheduler forever.
+    let online = node.status.phase == NodePhase::Online;
+    set_ready_condition(&mut node, online);
+
     state
         .repo
         .update_node(&node)
@@ -265,6 +275,38 @@ async fn node_heartbeat(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
 
     Ok(Json(json!({"ok": true})))
+}
+
+/// Set (or clear) the node's `Ready` condition.
+///
+/// The other condition kinds are left alone: pressure conditions are
+/// reported by the node itself, not by the control plane.
+fn set_ready_condition(node: &mut Node, ready: bool) {
+    let status = if ready {
+        ConditionStatus::True
+    } else {
+        ConditionStatus::False
+    };
+    let now = gita_vm_core::now_ms();
+    match node
+        .conditions
+        .iter_mut()
+        .find(|c| c.kind == NodeConditionType::Ready)
+    {
+        Some(condition) => {
+            if condition.status != status {
+                condition.last_transition_ms = now;
+            }
+            condition.status = status;
+        }
+        None => node.conditions.push(NodeCondition {
+            kind: NodeConditionType::Ready,
+            status,
+            last_transition_ms: now,
+            reason: None,
+            message: None,
+        }),
+    }
 }
 
 /// 长轮询拉取待执行操作（Polling 模式核心）
@@ -316,4 +358,104 @@ pub fn router() -> Router<AppState> {
         .route("/internal/nodes/{id}/heartbeat", post(node_heartbeat))
         .route("/internal/nodes/{id}/operations/next", get(next_operations))
         .route("/internal/nodes/{id}/operations/report", post(report_operation))
+}
+
+#[cfg(test)]
+mod ready_condition_tests {
+    use super::*;
+
+    fn node() -> Node {
+        Node {
+            id: gita_vm_api::ids::NodeId(1),
+            name: "n1".into(),
+            cell: None,
+            spec: gita_vm_api::node::NodeSpec {
+                cpu_millis: 4000,
+                memory_bytes: 8_000_000_000,
+                disk_bytes: 50_000_000_000,
+                capabilities: gita_vm_api::node::NodeCapabilities {
+                    vmm: vec![gita_vm_api::node::VmmKind::Qemu],
+                    arch: vec!["x86_64".into()],
+                    nested_virt: false,
+                    gpu_passthrough: false,
+                    max_vcpus: 64,
+                    max_memory_bytes: 8_000_000_000,
+                },
+            },
+            status: gita_vm_api::node::NodeStatus {
+                alloc_cpu_millis: 0,
+                alloc_memory_bytes: 0,
+                alloc_disk_bytes: 0,
+                running_vms: 0,
+                phase: NodePhase::Online,
+                last_heartbeat_ms: 0,
+            },
+            taints: vec![],
+            labels: Default::default(),
+            owner: gita_vm_api::ids::OwnerRef::system(),
+            conditions: vec![],
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }
+    }
+
+    fn ready(node: &Node) -> Option<ConditionStatus> {
+        node.conditions
+            .iter()
+            .find(|c| c.kind == NodeConditionType::Ready)
+            .map(|c| c.status)
+    }
+
+    /// A heartbeat makes the node ready. Without this the scheduler
+    /// refuses every node: it places a VM only on a node whose `Ready`
+    /// condition is true, and nothing else ever set that condition — a
+    /// registered node stayed invisible to the scheduler forever.
+    #[test]
+    fn a_heartbeat_marks_the_node_ready() {
+        let mut n = node();
+        set_ready_condition(&mut n, true);
+        assert_eq!(ready(&n), Some(ConditionStatus::True));
+    }
+
+    /// A draining node is not ready, so it stops receiving new work.
+    #[test]
+    fn a_draining_node_is_not_ready() {
+        let mut n = node();
+        set_ready_condition(&mut n, true);
+        set_ready_condition(&mut n, false);
+        assert_eq!(ready(&n), Some(ConditionStatus::False));
+    }
+
+    /// The condition is updated in place, not appended twice.
+    #[test]
+    fn the_ready_condition_is_updated_in_place() {
+        let mut n = node();
+        set_ready_condition(&mut n, true);
+        set_ready_condition(&mut n, true);
+        let ready_count = n
+            .conditions
+            .iter()
+            .filter(|c| c.kind == NodeConditionType::Ready)
+            .count();
+        assert_eq!(ready_count, 1);
+    }
+
+    /// A condition the node reported itself (a pressure condition) is
+    /// left alone.
+    #[test]
+    fn other_conditions_are_left_alone() {
+        let mut n = node();
+        n.conditions.push(NodeCondition {
+            kind: NodeConditionType::DiskPressure,
+            status: ConditionStatus::True,
+            last_transition_ms: 0,
+            reason: None,
+            message: None,
+        });
+        set_ready_condition(&mut n, true);
+        assert!(n
+            .conditions
+            .iter()
+            .any(|c| c.kind == NodeConditionType::DiskPressure));
+    }
 }
