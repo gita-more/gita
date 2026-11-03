@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { expect, type APIRequestContext, type Page, type BrowserContext } from '@playwright/test'
 
 /**
@@ -155,6 +155,22 @@ export async function createRepoWithCommit(
   name: string,
   opts: { description?: string; isPrivate?: boolean; group?: string } = {},
 ): Promise<string> {
+  return createRepoWithFiles(page, name, { 'README.md': `# ${name}\n` }, opts)
+}
+
+/**
+ * Create a repository with one commit containing the given files.
+ *
+ * Paths may include directories (`.github/workflows/ci.yml`); the parent
+ * directories are created. Use this instead of [`createRepoWithCommit`]
+ * when a test needs a file other than `README.md`.
+ */
+export async function createRepoWithFiles(
+  page: Page,
+  name: string,
+  files: Record<string, string>,
+  opts: { description?: string; isPrivate?: boolean; group?: string } = {},
+): Promise<string> {
   const fullName = await createRepo(page, name, opts)
   const owner = opts.group ?? (await currentUsername(page))
   // Git's Basic auth carries the *token* in the password position (gita's
@@ -174,8 +190,12 @@ export async function createRepoWithCommit(
     execFileSync('git', ['clone', '--quiet', authed, work], { stdio: 'pipe', timeout: 30_000 })
     execFileSync('git', ['-C', work, 'config', 'user.email', 'e2e@example.com'], { stdio: 'pipe' })
     execFileSync('git', ['-C', work, 'config', 'user.name', 'e2e'], { stdio: 'pipe' })
-    writeFileSync(join(work, 'README.md'), `# ${name}\n`)
-    execFileSync('git', ['-C', work, 'add', 'README.md'], { stdio: 'pipe' })
+    for (const [path, content] of Object.entries(files)) {
+      const target = join(work, path)
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, content)
+    }
+    execFileSync('git', ['-C', work, 'add', '-A'], { stdio: 'pipe' })
     execFileSync('git', ['-C', work, 'commit', '-m', 'initial commit'], { stdio: 'pipe' })
     execFileSync('git', ['-C', work, 'push', 'origin', 'HEAD:main'], { stdio: 'pipe', timeout: 30_000 })
   } finally {
