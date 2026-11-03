@@ -25,6 +25,39 @@ pub fn test_db_url() -> String {
         .unwrap_or_else(|_| "postgres://gita:gita@127.0.0.1:55432/gita".to_string())
 }
 
+/// Poll `check` until it yields a value, panicking after `timeout`.
+///
+/// A fixed `sleep` before a background task has run is both flaky (too
+/// short on a loaded CI machine) and slow (too long everywhere). Waiting
+/// on the observable state is deterministic and returns as soon as the
+/// work is done.
+///
+/// The caller should move the values it captures into the async block:
+///
+/// ```ignore
+/// let app = &app;
+/// let repo = common::wait_for("the pipeline", Duration::from_secs(5), || {
+///     async move { app.db.get_pipeline_by_path(repo_id, path).await.unwrap() }
+/// })
+/// .await;
+/// ```
+pub async fn wait_for<T, F, Fut>(what: &str, timeout: std::time::Duration, mut check: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Some(value) = check().await {
+            return value;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!("timed out after {timeout:?} waiting for {what}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 /// Holds the per-test schema and bookkeeping for best-effort cleanup.
 pub struct TestAppGuard {
     pub base_url: String,
