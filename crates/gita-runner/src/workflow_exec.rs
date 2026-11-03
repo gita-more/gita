@@ -103,23 +103,54 @@ pub async fn execute_workflow_job(
         env.insert(k.clone(), v.clone());
     }
 
+    // Evaluate a job-level `if:` condition.
+    if let Some(cond) = &job.if_condition {
+        let ctx = gita_workflow::EvalContext {
+            matrix: job_instance.matrix.clone(),
+            env: env.clone(),
+        };
+        if !gita_workflow::evaluate_condition(cond, &ctx) {
+            return Ok(WorkflowJobResult {
+                job_name: job.name.clone(),
+                success: true,
+                exit_code: None,
+            });
+        }
+    }
+
     let seq = Arc::new(AtomicI64::new(0));
     let mut exit_code: Option<i32> = None;
 
     for (idx, step) in job.steps.iter().enumerate() {
-        // Phase 1: only `run:` steps are supported.
-        if step.uses.is_some() {
+        // `uses:` steps: support the checkout action as a no-op (the
+        // runner has already checked the repository out), and reject
+        // anything else with a clear error.
+        if let Some(uses) = &step.uses {
+            if uses.starts_with("actions/checkout") {
+                continue;
+            }
             return Err(anyhow::anyhow!(
                 "job '{}' step {} uses '{}': `uses:` actions are not implemented yet",
                 job.name,
                 idx + 1,
-                step.uses.as_deref().unwrap_or("")
+                uses
             ));
         }
         let run_cmd = match &step.run {
             Some(r) => r.clone(),
             None => continue,
         };
+
+        // Evaluate a step-level `if:` condition.
+        if let Some(cond) = &step.if_condition {
+            let ctx = gita_workflow::EvalContext {
+                matrix: job_instance.matrix.clone(),
+                env: env.clone(),
+            };
+            if !gita_workflow::evaluate_condition(cond, &ctx) {
+                continue;
+            }
+        }
 
         // Merge step env on top.
         let mut step_env = env.clone();
@@ -136,6 +167,8 @@ pub async fn execute_workflow_job(
         };
         let run_cmd = gita_workflow::evaluate(&run_cmd, &eval_ctx);
 
+        let shell = job.shell.as_deref().unwrap_or("bash");
+
         // Resolve working directory.
         let cwd = match &step.working_directory {
             Some(rel) => repo_dir.join(rel),
@@ -146,6 +179,7 @@ pub async fn execute_workflow_job(
             &run_cmd,
             &cwd,
             &step_env,
+            shell,
             job_id,
             seq.clone(),
             idx,
@@ -171,6 +205,7 @@ async fn run_one_step(
     run_cmd: &str,
     cwd: &Path,
     env: &BTreeMap<String, String>,
+    shell: &str,
     job_id: i64,
     seq: Arc<AtomicI64>,
     step_index: usize,
@@ -179,14 +214,25 @@ async fn run_one_step(
 ) -> Result<bool> {
     let key = format!("step-{step_index}");
 
-    // GitHub runs `run:` through the job's shell; we use `bash -lc` so the
-    // whole script is one shell invocation.
-    let shell = "bash";
-    let mut cmd = Command::new(shell);
-    cmd.arg("-lc")
-        .arg(run_cmd)
-        .current_dir(cwd)
-        .stdin(Stdio::null());
+    // GitHub runs `run:` through the job's (or step's) shell.
+    let mut cmd = match shell {
+        "python" | "python3" => {
+            let mut c = Command::new("python3");
+            c.arg("-c").arg(run_cmd);
+            c
+        }
+        "sh" => {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(run_cmd);
+            c
+        }
+        other => {
+            let mut c = Command::new(other);
+            c.arg("-c").arg(run_cmd);
+            c
+        }
+    };
+    cmd.current_dir(cwd).stdin(Stdio::null());
 
     // Build a clean environment from scratch: do not leak the runner's own
     // env (which holds its runner token) into the job.
@@ -279,6 +325,7 @@ mod tests {
             env: BTreeMap::new(),
             matrix: None,
             shell: None,
+            if_condition: None,
         };
         WorkflowJobInstance {
             job,
@@ -428,7 +475,7 @@ mod tests {
         let job = make_job(vec![Step {
             name: None,
             run: None,
-            uses: Some("actions/checkout@v4".to_string()),
+            uses: Some("foo/bar@v1".to_string()),
             env: BTreeMap::new(),
             working_directory: None,
             if_condition: None,

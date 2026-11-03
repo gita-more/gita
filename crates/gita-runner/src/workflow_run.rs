@@ -19,16 +19,13 @@
 //! produces several instances, so the instance's matrix label is appended
 //! to keep the `(run_id, name)` uniqueness constraint satisfied.
 
-use crate::client::{LogLine, RunnerClient};
+use crate::client::RunnerClient;
 use crate::clone::{prepare_run_repo, CloneOutcome};
 use crate::config::RunnerConfig;
 use crate::registry::JobRegistry;
-use crate::workflow_exec::{execute_workflow_job, LogSink};
 use anyhow::{Context, Result};
-use chrono::Utc;
 use gita_db::PipelineRunRow;
 use gita_workflow::WorkflowJobInstance;
-use std::sync::Arc;
 
 /// The path prefix that marks a pipeline row as a workflow rather than a
 /// `.gita-ci.yml` pipeline.
@@ -37,38 +34,6 @@ pub const WORKFLOW_PATH_PREFIX: &str = ".github/workflows/";
 /// Whether a pipeline row's path designates a workflow file.
 pub fn is_workflow_path(path: &str) -> bool {
     path.starts_with(WORKFLOW_PATH_PREFIX)
-}
-
-/// A log sink that sends lines to the server.
-struct ApiLogSink {
-    client: RunnerClient,
-    job_id: i64,
-}
-
-impl LogSink for ApiLogSink {
-    fn write(&self, job_id: i64, seq: i64, stream: &str, line: &str) {
-        // The sink is called from the executor's reader tasks; the write
-        // is fire-and-forget so a slow server does not stall the pipe.
-        // The server's insert is idempotent per (job_id, seq), so a
-        // duplicate is a no-op rather than an error.
-        let client = self.client.clone();
-        let job_id = if job_id == 0 { self.job_id } else { job_id };
-        let line = line.to_string();
-        let stream = stream.to_string();
-        tokio::spawn(async move {
-            let _ = client
-                .append_logs(
-                    job_id,
-                    &[LogLine {
-                        seq,
-                        stream,
-                        line,
-                        timestamp: Utc::now().to_rfc3339(),
-                    }],
-                )
-                .await;
-        });
-    }
 }
 
 /// The name recorded for a job instance.
@@ -92,7 +57,7 @@ pub fn instance_job_name(instance: &WorkflowJobInstance) -> String {
 pub async fn execute_workflow_run(
     client: &RunnerClient,
     config: &RunnerConfig,
-    registry: &JobRegistry,
+    _registry: &JobRegistry,
     run: &PipelineRunRow,
     content: &str,
 ) -> Result<()> {
@@ -110,7 +75,7 @@ pub async fn execute_workflow_run(
     };
 
     // ---- 3. Prepare the checkout ----
-    let repo_dir = match prepare_run_repo(client, config, run).await? {
+    let _repo_dir = match prepare_run_repo(client, config, run).await? {
         CloneOutcome::Ready(dir) => dir,
         CloneOutcome::Failed(reason) => {
             tracing::warn!("workflow checkout failed: {reason}");
@@ -136,28 +101,28 @@ pub async fn execute_workflow_run(
         let job_id = client
             .create_job(run.id, &job_name, &instance.job.name, &[], &[])
             .await?;
-        client.set_job_status(job_id, "running", None).await?;
 
-        let sink = Arc::new(ApiLogSink {
-            client: client.clone(),
-            job_id,
-        });
+        // Run the GitHub-style workflow job inside a VM: build one shell
+        // program out of its steps and hand it to the VM executor, which
+        // provisions the VM, injects the agent, and reclaims it.
+        let script = build_workflow_script(instance);
+        let vm = gita_pipeline::VmJob {
+            template: template_for_runs_on(&instance.job.runs_on),
+            cpu: None,
+            memory: None,
+            disk: None,
+        };
+        let outcome = crate::vm_exec::run_job_in_vm(client, config, run, job_id, &vm, &script).await;
 
-        let result = execute_workflow_job(instance, &repo_dir, job_id, registry, sink).await;
-
-        match result {
-            Ok(res) => {
-                let status = if res.success { "success" } else { "failed" };
-                client.set_job_status(job_id, status, res.exit_code).await?;
-                if !res.success {
-                    any_failed = true;
-                }
+        match outcome {
+            Ok(crate::vm_exec::VmJobOutcome::Success) => {}
+            Ok(_) => {
+                let _ = client.set_job_status(job_id, "failed", None).await;
+                any_failed = true;
             }
             Err(e) => {
-                // The executor itself failed (e.g. a `uses:` step that is
-                // not implemented yet). Record it as a failed job.
                 tracing::warn!("workflow job {job_name} failed to execute: {e:#}");
-                client.set_job_status(job_id, "failed", None).await?;
+                let _ = client.set_job_status(job_id, "failed", None).await;
                 any_failed = true;
             }
         }
@@ -205,6 +170,7 @@ mod tests {
                 env: BTreeMap::new(),
                 matrix: None,
                 shell: None,
+                if_condition: None,
             },
             matrix: BTreeMap::new(),
             matrix_label: matrix_label.to_string(),
@@ -230,4 +196,109 @@ mod tests {
         let inst = instance("build", "(os: \"ubuntu\")");
         assert_eq!(instance_job_name(&inst), "build (os: \"ubuntu\")");
     }
+}
+
+
+/// Map a GitHub `runs-on` value to the cluster VM template that runs it.
+///
+/// GitHub's runner labels (`ubuntu-latest`, `self-hosted`, ...) are treated
+/// as template names here: an administrator registers a template under the
+/// same name, and gita instantiates it for the job. A list of labels
+/// collapses to its first element, matching GitHub's "first label selects
+/// the runner" convention for self-hosted runners.
+fn template_for_runs_on(runs_on: &gita_workflow::RunOn) -> String {
+    use gita_workflow::RunOn;
+    match runs_on {
+        RunOn::Label(label) => label.clone(),
+        RunOn::Labels(labels) => labels
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "ubuntu-latest".to_string()),
+    }
+}
+
+/// Build one shell program out of a workflow job's steps, so it can run
+/// inside a VM the same way a `.gita-ci.yml` job does.
+fn build_workflow_script(instance: &gita_workflow::WorkflowJobInstance) -> String {
+    use gita_workflow::{evaluate, EvalContext};
+    let job = &instance.job;
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("set -e".to_string());
+
+    // Job-level environment.
+    for (k, v) in &job.env {
+        lines.push(format!("export {}={}", k, shell_quote(v)));
+    }
+    for (k, v) in crate::workflow_exec::github_env(
+        "gita/local",
+        "0",
+        &job.name,
+        "HEAD",
+        "refs/heads/main",
+    ) {
+        lines.push(format!("export {}={}", k, shell_quote(&v)));
+    }
+
+    for step in &job.steps {
+        // `uses: actions/checkout` is a no-op: the VM already has the repo.
+        if let Some(uses) = &step.uses {
+            if uses.starts_with("actions/checkout") {
+                continue;
+            }
+            lines.push(format!(
+                "echo 'unsupported uses: {}' >&2; exit 1",
+                uses
+            ));
+            break;
+        }
+        let run_cmd = match &step.run {
+            Some(r) => r.clone(),
+            None => continue,
+        };
+
+        // Merge step env.
+        let mut step_env = job.env.clone();
+        for (k, v) in &step.env {
+            step_env.insert(k.clone(), v.clone());
+        }
+        let ctx = EvalContext {
+            matrix: instance.matrix.clone(),
+            env: step_env.clone(),
+        };
+        let run_cmd = evaluate(&run_cmd, &ctx);
+
+        // Step-level `if:`.
+        if let Some(cond) = &step.if_condition {
+            let cctx = EvalContext {
+                matrix: instance.matrix.clone(),
+                env: step_env.clone(),
+            };
+            if !gita_workflow::evaluate_condition(cond, &cctx) {
+                continue;
+            }
+        }
+
+        for (k, v) in &step.env {
+            lines.push(format!("export {}={}", k, shell_quote(v)));
+        }
+
+        let cmd = if let Some(rel) = &step.working_directory {
+            format!("( cd {} && {} )", shell_quote(rel), run_cmd)
+        } else {
+            run_cmd
+        };
+        if let Some(name) = &step.name {
+            lines.push(format!("# {}", name));
+        }
+        lines.push(cmd);
+    }
+
+    lines.join("
+")
+}
+
+fn shell_quote(s: &str) -> String {
+    // Single-quote with escaping for single quotes.
+    let escaped = s.replace('\'', "'\''");
+    format!("'{}'", escaped)
 }

@@ -191,3 +191,366 @@ mod tests {
         );
     }
 }
+
+/// Evaluate a GitHub-Actions-style `if:` condition.
+///
+/// The condition may be written with or without the surrounding
+/// `${{ ... }}`. An empty condition is treated as true. An expression
+/// that cannot be parsed is treated as false, so a malformed
+/// condition skips the step rather than running it.
+pub fn evaluate_condition(input: &str, ctx: &EvalContext) -> bool {
+    let mut s = input.trim();
+    if s.is_empty() {
+        return true;
+    }
+    if let Some(rest) = s.strip_prefix("${{") {
+        s = rest.trim();
+        if let Some(inner) = s.strip_suffix("}}") {
+            s = inner.trim();
+        }
+    }
+    let mut parser = CondParser {
+        chars: s.chars().collect(),
+        pos: 0,
+        ctx,
+    };
+    let value = parser.parse_expr();
+    truthy(&value)
+}
+
+#[derive(Clone)]
+enum CValue {
+    Bool(bool),
+    Null,
+    Number(f64),
+    Str(String),
+    Other(String),
+}
+
+fn truthy(v: &CValue) -> bool {
+    match v {
+        CValue::Bool(b) => *b,
+        CValue::Null => false,
+        CValue::Str(s) => !s.is_empty(),
+        CValue::Number(n) => *n != 0.0,
+        CValue::Other(s) => !s.is_empty() && s != "null" && s != "false",
+    }
+}
+
+struct CondParser<'a> {
+    chars: Vec<char>,
+    pos: usize,
+    ctx: &'a EvalContext,
+}
+
+impl<'a> CondParser<'a> {
+    fn skip_ws(&mut self) {
+        while self.pos < self.chars.len() && self.chars[self.pos].is_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    fn parse_expr(&mut self) -> CValue {
+        self.parse_or()
+    }
+
+    fn parse_or(&mut self) -> CValue {
+        let mut left = self.parse_and();
+        loop {
+            self.skip_ws();
+            if self.peek_str("||") {
+                self.pos += 2;
+                let right = self.parse_and();
+                let res = truthy(&left) || truthy(&right);
+                left = CValue::Bool(res);
+            } else {
+                break;
+            }
+        }
+        left
+    }
+
+    fn parse_and(&mut self) -> CValue {
+        let mut left = self.parse_not();
+        loop {
+            self.skip_ws();
+            if self.peek_str("&&") {
+                self.pos += 2;
+                let right = self.parse_not();
+                let res = truthy(&left) && truthy(&right);
+                left = CValue::Bool(res);
+            } else {
+                break;
+            }
+        }
+        left
+    }
+
+    fn parse_not(&mut self) -> CValue {
+        self.skip_ws();
+        if self.pos < self.chars.len() && self.chars[self.pos] == '!' {
+            self.pos += 1;
+            let v = self.parse_not();
+            return CValue::Bool(!truthy(&v));
+        }
+        self.parse_cmp()
+    }
+
+    fn parse_cmp(&mut self) -> CValue {
+        let left = self.parse_primary();
+        self.skip_ws();
+        let op = if self.peek_str("==") {
+            "=="
+        } else if self.peek_str("!=") {
+            "!="
+        } else if self.peek_str(">=") {
+            ">="
+        } else if self.peek_str("<=") {
+            "<="
+        } else if self.pos < self.chars.len() && self.chars[self.pos] == '>' {
+            ">"
+        } else if self.pos < self.chars.len() && self.chars[self.pos] == '<' {
+            "<"
+        } else if self.peek_str("=") {
+            "=="
+        } else {
+            return left;
+        };
+        // consume op
+        // handle two-char ops
+        let consume = match op {
+            ">=" | "<=" | "==" | "!=" => 2,
+            _ => 1,
+        };
+        self.pos += consume;
+        let right = self.parse_primary();
+        let res = match op {
+            "==" | "=" => values_equal(&left, &right),
+            "!=" => !values_equal(&left, &right),
+            ">" => cmp_numbers(&left, &right, |a, b| a > b),
+            "<" => cmp_numbers(&left, &right, |a, b| a < b),
+            ">=" => cmp_numbers(&left, &right, |a, b| a >= b),
+            "<=" => cmp_numbers(&left, &right, |a, b| a <= b),
+            _ => false,
+        };
+        CValue::Bool(res)
+    }
+
+    fn parse_primary(&mut self) -> CValue {
+        self.skip_ws();
+        if self.pos >= self.chars.len() {
+            return CValue::Null;
+        }
+        // parentheses
+        if self.chars[self.pos] == '(' {
+            self.pos += 1;
+            let v = self.parse_expr();
+            self.skip_ws();
+            if self.pos < self.chars.len() && self.chars[self.pos] == ')' {
+                self.pos += 1;
+            }
+            return v;
+        }
+        // string literal
+        if self.chars[self.pos] == '\'' || self.chars[self.pos] == '"' {
+            let quote = self.chars[self.pos];
+            self.pos += 1;
+            let mut out = String::new();
+            while self.pos < self.chars.len() && self.chars[self.pos] != quote {
+                out.push(self.chars[self.pos]);
+                self.pos += 1;
+            }
+            if self.pos < self.chars.len() {
+                self.pos += 1;
+            }
+            return CValue::Str(out);
+        }
+        // function call or identifier path
+        if self.chars[self.pos].is_alphabetic() || self.chars[self.pos] == '_' {
+            let start = self.pos;
+            while self.pos < self.chars.len()
+                && (self.chars[self.pos].is_alphanumeric() || self.chars[self.pos] == '_' || self.chars[self.pos] == '.')
+            {
+                self.pos += 1;
+            }
+            let ident = self.chars[start..self.pos].iter().collect::<String>();
+            self.skip_ws();
+            // function call
+            if self.pos < self.chars.len() && self.chars[self.pos] == '(' {
+                self.pos += 1;
+                let mut args: Vec<CValue> = Vec::new();
+                self.skip_ws();
+                if self.pos < self.chars.len() && self.chars[self.pos] != ')' {
+                    args.push(self.parse_expr());
+                    loop {
+                        self.skip_ws();
+                        if self.pos < self.chars.len() && self.chars[self.pos] == ',' {
+                            self.pos += 1;
+                            args.push(self.parse_expr());
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.skip_ws();
+                if self.pos < self.chars.len() && self.chars[self.pos] == ')' {
+                    self.pos += 1;
+                }
+                return self.call_function(&ident, &args);
+            }
+            // property path
+            return self.resolve_path(&ident);
+        }
+        // number
+        if self.chars[self.pos].is_ascii_digit() {
+            let start = self.pos;
+            while self.pos < self.chars.len()
+                && (self.chars[self.pos].is_ascii_digit() || self.chars[self.pos] == '.')
+            {
+                self.pos += 1;
+            }
+            let num: f64 = self.chars[start..self.pos].iter().collect::<String>().parse().unwrap_or(0.0);
+            return CValue::Number(num);
+        }
+        // unknown token: consume one char and return null
+        self.pos += 1;
+        CValue::Null
+    }
+
+    fn peek_str(&self, pat: &str) -> bool {
+        let chars: Vec<char> = pat.chars().collect();
+        if self.pos + chars.len() > self.chars.len() {
+            return false;
+        }
+        self.chars[self.pos..self.pos + chars.len()] == chars
+    }
+
+    fn resolve_path(&self, path: &str) -> CValue {
+        let parts: Vec<&str> = path.split('.').collect();
+        if parts.is_empty() {
+            return CValue::Null;
+        }
+        match parts[0] {
+            "matrix" => {
+                if parts.len() == 1 {
+                    CValue::Other(serde_json::to_string(&self.ctx.matrix).unwrap_or_default())
+                } else {
+                    match self.ctx.matrix.get(parts[1]) {
+                        Some(v) => json_to_cvalue(v),
+                        None => CValue::Null,
+                    }
+                }
+            }
+            "env" => {
+                if parts.len() == 1 {
+                    CValue::Other(serde_json::to_string(&self.ctx.env).unwrap_or_default())
+                } else {
+                    match self.ctx.env.get(parts[1]) {
+                        Some(v) => CValue::Str(v.clone()),
+                        None => CValue::Null,
+                    }
+                }
+            }
+            "true" => CValue::Bool(true),
+            "false" => CValue::Bool(false),
+            "null" => CValue::Null,
+            _ => CValue::Null,
+        }
+    }
+
+    fn call_function(&self, name: &str, args: &[CValue]) -> CValue {
+        match name {
+            "always" | "success" => CValue::Bool(true),
+            "failure" | "cancelled" => CValue::Bool(false),
+            "contains" => {
+                if args.len() >= 2 {
+                    let hay = cvalue_to_string(&args[0]);
+                    let needle = cvalue_to_string(&args[1]);
+                    CValue::Bool(hay.contains(&needle))
+                } else {
+                    CValue::Bool(false)
+                }
+            }
+            "startsWith" => {
+                if args.len() >= 2 {
+                    let s = cvalue_to_string(&args[0]);
+                    let prefix = cvalue_to_string(&args[1]);
+                    CValue::Bool(s.starts_with(&prefix))
+                } else {
+                    CValue::Bool(false)
+                }
+            }
+            "endsWith" => {
+                if args.len() >= 2 {
+                    let s = cvalue_to_string(&args[0]);
+                    let suffix = cvalue_to_string(&args[1]);
+                    CValue::Bool(s.ends_with(&suffix))
+                } else {
+                    CValue::Bool(false)
+                }
+            }
+            "toJSON" => {
+                if let Some(a) = args.first() {
+                    CValue::Str(cvalue_to_string(a))
+                } else {
+                    CValue::Null
+                }
+            }
+            _ => CValue::Null,
+        }
+    }
+}
+
+fn values_equal(a: &CValue, b: &CValue) -> bool {
+    match (a, b) {
+        (CValue::Bool(x), CValue::Bool(y)) => x == y,
+        (CValue::Null, CValue::Null) => true,
+        (CValue::Number(x), CValue::Number(y)) => (x - y).abs() < f64::EPSILON,
+        (CValue::Str(x), CValue::Str(y)) => x == y,
+        (CValue::Str(x), CValue::Number(y)) => x.parse::<f64>().map(|n| (n - y).abs() < f64::EPSILON).unwrap_or(false),
+        (CValue::Number(x), CValue::Str(y)) => y.parse::<f64>().map(|n| (n - x).abs() < f64::EPSILON).unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn cmp_numbers(a: &CValue, b: &CValue, f: fn(f64, f64) -> bool) -> bool {
+    let an = match a {
+        CValue::Number(n) => *n,
+        CValue::Str(s) => s.parse().unwrap_or(0.0),
+        CValue::Bool(b) => if *b { 1.0 } else { 0.0 },
+        _ => 0.0,
+    };
+    let bn = match b {
+        CValue::Number(n) => *n,
+        CValue::Str(s) => s.parse().unwrap_or(0.0),
+        CValue::Bool(b) => if *b { 1.0 } else { 0.0 },
+        _ => 0.0,
+    };
+    f(an, bn)
+}
+
+fn cvalue_to_string(v: &CValue) -> String {
+    match v {
+        CValue::Str(s) => s.clone(),
+        CValue::Bool(b) => b.to_string(),
+        CValue::Null => String::new(),
+        CValue::Number(n) => {
+            if n.fract() == 0.0 {
+                format!("{}", *n as i64)
+            } else {
+                n.to_string()
+            }
+        }
+        CValue::Other(s) => s.clone(),
+    }
+}
+
+fn json_to_cvalue(v: &serde_json::Value) -> CValue {
+    match v {
+        serde_json::Value::Bool(b) => CValue::Bool(*b),
+        serde_json::Value::Null => CValue::Null,
+        serde_json::Value::Number(n) => CValue::Number(n.as_f64().unwrap_or(0.0)),
+        serde_json::Value::String(s) => CValue::Str(s.clone()),
+        other => CValue::Other(other.to_string()),
+    }
+}

@@ -87,6 +87,29 @@ pub async fn run(config: Config) -> Result<()> {
         None => Vec::new(),
     };
 
+    // Embedded CI runner: the server claims queued runs itself and executes
+    // them (including provisioning VMs for `vm:` jobs), so a push is enough
+    // to start CI without a separate runner process.
+    let runner_token = ensure_embedded_runner_token(&app.db).await?;
+    let runner_work_dir = config.server.data_dir.join("ci-work");
+    let _ = std::fs::create_dir_all(&runner_work_dir);
+    let runner_cfg = gita_runner::config::RunnerConfig {
+        server_base_url: format!("http://127.0.0.1:{}", config.server.port),
+        runner_token: runner_token.clone(),
+        runner_name: "embedded-runner".to_string(),
+        work_dir: runner_work_dir,
+        poll_interval_secs: 2,
+        claim_lease_secs: 300,
+        concurrent_jobs: 1,
+        job_timeout_secs: 3600,
+    };
+    tokio::spawn(async move {
+        if let Err(e) = gita_runner::run(runner_cfg).await {
+            tracing::warn!("embedded runner stopped: {e:#}");
+        }
+    });
+    info!("embedded CI runner started");
+
     // Per-IP login rate limiter: 5 req/s with burst 10 — slows brute force
     // without affecting normal users.
     let limiter = gita_api::build_limiter(5, 10);
@@ -170,4 +193,27 @@ fn random_hex_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+
+/// Mint (or reuse) a runner token for the embedded CI runner.
+///
+/// The runner API requires a personal access token whose name starts with
+/// `runner/`. We keep one dedicated system user for this and mint a fresh
+/// token on every start; stale tokens from previous runs are harmless.
+async fn ensure_embedded_runner_token(db: &gita_db::Db) -> anyhow::Result<String> {
+    use rand::RngCore;
+    let username = "gita-runner";
+    let user = match db.get_user_by_username(username).await? {
+        Some(u) => u,
+        None => {
+            let hash = gita_api::auth::hash_password("gita-runner-internal");
+            db.create_user(username, "gita-runner@localhost", &hash).await?
+        }
+    };
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    let token = hex::encode(bytes);
+    db.create_access_token(user.id, &token, "runner/embedded").await?;
+    Ok(token)
 }

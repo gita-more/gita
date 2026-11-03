@@ -174,6 +174,7 @@ fn parse_job(name: &str, value: &serde_json::Value) -> Result<WorkflowJob, Workf
         .get("shell")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    let if_condition = obj.get("if").and_then(|v| v.as_str()).map(str::to_string);
 
     Ok(WorkflowJob {
         name: name.to_string(),
@@ -183,6 +184,7 @@ fn parse_job(name: &str, value: &serde_json::Value) -> Result<WorkflowJob, Workf
         env,
         matrix,
         shell,
+        if_condition,
     })
 }
 

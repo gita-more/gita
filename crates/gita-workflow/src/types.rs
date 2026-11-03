@@ -98,6 +98,8 @@ pub struct WorkflowJob {
     pub matrix: Option<Matrix>,
     /// The shell to use for `run:` steps. Defaults to `bash`.
     pub shell: Option<String>,
+    /// A boolean condition controlling whether this job runs.
+    pub if_condition: Option<String>,
 }
 
 /// The top-level workflow document.
