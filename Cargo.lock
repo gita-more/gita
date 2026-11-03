@@ -1831,26 +1831,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gita-vm"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "gita-core",
- "gita-db",
- "gita-events",
- "gita-vm-api",
- "gita-vm-control",
- "gita-vm-core",
- "gita-vm-store",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "gita-vm-api"
 version = "0.0.1"
 dependencies = [

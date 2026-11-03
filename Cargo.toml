@@ -25,7 +25,6 @@ members = [
     "crates/gita-vm-control",
     "crates/gita-vm-node",
     "crates/gita-vm-driver-vmm",
-    "crates/gita-vm",
     "integration/cli",
     "integration/api",
 ]
