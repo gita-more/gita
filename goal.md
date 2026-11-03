@@ -372,7 +372,9 @@ gita 自带一个轻量级 in-repo CI，借鉴主流 SaaS CI 平台的形态，�
   在 UI 上报错；**顶层的未知 key 也会按名字报错**，不会再被误当成一个 job。
 - **Pipeline 定义 in-repo**，由仓库自己管理；没有 server-side 管理面板。
 - **Runner 是独立二进制** `gita-runner`，与 `gita-server` 解耦，只凭 server URL + runner token 通过 HTTP API 领取与回报任务（抢单的 `FOR UPDATE SKIP LOCKED` 仍在 server 端执行），独立 worker 模型，不需要数据库凭据。
-- **Phase 1 runtime 仅 shell**（`sh -c "<joined script>"`）；Docker / Podman 推迟到 Phase 3。
+- **Runtime 有两条路**：runner 宿主机上的 per-job 工作区（`sh -c`，默认），
+  或集群 VM（`[server.vm] workflow_vm = true`，每个 job 一台 VM）。
+  GitHub 按 `runs-on` 逐 job 决定，gita 目前按部署统一决定。
 - 触发器：push（Phase 1）；PR 状态检查、定时触发推迟到 Phase 2。
   （SSE 日志流与 cancel 已经提前做掉了，见下。）
 
@@ -383,6 +385,12 @@ gita 自带一个轻量级 in-repo CI，借鉴主流 SaaS CI 平台的形态，�
 | **1（本阶段）** | push 触发 → `.gita-ci.yml` 解析 → shell 跑 job → 写 logs → UI 上看 run + 日志 | 推一个有 `.gita-ci.yml` 的仓，能在 SPA Pipelines 标签看到 run 列表和 job stdout |
 | **2** | artifacts + cache + re-run + PR status check（**stages DAG、`only/except`、SSE 日志流、cancel 已提前完成**） | PR 合并前能等 CI pass |
 | **3** | Docker 运行时（`image:`/`services:`）+ secrets 加密存储 + worker 注册 API + pipeline YAML Monaco 编辑器 | 类似主流 SaaS CI 基本可用 |
+
+> **`services:` 已完成**（`.gita-ci.yml` 与 `.github/workflows/*.yml` 通用）：
+> 每个 job 一条 Docker bridge network，service 的 label 即 network alias，
+> `ports:` 用 `HOST:CONTAINER`，`options:` 原样传给 `docker create`，
+> 启动前等待 `docker inspect .State.Health.Status` 变 healthy。
+> 实现见 `crates/gita-ci/src/services.rs`；`image:`（整个 job 跑在容器里）仍未做。
 
 ### 10.3 已完成（Phase 1）
 
