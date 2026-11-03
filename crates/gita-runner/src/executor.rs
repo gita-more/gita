@@ -250,17 +250,25 @@ async fn run_job(
 
     // Start the job's service containers before anything runs, so the
     // first step can connect. Torn down at the end whatever the outcome.
+    //
+    // The sequence counter is shared with the job's own output below: the
+    // server stores logs keyed on `(job_id, seq)` and drops duplicates, so
+    // every line — system lines included — needs its own number.
+    let seq = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+
     let services_sink = client.clone();
     let services_job_id = job_id;
+    let services_seq = seq.clone();
     let services_log = move |line: &str| {
         let client = services_sink.clone();
         let line = line.to_string();
+        let seq = services_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::spawn(async move {
             let _ = client
                 .append_logs(
                     services_job_id,
                     &[crate::client::LogLine {
-                        seq: 0,
+                        seq,
                         stream: "system".to_string(),
                         line,
                         timestamp: chrono::Utc::now().to_rfc3339(),
@@ -292,7 +300,6 @@ async fn run_job(
     // out when it reaches LOG_BATCH_LINES or when the flush interval
     // elapses, whichever comes first — so the last lines of a job still
     // show up promptly.
-    let seq = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
 
     let mut child = registry
         .take(run.id, &job.name)

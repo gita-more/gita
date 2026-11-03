@@ -90,9 +90,17 @@ pub async fn execute_workflow_job(
 ) -> Result<WorkflowJobResult> {
     let job = &job_instance.job;
 
+    // One sequence counter for the whole job, system lines included. The
+    // server stores logs keyed on `(job_id, seq)` and drops duplicates, so
+    // every line must get its own number — writing all system lines at
+    // seq 0 keeps exactly one of them, and collides with the first line of
+    // step output.
+    let seq = Arc::new(AtomicI64::new(0));
+    let next_seq = || seq.fetch_add(1, Ordering::Relaxed);
+
     // A system log line for the lifecycle events the executor owns.
     let services_log = |line: &str| {
-        log_sink.write(job_id, 0, "system", line);
+        log_sink.write(job_id, next_seq(), "system", line);
     };
 
     // Build the merged environment: job env overrides GITHUB_*, step env
@@ -127,7 +135,7 @@ pub async fn execute_workflow_job(
     // runner host. The whole job's shell program is built first and then
     // exec'd in the container, so the step semantics do not diverge.
     if let Some(container) = &job.container {
-        log_sink.write(job_id, 0, "system", &format!("job container: {}", container.image));
+        services_log(&format!("job container: {}", container.image));
         let script = build_shell_program(job_instance);
         let code: i32 = gita_ci::services::run_in_container(
             job_id,
@@ -157,7 +165,6 @@ pub async fn execute_workflow_job(
             }
         };
 
-    let seq = Arc::new(AtomicI64::new(0));
     let mut exit_code: Option<i32> = None;
 
     for (idx, step) in job.steps.iter().enumerate() {
@@ -487,6 +494,36 @@ mod tests {
         assert!(lines
             .iter()
             .any(|(_, _, s, l)| s == "stdout" && l.contains("sub")));
+    }
+
+    /// Every log line needs its own sequence number. The server stores logs
+    /// keyed on `(job_id, seq)` and drops duplicates, so two lines sharing
+    /// a seq means one of them is lost — which is what happened when every
+    /// system line was written at seq 0.
+    #[tokio::test]
+    async fn every_log_line_gets_its_own_sequence_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = JobRegistry::new();
+        let sink_inner = Arc::new(VecLogSink::default());
+        let sink: Arc<dyn LogSink> = sink_inner.clone();
+        // Two steps, each printing, so there is more than one line and
+        // more than one step counter involved.
+        let job = make_job(vec![step("echo one"), step("echo two")]);
+        let res = execute_workflow_job(&job, dir.path(), 1, &registry, sink.clone())
+            .await
+            .unwrap();
+        assert!(res.success);
+
+        let lines = sink_inner.0.lock().unwrap();
+        let mut seqs: Vec<i64> = lines.iter().map(|(_, seq, _, _)| *seq).collect();
+        assert!(seqs.len() >= 2, "expected several log lines, got {lines:?}");
+        seqs.sort_unstable();
+        seqs.dedup();
+        assert_eq!(
+            seqs.len(),
+            lines.len(),
+            "two log lines share a sequence number: {lines:?}"
+        );
     }
 
     #[tokio::test]
