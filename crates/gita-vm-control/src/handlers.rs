@@ -6,11 +6,12 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{delete, get},
     Json, Router,
 };
 use gita_vm_api::ids::OwnerRef;
 use gita_vm_api::template::VmTemplate;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -44,6 +45,7 @@ fn auth_err(e: ApiAuthError) -> ApiError {
     match e {
         ApiAuthError::Unauthorized(m) => ApiError(StatusCode::UNAUTHORIZED, m),
         ApiAuthError::Forbidden(m) => ApiError(StatusCode::FORBIDDEN, m),
+        ApiAuthError::Internal(m) => ApiError(StatusCode::INTERNAL_SERVER_ERROR, m),
     }
 }
 
@@ -287,6 +289,119 @@ async fn get_node(
     Ok(Json(serde_json::to_value(node).unwrap()))
 }
 
+/// DELETE /nodes/{id}
+///
+/// Removing a node is a cluster operation: it forgets the hypervisor and
+/// its credential. VMs it was running are left to the normal garbage
+/// collection; the foreign keys detach them from the node.
+async fn delete_node(
+    State(state): State<AppState>,
+    user: VmUser,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    user.require_admin().map_err(auth_err)?;
+    let node_id = gita_vm_api::ids::NodeId(id);
+    state
+        .repo
+        .get_node(node_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("node {id} not found")))?;
+    state
+        .repo
+        .delete_node(node_id)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateEnrollmentTokenRequest {
+    /// A label for the administrator's own bookkeeping.
+    #[serde(default)]
+    pub name: String,
+    /// Optional pin: only this node name may redeem the token.
+    #[serde(default)]
+    pub node_name: Option<String>,
+    /// Lifetime in seconds. Clamped to 60..86400; defaults to one hour.
+    #[serde(default)]
+    pub ttl_secs: Option<i64>,
+}
+
+fn random_token(prefix: &str) -> String {
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    format!("{prefix}{}", hex::encode(bytes))
+}
+
+/// POST /enrollment-tokens
+///
+/// Mint a one-time join token. The plaintext is returned exactly once;
+/// only its hash is stored. The administrator shows it to the node
+/// agent (or pastes it into the enrollment command).
+async fn create_enrollment_token(
+    State(state): State<AppState>,
+    user: VmUser,
+    Json(req): Json<CreateEnrollmentTokenRequest>,
+) -> ApiResult<impl IntoResponse> {
+    user.require_admin().map_err(auth_err)?;
+    let now = gita_vm_core::now_ms();
+    let ttl = req.ttl_secs.unwrap_or(3600).clamp(60, 86_400);
+    let expires_at_ms = now + ttl * 1000;
+    let node_name = req
+        .node_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let token = random_token("gita_join_");
+    let hash = gita_db::hash_token(&token);
+    let row = state
+        .auth
+        .db()
+        .create_enrollment_token(&req.name, node_name, &hash, now, expires_at_ms)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "token": token,
+            "enrollment": row,
+        })),
+    ))
+}
+
+/// GET /enrollment-tokens
+async fn list_enrollment_tokens(
+    State(state): State<AppState>,
+    user: VmUser,
+) -> ApiResult<Json<serde_json::Value>> {
+    user.require_admin().map_err(auth_err)?;
+    let tokens = state
+        .auth
+        .db()
+        .list_enrollment_tokens()
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "tokens": tokens })))
+}
+
+/// DELETE /enrollment-tokens/{id}
+async fn delete_enrollment_token(
+    State(state): State<AppState>,
+    user: VmUser,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    user.require_admin().map_err(auth_err)?;
+    state
+        .auth
+        .db()
+        .delete_enrollment_token(id)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn list_images(
     State(state): State<AppState>,
     user: VmUser,
@@ -328,8 +443,14 @@ pub fn router() -> Router<AppState> {
         .route("/vms/{id}", get(get_vm).delete(delete_vm))
         // nodes
         .route("/nodes", get(list_nodes))
-        .route("/nodes/{id}", get(get_node))
+        .route("/nodes/{id}", get(get_node).delete(delete_node))
         .route("/api-key", get(get_api_key))
+        // node enrollment
+        .route(
+            "/enrollment-tokens",
+            get(list_enrollment_tokens).post(create_enrollment_token),
+        )
+        .route("/enrollment-tokens/{id}", delete(delete_enrollment_token))
         // images
         .route("/images", get(list_images))
         // quotas

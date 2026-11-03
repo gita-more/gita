@@ -11,7 +11,13 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useI18n } from '../i18n'
-import { api, type VmTemplateInfo, type VmNodeInfo, type VmInstanceInfo } from '../lib/api'
+import {
+  api,
+  type VmTemplateInfo,
+  type VmNodeInfo,
+  type VmInstanceInfo,
+  type VmEnrollmentTokenInfo,
+} from '../lib/api'
 import { useErrorTranslator } from '../i18n'
 
 /** True when the failure is "the VM cluster is off on this server" (404). */
@@ -40,6 +46,12 @@ export function AdminVmSection() {
   const [templates, setTemplates] = useState<VmTemplateInfo[]>([])
   const [nodes, setNodes] = useState<VmNodeInfo[]>([])
   const [vms, setVms] = useState<VmInstanceInfo[]>([])
+  const [joinTokens, setJoinTokens] = useState<VmEnrollmentTokenInfo[]>([])
+  const [showAddNode, setShowAddNode] = useState(false)
+  const [nodeName, setNodeName] = useState('')
+  const [createdJoinToken, setCreatedJoinToken] = useState<string | null>(null)
+  const [createdNodeName, setCreatedNodeName] = useState('')
+  const [nodeBusy, setNodeBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -55,6 +67,14 @@ export function AdminVmSection() {
       setNodes(n.nodes)
       setVms(v.vms)
       setDisabled(false)
+      // Join tokens are a convenience: a failure to list them must not
+      // make an otherwise healthy cluster look broken.
+      try {
+        const j = await api.listVmEnrollmentTokens()
+        setJoinTokens(j.tokens)
+      } catch {
+        setJoinTokens([])
+      }
     } catch (err) {
       if (isClusterDisabled(err)) {
         setDisabled(true)
@@ -89,6 +109,65 @@ export function AdminVmSection() {
       await refresh()
     } catch (err) {
       setError(translateError(err))
+    }
+  }
+
+  async function createJoinToken() {
+    setError('')
+    setNotice('')
+    setNodeBusy(true)
+    setCreatedJoinToken(null)
+    try {
+      const res = await api.createVmEnrollmentToken('node', nodeName.trim())
+      setCreatedJoinToken(res.token)
+      setCreatedNodeName(res.enrollment.node_name ?? '')
+      setNodeName('')
+      await refresh()
+    } catch (err) {
+      setError(translateError(err))
+    } finally {
+      setNodeBusy(false)
+    }
+  }
+
+  async function revokeJoinToken(token: VmEnrollmentTokenInfo) {
+    setError('')
+    setNotice('')
+    try {
+      await api.deleteVmEnrollmentToken(token.id)
+      setNotice(t('vm.joinTokenRevoked'))
+      await refresh()
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }
+
+  async function removeNode(node: VmNodeInfo) {
+    if (!window.confirm(t('vm.removeNodeConfirm', { name: node.name }))) return
+    setError('')
+    setNotice('')
+    try {
+      await api.deleteVmNode(node.id)
+      setNotice(t('vm.nodeRemoved', { name: node.name }))
+      await refresh()
+    } catch (err) {
+      setError(translateError(err))
+    }
+  }
+
+  const nodeNameArg =
+    createdNodeName === '' ? '' : ` --node-name '${createdNodeName}'`
+  const joinCommand =
+    createdJoinToken === null
+      ? ''
+      : `gita-vm-node --control-url ${window.location.origin} --join-token ${createdJoinToken}${nodeNameArg}`
+
+  async function copyJoinCommand() {
+    try {
+      await navigator.clipboard.writeText(joinCommand)
+      setNotice(t('vm.copied'))
+    } catch {
+      setNotice(t('vm.copyFailed'))
     }
   }
 
@@ -147,7 +226,56 @@ export function AdminVmSection() {
       )}
 
       {/* ----- Nodes ----- */}
-      <h4>{t('vm.nodesTitle')}</h4>
+      <div className="settings-tokens-header">
+        <h4>{t('vm.nodesTitle')}</h4>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => {
+            setShowAddNode((v) => !v)
+            setCreatedJoinToken(null)
+            setCreatedNodeName('')
+          }}
+        >
+          {showAddNode ? t('common.cancel') : t('vm.addNode')}
+        </button>
+      </div>
+
+      {showAddNode && (
+        <div className="settings-section" data-testid="vm-add-node">
+          <p>{t('vm.addNodeDescription')}</p>
+          <label className="field-label" htmlFor="vm-node-name">
+            {t('vm.nodeNameOptional')}
+          </label>
+          <input
+            id="vm-node-name"
+            className="input"
+            value={nodeName}
+            onChange={(e) => setNodeName(e.target.value)}
+            placeholder={t('vm.nodeNamePlaceholder')}
+          />
+          <button
+            className="btn btn-primary"
+            disabled={nodeBusy}
+            onClick={() => void createJoinToken()}
+          >
+            {nodeBusy ? t('common.loading') : t('vm.generateJoinToken')}
+          </button>
+
+          {createdJoinToken && (
+            <div className="alert alert-success">
+              <div>{t('vm.joinTokenCreated')}</div>
+              <div>{t('vm.joinTokenOnce')}</div>
+              <pre>
+                <code data-testid="vm-join-command">{joinCommand}</code>
+              </pre>
+              <button className="btn btn-ghost btn-sm" onClick={() => void copyJoinCommand()}>
+                {t('vm.copyCommand')}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {nodes.length === 0 ? (
         <p>{t('vm.noNodes')}</p>
       ) : (
@@ -158,6 +286,7 @@ export function AdminVmSection() {
               <th>{t('vm.colPhase')}</th>
               <th>{t('vm.colResources')}</th>
               <th>{t('vm.colRunningVms')}</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -174,10 +303,53 @@ export function AdminVmSection() {
                   {fmtBytes(n.status.alloc_memory_bytes)}/{fmtBytes(n.spec.memory_bytes)}
                 </td>
                 <td>{n.status.running_vms}</td>
+                <td>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => void removeNode(n)}
+                  >
+                    {t('vm.removeNode')}
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+      )}
+
+      {joinTokens.some((tok) => tok.used_at_ms === null) && (
+        <>
+          <h4>{t('vm.pendingTokensTitle')}</h4>
+          <table className="table" data-testid="vm-join-tokens">
+            <thead>
+              <tr>
+                <th>{t('vm.colTokenName')}</th>
+                <th>{t('vm.colNodeName')}</th>
+                <th>{t('vm.colExpires')}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {joinTokens
+                .filter((tok) => tok.used_at_ms === null)
+                .map((tok) => (
+                  <tr key={tok.id}>
+                    <td>{tok.name || '—'}</td>
+                    <td>{tok.node_name || '—'}</td>
+                    <td>{new Date(tok.expires_at_ms).toLocaleString()}</td>
+                    <td>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => void revokeJoinToken(tok)}
+                      >
+                        {t('vm.revoke')}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </>
       )}
 
       {/* ----- Live instances ----- */}

@@ -14,7 +14,7 @@
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 afterEach(cleanup)
 
@@ -23,8 +23,12 @@ vi.mock('../lib/api', () => ({
     listVmTemplates: vi.fn(),
     listVmNodes: vi.fn(),
     listVms: vi.fn(),
+    listVmEnrollmentTokens: vi.fn(),
     deleteVmTemplate: vi.fn(),
     deleteVm: vi.fn(),
+    deleteVmNode: vi.fn(),
+    createVmEnrollmentToken: vi.fn(),
+    deleteVmEnrollmentToken: vi.fn(),
   },
 }))
 
@@ -37,6 +41,12 @@ const listVmNodes = vi.mocked(api.listVmNodes)
 const listVms = vi.mocked(api.listVms)
 const deleteVmTemplate = vi.mocked(api.deleteVmTemplate)
 const deleteVm = vi.mocked(api.deleteVm)
+const listVmEnrollmentTokens = vi.mocked(api.listVmEnrollmentTokens)
+const createVmEnrollmentToken = vi.mocked(api.createVmEnrollmentToken)
+
+beforeEach(() => {
+  listVmEnrollmentTokens.mockResolvedValue({ tokens: [] })
+})
 
 /** An ApiError-shaped failure with an HTTP status, like the api module throws. */
 function apiError(status: number): Error {
@@ -241,6 +251,42 @@ describe('AdminVmSection', () => {
     })
     // And the template stays listed.
     expect(screen.getByText('ci-runner')).toBeTruthy()
+  })
+
+  it('生成加入令牌后显示一次性的节点启动命令', async () => {
+    listVmTemplates.mockResolvedValue({ templates: [] })
+    listVmNodes.mockResolvedValue({ nodes: [] })
+    listVms.mockResolvedValue({ vms: [] })
+    createVmEnrollmentToken.mockResolvedValue({
+      token: 'gita_join_abc',
+      enrollment: {
+        id: 1,
+        name: 'node',
+        node_name: null,
+        created_at_ms: 0,
+        expires_at_ms: 3600_000,
+        used_at_ms: null,
+        used_by_node_id: null,
+      },
+    })
+
+    const user = userEvent.setup()
+    renderPanel()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('vm-section')).toBeTruthy()
+    })
+
+    await user.click(screen.getByRole('button', { name: '添加节点' }))
+    await user.click(screen.getByRole('button', { name: '生成加入令牌' }))
+
+    await waitFor(() => {
+      expect(createVmEnrollmentToken).toHaveBeenCalledWith('node', '')
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('vm-join-command').textContent).toContain('gita_join_abc')
+    })
+    expect(screen.getByTestId('vm-join-command').textContent).toContain('--join-token')
   })
 
   it('节点离线时显示离线阶段而不是在线', async () => {

@@ -44,10 +44,11 @@ enabled = false
 # Where VM images, snapshots and node working directories live.
 # Defaults to <data_dir>/vm.
 # data_dir = "data/vm"
-# API key for node agents (they call /api/v1/vm/internal/*).
-# Leave unset to let the control plane generate a strong random value
-# on first start and persist it; read it back with
-# `gita-admin vm api-key`. Set this only to pin a known key.
+# Legacy shared key for node agents. New deployments should leave this
+# unset and enroll nodes with a one-time join token from the VM admin
+# page; then each node has its own revocable credential. If set, this
+# key still works as a fallback (and is what `gita-admin vm api-key`
+# prints when pinned).
 # api_key = "change-me"
 # How often the control plane reconciles pending VMs onto nodes.
 reconcile_interval_secs = 5

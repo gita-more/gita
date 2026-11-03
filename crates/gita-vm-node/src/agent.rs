@@ -4,13 +4,22 @@ use crate::config::NodeConfig;
 use anyhow::{Context, Result};
 use gita_vm_api::node::{NodePhase, NodeStatus};
 use gita_vm_driver_vmm::{create_driver, VmmDriver};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct NodeCredential {
+    control_url: String,
+    node_id: i64,
+    node_secret: String,
+}
 
 /// 节点代理
 pub struct NodeAgent {
     config: NodeConfig,
     http: reqwest::Client,
     node_id: Option<i64>,
+    node_secret: Option<String>,
     drivers: std::collections::HashMap<gita_vm_api::node::VmmKind, Box<dyn VmmDriver>>,
 }
 
@@ -35,45 +44,117 @@ impl NodeAgent {
     ) -> Self {
         Self {
             config,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             node_id: None,
+            node_secret: None,
             drivers,
         }
     }
 
-    /// 注册节点到控制面
-    pub async fn register(&mut self) -> Result<i64> {
+    fn credential_path(&self) -> PathBuf {
+        Path::new(&self.config.work_dir).join("node-credential.json")
+    }
+
+    fn load_credential(&self) -> Option<NodeCredential> {
+        let path = self.credential_path();
+        let raw = std::fs::read_to_string(&path).ok()?;
+        match serde_json::from_str::<NodeCredential>(&raw) {
+            Ok(cred) if cred.control_url == self.config.control_url => Some(cred),
+            Ok(_) => None,
+            Err(_) => None,
+        }
+    }
+
+    fn save_credential(&self, node_id: i64, node_secret: &str) -> Result<()> {
+        let path = self.credential_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("create work dir {}", dir.display()))?;
+        }
+        let credential = NodeCredential {
+            control_url: self.config.control_url.clone(),
+            node_id,
+            node_secret: node_secret.to_string(),
+        };
+        let json = serde_json::to_vec_pretty(&credential)?;
+        std::fs::write(&path, json).with_context(|| format!("write node credential {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 0600 {}", path.display()))?;
+        }
+        Ok(())
+    }
+
+    fn with_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let mut request = request;
+        if !self.config.api_key.is_empty() {
+            request = request.header("x-api-key", &self.config.api_key);
+        }
+        if let Some(secret) = self.node_secret.as_deref() {
+            request = request.header("x-node-secret", secret);
+        }
+        request
+    }
+
+    fn registration_body(&self) -> serde_json::Value {
         let name = self.config.node_name_or_hostname();
-        let vmm: Vec<String> = self
-            .config
-            .vmm_kinds()
-            .iter()
-            .map(|k| k.as_str().to_string())
-            .collect();
+        let vmm: Vec<String> = self.config.vmm_kinds().iter().map(|k| k.as_str().to_string()).collect();
         let arch = vec![std::env::consts::ARCH.to_string()];
+        serde_json::json!({
+            "name": name,
+            "cpu_millis": self.config.cpu_millis,
+            "memory_bytes": self.config.memory_bytes,
+            "disk_bytes": self.config.disk_bytes,
+            "vmm": vmm,
+            "arch": arch,
+            "labels": {},
+        })
+    }
 
-        let resp = self
-            .http
-            .post(format!("{}/api/v1/vm/internal/nodes", self.config.control_url))
-            .header("x-api-key", &self.config.api_key)
-            .json(&serde_json::json!({
-                "name": name,
-                "cpu_millis": self.config.cpu_millis,
-                "memory_bytes": self.config.memory_bytes,
-                "disk_bytes": self.config.disk_bytes,
-                "vmm": vmm,
-                "arch": arch,
-                "labels": {},
-            }))
-            .send()
-            .await
-            .context("register node")?;
+    pub async fn register(&mut self) -> Result<i64> {
+        if let Some(cred) = self.load_credential() {
+            self.node_id = Some(cred.node_id);
+            self.node_secret = Some(cred.node_secret);
+            return Ok(cred.node_id);
+        }
+        let join_token = self.config.join_token.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        if let Some(token) = join_token {
+            return self.enroll(&token).await;
+        }
+        self.register_legacy().await
+    }
 
+    async fn enroll(&mut self, join_token: &str) -> Result<i64> {
+        let name = self.config.node_name_or_hostname();
+        let resp = self.http
+            .post(format!("{}/api/v1/vm/internal/nodes/enroll", self.config.control_url))
+            .header("x-join-token", join_token)
+            .json(&self.registration_body())
+            .send().await.context("enroll node")?;
         let status = resp.status();
         let body: serde_json::Value = resp.json().await?;
-        if !status.is_success() {
-            anyhow::bail!("register failed ({}): {}", status, body);
-        }
+        if !status.is_success() { anyhow::bail!("enroll failed ({}): {}", status, body); }
+        let node_id = body["node_id"].as_i64().context("missing node_id")?;
+        let secret = body["node_secret"].as_str().context("missing node_secret")?.to_string();
+        self.node_id = Some(node_id);
+        self.node_secret = Some(secret.clone());
+        self.save_credential(node_id, &secret)?;
+        tracing::info!(node_id, name = %name, "node enrolled");
+        Ok(node_id)
+    }
+
+    async fn register_legacy(&mut self) -> Result<i64> {
+        let name = self.config.node_name_or_hostname();
+        let resp = self.with_auth(self.http.post(format!("{}/api/v1/vm/internal/nodes", self.config.control_url)))
+            .json(&self.registration_body())
+            .send().await.context("register node")?;
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await?;
+        if !status.is_success() { anyhow::bail!("register failed ({}): {}", status, body); }
         let node_id = body["node_id"].as_i64().context("missing node_id")?;
         self.node_id = Some(node_id);
         tracing::info!(node_id, name = %name, "node registered");
@@ -108,12 +189,10 @@ impl NodeAgent {
     /// Tell the control plane the node is alive.
     async fn heartbeat(&self, node_id: i64) -> Result<()> {
         let resp = self
-            .http
-            .post(format!(
+            .with_auth(self.http.post(format!(
                 "{}/api/v1/vm/internal/nodes/{}/heartbeat",
                 self.config.control_url, node_id
-            ))
-            .header("x-api-key", &self.config.api_key)
+            )))
             .json(&NodeStatus {
                 alloc_cpu_millis: 0,
                 alloc_memory_bytes: 0,
@@ -133,12 +212,10 @@ impl NodeAgent {
     /// Fetch the operations waiting for this node and run them.
     async fn poll_and_execute(&mut self, node_id: i64) -> Result<()> {
         let resp = self
-            .http
-            .get(format!(
+            .with_auth(self.http.get(format!(
                 "{}/api/v1/vm/internal/nodes/{}/operations/next",
                 self.config.control_url, node_id
-            ))
-            .header("x-api-key", &self.config.api_key)
+            )))
             .send()
             .await?;
 
@@ -215,12 +292,10 @@ impl NodeAgent {
 
     async fn report(&self, node_id: i64, op_id: i64, success: bool, error: Option<String>) -> Result<()> {
         let resp = self
-            .http
-            .post(format!(
+            .with_auth(self.http.post(format!(
                 "{}/api/v1/vm/internal/nodes/{}/operations/report",
                 self.config.control_url, node_id
-            ))
-            .header("x-api-key", &self.config.api_key)
+            )))
             .json(&serde_json::json!({
                 "operation_id": op_id,
                 "success": success,
@@ -264,7 +339,23 @@ mod tests {
     struct Seen {
         path: String,
         api_key: Option<String>,
+        join_token: Option<String>,
+        node_secret: Option<String>,
         body: serde_json::Value,
+    }
+
+    fn seen_from_headers(
+        path: String,
+        headers: &axum::http::HeaderMap,
+        body: serde_json::Value,
+    ) -> Seen {
+        Seen {
+            path,
+            api_key: headers.get("x-api-key").and_then(|v| v.to_str().ok()).map(str::to_string),
+            join_token: headers.get("x-join-token").and_then(|v| v.to_str().ok()).map(str::to_string),
+            node_secret: headers.get("x-node-secret").and_then(|v| v.to_str().ok()).map(str::to_string),
+            body,
+        }
     }
 
     /// The mock control plane: it answers like the real one does and
@@ -307,14 +398,11 @@ mod tests {
         headers: axum::http::HeaderMap,
         body: Option<Json<serde_json::Value>>,
     ) -> Json<serde_json::Value> {
-        plane.seen.lock().unwrap().push(Seen {
-            path: uri.path().to_string(),
-            api_key: headers
-                .get("x-api-key")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string),
-            body: body.map(|Json(b)| b).unwrap_or(serde_json::Value::Null),
-        });
+        plane.seen.lock().unwrap().push(seen_from_headers(
+            uri.path().to_string(),
+            &headers,
+            body.map(|Json(b)| b).unwrap_or(serde_json::Value::Null),
+        ));
         Json(serde_json::json!({}))
     }
 
@@ -323,14 +411,11 @@ mod tests {
         headers: axum::http::HeaderMap,
         Json(body): Json<serde_json::Value>,
     ) -> impl IntoResponse {
-        plane.seen.lock().unwrap().push(Seen {
-            path: "register".to_string(),
-            api_key: headers
-                .get("x-api-key")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string),
+        plane.seen.lock().unwrap().push(seen_from_headers(
+            "register".to_string(),
+            &headers,
             body,
-        });
+        ));
         if plane.refuse_registration {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -339,6 +424,23 @@ mod tests {
                 .into_response();
         }
         Json(serde_json::json!({ "node_id": plane.node_id })).into_response()
+    }
+
+    async fn enroll(
+        State(plane): State<MockControlPlane>,
+        headers: axum::http::HeaderMap,
+        Json(body): Json<serde_json::Value>,
+    ) -> impl IntoResponse {
+        plane.seen.lock().unwrap().push(seen_from_headers(
+            "enroll".to_string(),
+            &headers,
+            body,
+        ));
+        Json(serde_json::json!({
+            "node_id": plane.node_id,
+            "node_secret": "the-node-secret",
+        }))
+        .into_response()
     }
 
     async fn next_operations(State(plane): State<MockControlPlane>) -> Json<serde_json::Value> {
@@ -350,6 +452,7 @@ mod tests {
     async fn serve(plane: MockControlPlane) -> (String, tokio::task::JoinHandle<()>) {
         let router = Router::new()
             .route("/api/v1/vm/internal/nodes", post(register))
+            .route("/api/v1/vm/internal/nodes/enroll", post(enroll))
             .route("/api/v1/vm/internal/nodes/{id}/heartbeat", post(remember))
             .route("/api/v1/vm/internal/nodes/{id}/operations/next", get(next_operations))
             .route("/api/v1/vm/internal/nodes/{id}/operations/report", post(remember))
@@ -368,6 +471,7 @@ mod tests {
             control_url: control_url.to_string(),
             node_name: Some("worker-1".to_string()),
             api_key: "the-node-key".to_string(),
+            join_token: None,
             work_dir: "/var/lib/gita/vm".to_string(),
             cpu_millis: 8000,
             memory_bytes: 16_000_000_000,
@@ -484,6 +588,7 @@ mod tests {
         assert_eq!(seen[0].body["arch"][0], std::env::consts::ARCH);
     }
 
+
     /// A registration the control plane refuses is an error, not a
     /// silent success: the node must not think it is known.
     #[tokio::test]
@@ -594,5 +699,51 @@ mod tests {
 
         let seen = plane.seen();
         assert!(!seen[0].body.to_string().contains("the-node-key"));
+    }
+
+    fn temp_work_dir() -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("gita-vm-node-test-{stamp}"))
+    }
+
+    #[tokio::test]
+    async fn a_join_token_is_exchanged_for_a_saved_credential() {
+        let plane = MockControlPlane::new();
+        let (url, _server) = serve(plane.clone()).await;
+        let dir = temp_work_dir();
+
+        let mut cfg = config(&url);
+        cfg.api_key = String::new();
+        cfg.join_token = Some("join-1".to_string());
+        cfg.work_dir = dir.to_string_lossy().to_string();
+
+        let mut agent = agent_with(cfg.clone(), Arc::new(Mutex::new(Vec::new())), false);
+        assert_eq!(agent.register().await.unwrap(), 42);
+
+        let seen = plane.seen();
+        assert_eq!(seen[0].path, "enroll");
+        assert_eq!(seen[0].join_token.as_deref(), Some("join-1"));
+        assert!(seen[0].api_key.is_none());
+
+        let path = dir.join("node-credential.json");
+        let saved: NodeCredential =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved.node_id, 42);
+        assert_eq!(saved.node_secret, "the-node-secret");
+
+        agent.heartbeat(42).await.unwrap();
+        let seen = plane.seen();
+        let beat = seen.iter().find(|s| s.path.contains("heartbeat")).unwrap();
+        assert_eq!(beat.node_secret.as_deref(), Some("the-node-secret"));
+        assert!(beat.api_key.is_none());
+
+        let mut restarted = agent_with(cfg, Arc::new(Mutex::new(Vec::new())), false);
+        assert_eq!(restarted.register().await.unwrap(), 42);
+        assert_eq!(plane.seen().len(), 2, "enroll + heartbeat, no second enroll");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

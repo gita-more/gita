@@ -66,6 +66,7 @@ impl RunnerClient {
     pub fn new(base_url: &str, token: &str) -> Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
+            .no_proxy()
             .build()
             .context("build HTTP client")?;
         Ok(Self {

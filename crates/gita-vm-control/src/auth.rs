@@ -5,8 +5,10 @@
 //! - **用户身份**：复用 gita 的 JWT（`gita_api::auth::Auth`）。令牌被吊销
 //!   后立刻失效——这一点必须与 gita 主 API 完全一致，否则一个被吊销的
 //!   管理员令牌仍能管理 VM 集群。
-//! - **节点身份**：节点代理用 `X-Api-Key` 头访问 `/internal/*` 接口。
-//!   节点只需要出站连接，因此不需要 gita 用户身份。
+//! - **节点身份**：节点代理访问 `/internal/*` 接口。新节点用 enrollment
+//!   token 换取自己的 `node_id` + secret，之后请求带 `X-Node-Secret`；
+//!   旧的 `X-Api-Key` 共享密钥仍作为后备接受。节点只需要出站连接，因此
+//!   不需要 gita 用户身份。
 
 use crate::state::AppState;
 use axum::{
@@ -72,22 +74,36 @@ impl VmAuth {
         &self.db
     }
 
-    /// 校验节点 API key
-    fn check_node_key(&self, presented: &str) -> Result<(), ApiAuthError> {
-        if presented.is_empty() {
-            return Err(ApiAuthError::Unauthorized("missing api key".into()));
-        }
-        match &self.node_api_key {
-            // 配置了 key 就必须匹配；没有 key 就拒绝——不设“任意非空
-            // 都行”的开发后门，一条漏配的部署就是暴露的节点接口。
-            Some(expected) if presented != expected => {
-                Err(ApiAuthError::Unauthorized("invalid api key".into()))
+    /// 校验节点身份：显式的全局 API key，或该节点自己的 secret。
+    ///
+    /// 全局 key 是旧部署的兼容路径；新部署走 enrollment，节点只持有
+    /// 自己的 secret，泄露一个节点不会影响其它节点。
+    pub async fn check_node_access(
+        &self,
+        node_id: Option<i64>,
+        api_key: Option<&str>,
+        node_secret: Option<&str>,
+    ) -> Result<(), ApiAuthError> {
+        if let (Some(expected), Some(presented)) = (self.node_api_key.as_deref(), api_key) {
+            if !presented.is_empty() && presented == expected {
+                return Ok(());
             }
-            Some(_) => Ok(()),
-            None => Err(ApiAuthError::Unauthorized(
-                "node api key not configured".into(),
-            )),
         }
+
+        if let (Some(node_id), Some(secret)) = (node_id, node_secret) {
+            if !secret.is_empty() {
+                let hash = gita_db::hash_token(secret);
+                match self.db.node_secret_matches(node_id, &hash).await {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(e) => return Err(ApiAuthError::Internal(e.to_string())),
+                }
+            }
+        }
+
+        Err(ApiAuthError::Unauthorized(
+            "missing or invalid node credentials".into(),
+        ))
     }
 }
 
@@ -119,11 +135,36 @@ pub fn api_key(req: &Request) -> Option<&str> {
     }
 }
 
+/// 从请求头取出节点自己的 secret。
+pub fn node_secret(req: &Request) -> Option<&str> {
+    let raw = req.headers().get("x-node-secret")?.to_str().ok()?.trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw)
+    }
+}
+
+/// 从 `/internal/nodes/{id}/...` 里取出节点 id。
+///
+/// 识别不了就返回 `None`；调用方随后只接受全局 key，因此一个拼错的
+/// 路径不会意外绕过节点身份检查。
+pub fn internal_node_id(path: &str) -> Option<i64> {
+    let mut segments = path.split('/');
+    while let Some(segment) = segments.next() {
+        if segment == "nodes" {
+            return segments.next().and_then(|id| id.parse::<i64>().ok());
+        }
+    }
+    None
+}
+
 /// 鉴权失败
 #[derive(Debug)]
 pub enum ApiAuthError {
     Unauthorized(String),
     Forbidden(String),
+    Internal(String),
 }
 
 impl IntoResponse for ApiAuthError {
@@ -131,6 +172,7 @@ impl IntoResponse for ApiAuthError {
         let (status, message) = match self {
             ApiAuthError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m),
             ApiAuthError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
+            ApiAuthError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
         (status, Json(json!({ "error": message }))).into_response()
     }
@@ -153,9 +195,21 @@ pub async fn require_vm_auth(State(state): State<AppState>, req: Request, next: 
     let auth = state.auth.clone();
 
     if path.contains("/internal/") {
+        // Enrollment is authenticated by the join token in the request
+        // header, which the handler redeems; there is no node identity
+        // to check yet.
+        if path.ends_with("/internal/nodes/enroll") {
+            return next.run(req).await;
+        }
+
         // 取成所有权再校验：借用 request 的引用跨不过 await。
-        let key = api_key(&req).unwrap_or("").to_string();
-        if let Err(e) = auth.check_node_key(&key) {
+        let key = api_key(&req).map(str::to_string);
+        let secret = node_secret(&req).map(str::to_string);
+        let node_id = internal_node_id(&path);
+        if let Err(e) = auth
+            .check_node_access(node_id, key.as_deref(), secret.as_deref())
+            .await
+        {
             return e.into_response();
         }
         return next.run(req).await;
@@ -267,5 +321,36 @@ mod tests {
     fn empty_api_key_is_none() {
         let req = request_with_header("x-api-key", "   ");
         assert_eq!(api_key(&req), None);
+    }
+
+    #[test]
+    fn node_secret_is_extracted_and_trimmed() {
+        let req = request_with_header("x-node-secret", "  secret-1  ");
+        assert_eq!(node_secret(&req), Some("secret-1"));
+    }
+
+    #[test]
+    fn empty_node_secret_is_none() {
+        let req = request_with_header("x-node-secret", "   ");
+        assert_eq!(node_secret(&req), None);
+    }
+
+    #[test]
+    fn the_node_id_is_read_from_the_internal_path() {
+        assert_eq!(
+            internal_node_id("/api/v1/vm/internal/nodes/42/heartbeat"),
+            Some(42)
+        );
+        assert_eq!(
+            internal_node_id("/api/v1/vm/internal/nodes/7/operations/next"),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn a_path_without_a_node_id_yields_none() {
+        assert_eq!(internal_node_id("/api/v1/vm/internal/nodes"), None);
+        assert_eq!(internal_node_id("/api/v1/vm/internal/nodes/enroll"), None);
+        assert_eq!(internal_node_id("/api/v1/vm/internal/nodes/abc/heartbeat"), None);
     }
 }

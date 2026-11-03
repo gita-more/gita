@@ -88,6 +88,7 @@ impl AppState {
         let (tx, _rx) = broadcast::channel(1024);
         let http = reqwest::Client::builder()
             .timeout(config.agent_timeout)
+            .no_proxy()
             .build()
             .unwrap_or_default();
         AppState {

@@ -38,6 +38,7 @@ mod repositories;
 mod ssh_keys;
 mod stars;
 mod users;
+pub mod vm_enrollment;
 pub mod vm_settings;
 mod webhooks;
 
@@ -46,6 +47,7 @@ pub use pages::PagesRow;
 pub use password_reset::PasswordResetRow;
 pub use pipeline::{JobRow, LogRow, PipelineRow, PipelineRunRow};
 pub use ssh_keys::{ssh_fingerprint, ssh_key_is_valid, SshKeyRow};
+pub use vm_enrollment::EnrollmentTokenRow;
 pub use webhooks::WebhookRow;
 
 use anyhow::{Context, Result};

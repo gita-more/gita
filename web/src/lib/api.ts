@@ -223,6 +223,17 @@ export interface VmNodeInfo {
   labels: Record<string, string>
 }
 
+/** A one-time join token used by a node agent to enroll. */
+export interface VmEnrollmentTokenInfo {
+  id: number
+  name: string
+  node_name: string | null
+  created_at_ms: number
+  expires_at_ms: number
+  used_at_ms: number | null
+  used_by_node_id: number | null
+}
+
 /** A virtual machine instance. */
 export interface VmInstanceInfo {
   id: number
@@ -715,6 +726,20 @@ export const api = {
   deleteVm: (id: number) =>
     request<void>(`/api/v1/vm/vms/${id}`, { method: 'DELETE' }),
   listVmNodes: () => request<{ nodes: VmNodeInfo[] }>('/api/v1/vm/nodes'),
+  deleteVmNode: (id: number) =>
+    request<void>(`/api/v1/vm/nodes/${id}`, { method: 'DELETE' }),
+  createVmEnrollmentToken: (name: string, nodeName: string) =>
+    request<{ token: string; enrollment: VmEnrollmentTokenInfo }>(
+      '/api/v1/vm/enrollment-tokens',
+      {
+        method: 'POST',
+        body: JSON.stringify({ name, node_name: nodeName, ttl_secs: 3600 }),
+      },
+    ),
+  listVmEnrollmentTokens: () =>
+    request<{ tokens: VmEnrollmentTokenInfo[] }>('/api/v1/vm/enrollment-tokens'),
+  deleteVmEnrollmentToken: (id: number) =>
+    request<void>(`/api/v1/vm/enrollment-tokens/${id}`, { method: 'DELETE' }),
 
   // health
   health: () => request<{ status: string; db: string; git: string }>('/api/health'),

@@ -55,10 +55,10 @@ services:
       # can only reach the user through the API response. Leave this off in
       # production — see config/config.example.toml.
       - GITA_SERVER_ALLOW_INSECURE_PASSWORD_RESET=${GITA_ALLOW_INSECURE_PASSWORD_RESET:-false}
-      # VM cluster control plane (gita-vm-node agents register via it).
-      # The node API key is not configurable via env: when no key is set
-      # in the config file the control plane generates one on first
-      # start, persists it, and admins read it back with
+      # VM cluster control plane (gita-vm-node agents enroll via it).
+      # Admins generate a one-time join token in the VM admin page; nodes
+      # trade it for their own credential. The legacy shared node API key
+      # is still generated on first start and readable with
       # `gita-admin vm api-key`.
       - GITA_SERVER_VM_ENABLED=${GITA_VM_ENABLED:-false}
     volumes:

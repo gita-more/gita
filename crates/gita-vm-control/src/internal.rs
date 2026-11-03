@@ -4,11 +4,11 @@ use rand::RngCore;
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
-use gita_vm_api::node::{NodePhase, NodeStatus};
+use gita_vm_api::node::{Node, NodePhase, NodeStatus};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -60,12 +60,19 @@ pub struct NodeRegisterRequest {
     pub labels: std::collections::BTreeMap<String, String>,
 }
 
-/// 节点注册
-async fn register_node(
-    State(state): State<AppState>,
-    Json(req): Json<NodeRegisterRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    use gita_vm_api::node::{Node, NodeCapabilities, NodeSpec};
+fn internal_error(message: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": message.to_string() })),
+    )
+}
+
+/// Create the node row and return it with the id the database assigned.
+async fn create_node(
+    state: &AppState,
+    req: &NodeRegisterRequest,
+) -> Result<Node, (StatusCode, Json<serde_json::Value>)> {
+    use gita_vm_api::node::{NodeCapabilities, NodeSpec};
 
     let now = gita_vm_core::now_ms();
     let vmm: Vec<gita_vm_api::node::VmmKind> = req
@@ -107,30 +114,118 @@ async fn register_node(
         updated_at_ms: now,
     };
 
-    state
-        .repo
-        .create_node(&node)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
+    state.repo.create_node(&node).await.map_err(|e| {
+        let message = e.to_string();
+        if message.contains("duplicate key") || message.contains("unique") {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "a node with that name already exists" })),
+            )
+        } else {
+            internal_error(message)
+        }
+    })?;
 
     // 查回分配的 ID
-    let nodes = state
-        .repo
-        .list_nodes(None)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
-    let created = nodes
-        .iter()
+    let nodes = state.repo.list_nodes(None).await.map_err(internal_error)?;
+    nodes
+        .into_iter()
         .find(|n| n.name == req.name)
+        .ok_or_else(|| internal_error("node not found after create"))
+}
+
+/// 节点注册（旧路径：共享 API key）
+async fn register_node(
+    State(state): State<AppState>,
+    Json(req): Json<NodeRegisterRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let created = create_node(&state, &req).await?;
+    Ok(Json(json!({
+        "node_id": created.id.0,
+        "poll_interval_secs": 10,
+    })))
+}
+
+fn random_secret(prefix: &str) -> String {
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    format!("{prefix}{}", hex::encode(bytes))
+}
+
+/// 节点加入（新路径：一次性 join token 换取每节点 secret）
+///
+/// `X-Join-Token` 携带管理员在页面上生成的一次性 token。成功后控制面
+/// 创建节点、写入该节点 secret 的哈希、标记 token 已使用，并把明文
+/// secret 返回一次——节点随后只用自己的 secret 认证。
+async fn enroll_node(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<NodeRegisterRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let token = headers
+        .get("x-join-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "node not found after create"})),
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "missing join token" })),
+            )
+        })?
+        .to_string();
+
+    let db = state.auth.db();
+    let now = gita_vm_core::now_ms();
+    let token_hash = gita_db::hash_token(&token);
+    let enrollment = db
+        .find_valid_enrollment_token(&token_hash, now)
+        .await
+        .map_err(internal_error)?
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "invalid, used or expired join token" })),
             )
         })?;
 
+    if let Some(bound) = enrollment.node_name.as_deref() {
+        if bound != req.name {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "join token is bound to another node name" })),
+            ));
+        }
+    }
+
+    let created = create_node(&state, &req).await?;
+    let node_id = created.id.0;
+    let secret = random_secret("gita_node_");
+    db.set_node_secret(node_id, &gita_db::hash_token(&secret), now)
+        .await
+        .map_err(internal_error)?;
+
+    // The claim is the linearization point: two agents racing with the
+    // same token must not both end up with a credential.
+    let claimed = db
+        .consume_enrollment_token(&token_hash, now, node_id)
+        .await
+        .map_err(internal_error)?;
+    if !claimed {
+        let _ = state
+            .repo
+            .delete_node(gita_vm_api::ids::NodeId(node_id))
+            .await;
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "join token was already used" })),
+        ));
+    }
+
+    tracing::info!(node_id, name = %created.name, "node enrolled");
     Ok(Json(json!({
-        "node_id": created.id.0,
+        "node_id": node_id,
+        "node_secret": secret,
         "poll_interval_secs": 10,
     })))
 }
@@ -217,6 +312,7 @@ async fn report_operation(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/internal/nodes", post(register_node))
+        .route("/internal/nodes/enroll", post(enroll_node))
         .route("/internal/nodes/{id}/heartbeat", post(node_heartbeat))
         .route("/internal/nodes/{id}/operations/next", get(next_operations))
         .route("/internal/nodes/{id}/operations/report", post(report_operation))

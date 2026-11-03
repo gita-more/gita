@@ -13,10 +13,15 @@ pub struct NodeConfig {
     #[arg(long, env = "GITA_NODE_NAME")]
     pub node_name: Option<String>,
 
-    /// API key（控制面内部接口认证）。部署未显式配置时用
-    /// `gita-admin vm api-key` 从控制面读出生成的值。
+    /// 旧式共享 API key（控制面内部接口认证）。仅用于兼容旧部署；
+    /// 新部署应使用 `--join-token`。
     #[arg(long, default_value = "")]
     pub api_key: String,
+
+    /// 一次性加入令牌（控制面页面生成）。节点用它换取自己的
+    /// node id + secret，之后凭据保存在 work-dir 里复用。
+    #[arg(long, env = "GITA_JOIN_TOKEN")]
+    pub join_token: Option<String>,
 
     /// 工作目录（VM 磁盘、配置存放）
     #[arg(long, default_value = "/var/lib/gita/vm")]
@@ -105,6 +110,7 @@ mod tests {
             control_url: "http://127.0.0.1:3000".to_string(),
             node_name: None,
             api_key: String::new(),
+            join_token: None,
             work_dir: "/var/lib/gita/vm".to_string(),
             cpu_millis: 8000,
             memory_bytes: 16_000_000_000,
