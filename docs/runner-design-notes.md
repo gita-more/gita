@@ -1,18 +1,16 @@
 # gita-runner — design notes from GitHub Actions
 
-This document captures what gita-runner could learn from GitHub
-Actions' runner architecture, and how to close the gap between the
-two. It is a forward-looking reference, not a record of work already
-done.
+This document compares gita-runner with GitHub Actions' runner and
+records where the two still diverge. It was written before service
+containers existed; the sections marked **done** below now describe the
+implementation.
 
-The current gita-runner is a single Rust process that polls the
-server's runner API, asks it to claim the next queued run (the server
-does the `FOR UPDATE SKIP LOCKED` query), and executes the job's shell
-script directly inside the runner process via
-`tokio::process::Command::new("sh") -c "..."`. The runner needs only
-the server URL and a runner token; it has no database connection.
-That is fine for a developer tool, but it is not the model GitHub
-Actions uses and not the model gita should ship for production.
+The runner is a single Rust process that polls the server's runner API,
+asks it to claim the next queued run (the server does the
+`FOR UPDATE SKIP LOCKED` query), renews the claim's lease while the run
+executes, and runs the job either in a per-job workspace on its host or
+inside a cluster VM (`GITA_WORKFLOW_VM`). The runner needs only the
+server URL and a runner token; it has no database connection.
 
 ## Background: how GitHub Actions runs a job
 
@@ -23,11 +21,13 @@ When a workflow references `services: postgres`, GitHub Actions does
    allocated to the job.
 2. The runner process invokes Docker to start **one container per
    service** plus **one container for the job steps themselves**.
-3. All of these containers are joined to the **same Linux network
-   namespace** as the runner. That is why `localhost:55432` (host)
-   reaches postgres' port 5432 inside its container, and why the
-   runner and the job step container can talk to each other without
-   extra plumbing.
+3. All of these containers join a **per-job Docker bridge network**;
+   no ports are exposed outside it. A job *running in a container*
+   reaches a service by its network alias (`postgres:5432`). A job
+   *running directly on the runner host* — GitHub's default when there
+   is no `container:` — reaches it through published ports on
+   `localhost`, which is why the `ports:` mapping is required in that
+   case.
 4. `services.ports: "HOST:CONTAINER"` controls which host port is
    mapped onto the container's listening port. Format is `HOST:CONTAINER`
    (Docker convention), which is the opposite of how some people
@@ -42,19 +42,19 @@ optional sidecar services, plus clean resource accounting.
 
 | Concern                       | GitHub Actions runner                  | gita-runner (today)                  |
 |-------------------------------|----------------------------------------|---------------------------------------|
-| Execution isolation           | Fresh container per job                | `sh -c` inside the runner process     |
-| Network isolation             | Per-job container, shared with services | None (everything shares the host)    |
-| Sidecar services              | Declarative `services:` block          | None                                 |
+| Execution isolation           | Fresh VM per job (container if `container:`) | Fresh VM per job when `GITA_WORKFLOW_VM` is on; otherwise `sh -c` in a per-job workspace |
+| Network isolation             | Per-job network                       | Per-job Docker network for services  |
+| Sidecar services              | Declarative `services:` block          | **done** — `services:` for both DSLs |
 | Matrix builds                 | First-class                            | None                                 |
 | Artifact upload               | `actions/upload-artifact`              | Logs only (via `logs` table)          |
 | Dependency cache              | `actions/cache`                        | None (cargo rebuilds every time)     |
-| Job timeout                   | Per-job + per-step                     | None                                 |
-| Runner health heartbeat       | `actions/runner` heartbeat             | Implicit via successful claim         |
+| Job timeout                   | Per-job + per-step                     | Per-job (`GITA_JOB_TIMEOUT_SECS`)    |
+| Runner health heartbeat       | `actions/runner` heartbeat             | Lease renewal + server-side reaper   |
 | Runner labelling              | `self-hosted`, `linux`, `gpu`, ...     | Single global runner                 |
 | Per-resource limits           | `--memory`, `--cpus`, `--pids-limit`   | None                                 |
-| Step-level conditionals       | `if:`, `continue-on-error`             | Plain shell `set -e`                 |
+| Step-level conditionals       | `if:`, `continue-on-error`             | `if:` at job and step level          |
 | Secrets                       | Encrypted env from repo                | Env only                             |
-| Concurrency                   | Multiple jobs per runner, isolated     | Single-job-at-a-time                 |
+| Concurrency                   | Multiple jobs per runner, isolated     | Per-job workspace, one at a time     |
 
 ## What gita-runner should borrow
 

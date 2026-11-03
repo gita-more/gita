@@ -744,6 +744,49 @@ docs:
 
 ---
 
+## Service containers (`services:`)
+
+A job may declare sidecar containers. They are started before the
+job's script, become healthy, and are torn down afterwards:
+
+```yaml
+test:
+  stage: test
+  services:
+    postgres:
+      image: postgres:17
+      env:
+        POSTGRES_USER: gita
+        POSTGRES_PASSWORD: gita
+        POSTGRES_DB: gita
+      ports:
+        - 55432:5432          # HOST:CONTAINER, Docker's spelling
+      options: >-
+        --health-cmd "pg_isready -U gita"
+        --health-retries 30
+  script:
+    - cargo test
+```
+
+Semantics, matching GitHub Actions:
+
+- one Docker network per job, so two jobs on one host do not collide;
+- the service's label is its network alias, so a job running in a
+  container reaches it as `postgres:5432`;
+- a job running directly on the host (the default) reaches it on
+  `localhost:<host port>` through the `ports:` mapping — that is why the
+  example above connects to `127.0.0.1:55432`;
+- `options:` is passed to `docker create` unchanged, which is where
+  `--health-cmd` lives;
+- a service with `image: ''` is skipped, for conditional services;
+- a service that never becomes healthy fails the job rather than letting
+  it run against a half-built environment.
+
+The same keys work in `.github/workflows/*.yml`, where they apply to the
+whole job.
+
+---
+
 ## What's deferred (Phase 2/3)
 
 | Phase | Keyword | What it adds |
@@ -755,7 +798,8 @@ docs:
 | 2 | `artifacts:` | Save job outputs (`paths`, `expire_in`, `expose_as`, `reports`). |
 | 2 | `environment:` | Named deploy targets with on-stop hooks. |
 | 2 | `rules:` | Conditional job inclusion (replaces `only/except`). |
-| 3 | `image:` / `services:` | Run jobs in Docker. |
+| 3 | `image:` | Run jobs in Docker. |
+| ✗ | `services:` | **Supported** — see below; the table row was stale. |
 | 3 | `include:` | Split config across files. |
 | 3 | `variables:` | Per-pipeline / per-job env. |
 | 3 | `secrets:` | Mount external secrets. |
