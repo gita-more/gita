@@ -87,9 +87,41 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("git checkout failed");
     }
 
+    // Start the job's service containers. This happens before the script
+    // so a step can connect on the first try; the containers are torn down
+    // whatever the script's outcome.
+    let services: std::collections::BTreeMap<String, gita_workflow::Service> =
+        match args.services_json().and_then(|j| {
+            serde_json::from_str(&j).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        }) {
+            Ok(s) => s,
+            Err(e) => {
+                sink.write(args.job_id, "stderr", format!("bad GITA_AGENT_SERVICES: {e}"));
+                report_status(&args, "failed", None).await;
+                anyhow::bail!("cannot parse services: {e}");
+            }
+        };
+    let sink_for_services = sink.clone();
+    let job_id = args.job_id;
+    let log = move |line: &str| {
+        sink_for_services.write(job_id, "system", line.to_string());
+    };
+    let mut running = match gita_ci_agent::services::Services::start(job_id, &services, &log).await {
+        Ok(s) => s,
+        Err(e) => {
+            log(&format!("services failed to start: {e}"));
+            report_status(&args, "failed", None).await;
+            anyhow::bail!("services failed to start: {e}");
+        }
+    };
+
     // Run the job's script.
     let script_cmd = script_command(&args.script, Path::new(&work_dir));
-    let Some(status) = run_command(&args, &sink, script_cmd, "script").await else {
+    let status = run_command(&args, &sink, script_cmd, "script").await;
+
+    running.stop().await;
+
+    let Some(status) = status else {
         report_status(&args, "failed", None).await;
         anyhow::bail!("script shell could not run");
     };

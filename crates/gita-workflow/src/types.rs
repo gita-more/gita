@@ -1,6 +1,7 @@
 //! Public types for the GitHub-Actions-style workflow parser.
 
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// A trigger rule describing which events activate a workflow.
@@ -82,7 +83,7 @@ pub struct Step {
 }
 
 /// Credentials for pulling an image from a private registry.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct RegistryCredentials {
     pub username: String,
     pub password: String,
@@ -94,7 +95,7 @@ pub struct RegistryCredentials {
 /// gives it the service's name as a network alias. `ports` use Docker's
 /// `HOST:CONTAINER` spelling; `options` are passed to `docker create`
 /// verbatim (that is where `--health-cmd` lives).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Service {
     /// The container image, e.g. `postgres:17`. An empty image means the
     /// service is skipped, matching GitHub's conditional-service idiom.

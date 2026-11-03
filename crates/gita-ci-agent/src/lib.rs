@@ -22,6 +22,8 @@ use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+pub mod services;
+
 /// The configuration of one agent run.
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -56,6 +58,31 @@ pub struct Args {
     /// Private key for cloning over SSH, if the repo is private.
     #[arg(long, env = "GITA_AGENT_SSH_KEY", default_value = "")]
     pub ssh_key: String,
+
+    /// The job's `services:` block as JSON (`{"label": {…}}`), either
+    /// inline or as a path to a file holding it.
+    ///
+    /// The runner parses the workflow and knows the services; the agent
+    /// only has to start them. JSON rather than many flags because the
+    /// shape is a map of maps. `GITA_AGENT_SERVICES_FILE` wins when set:
+    /// the value can contain spaces, which an env line cannot carry
+    /// without quoting.
+    #[arg(long, env = "GITA_AGENT_SERVICES", default_value = "{}")]
+    pub services: String,
+
+    /// A file containing the services JSON.
+    #[arg(long, env = "GITA_AGENT_SERVICES_FILE")]
+    pub services_file: Option<String>,
+}
+
+impl Args {
+    /// The services JSON, read from `--services-file` when that is set.
+    pub fn services_json(&self) -> std::io::Result<String> {
+        match &self.services_file {
+            Some(path) => std::fs::read_to_string(path),
+            None => Ok(self.services.clone()),
+        }
+    }
 }
 
 /// Ship log lines to the server. Failures are swallowed: a log line the
@@ -314,6 +341,8 @@ mod tests {
             commit: "abc123".to_string(),
             script: "echo hi".to_string(),
             ssh_key: String::new(),
+            services: "{}".to_string(),
+            services_file: None,
         }
     }
 

@@ -106,13 +106,26 @@ pub async fn execute_workflow_run(
         // program out of its steps and hand it to the VM executor, which
         // provisions the VM, injects the agent, and reclaims it.
         let script = build_workflow_script(instance);
+        // The service declarations travel as JSON: the runner parsed the
+        // workflow, the agent only has to start what is described.
+        let services_json = serde_json::to_string(&instance.job.services)
+            .context("serialize the job's services")?;
         let vm = gita_pipeline::VmJob {
             template: template_for_runs_on(&instance.job.runs_on),
             cpu: None,
             memory: None,
             disk: None,
         };
-        let outcome = crate::vm_exec::run_job_in_vm(client, config, run, job_id, &vm, &script).await;
+        let outcome = crate::vm_exec::run_job_in_vm_with_services(
+            client,
+            config,
+            run,
+            job_id,
+            &vm,
+            &script,
+            &services_json,
+        )
+        .await;
 
         match outcome {
             Ok(crate::vm_exec::VmJobOutcome::Success) => {}

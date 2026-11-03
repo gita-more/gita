@@ -60,6 +60,22 @@ pub async fn run_job_in_vm(
     vm: &gita_pipeline::VmJob,
     job_script: &str,
 ) -> Result<VmJobOutcome> {
+    run_job_in_vm_with_services(client, config, run, job_id, vm, job_script, "{}").await
+}
+
+/// Like [`run_job_in_vm`], but also starts the job's service containers.
+///
+/// `services_json` is the `services:` block serialized as JSON; the agent
+/// reads it from the VM's user data.
+pub async fn run_job_in_vm_with_services(
+    client: &RunnerClient,
+    config: &RunnerConfig,
+    run: &gita_db::PipelineRunRow,
+    job_id: i64,
+    vm: &gita_pipeline::VmJob,
+    job_script: &str,
+    services_json: &str,
+) -> Result<VmJobOutcome> {
     // 1. Mint the per-job agent token: plaintext goes into the VM, only
     //    the hash is stored — and the hash is stored by the *server*, as
     //    part of the create request.
@@ -129,6 +145,7 @@ pub async fn run_job_in_vm(
         // No SSH key: private-repo VM jobs are not supported yet. The
         // runner token must never enter a VM.
         "",
+        services_json,
     )
     .context("generate vm job user data")?;
     // 5. Provision the VM — the server's control plane does the work:
