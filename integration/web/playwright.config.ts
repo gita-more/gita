@@ -13,13 +13,25 @@ export default defineConfig({
   // create repos/users that later tests rely on; parallel files would
   // race on repo visibility.
   workers: 1,
+  // A retry hides a race: the same test that passed on the second try is
+  // still broken. Keep failures visible instead.
   retries: 0,
+  // `.only` that reaches CI silently disables the rest of the suite.
+  forbidOnly: !!process.env.CI,
   reporter: [['list']],
+  outputDir: 'test-results',
+  expect: {
+    timeout: 5_000,
+  },
   use: {
     baseURL: GITA_URL,
     headless: true,
     viewport: { width: 1280, height: 800 },
+    actionTimeout: 10_000,
+    navigationTimeout: 15_000,
     trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
   },
   projects: [
     {
