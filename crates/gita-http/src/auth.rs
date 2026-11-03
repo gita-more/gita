@@ -121,7 +121,15 @@ fn unauthorized_with_challenge(message: &str) -> Response<Body> {
 /// the user the token belongs to. Ignoring it would let anyone holding
 /// a token present themselves as its owner under any username, and it
 /// would make a wrong username look like it had worked.
+///
+/// Two usernames are exempt because they carry no claim about who is
+/// asking: `x-access-token` and `oauth2` are the placeholders git clients
+/// (and the CI runner, which clones with `x-access-token:<token>`) put in
+/// the username field when the token is the only identity. The token still
+/// decides who the request is.
 pub(crate) async fn resolve_authed_user(state: &GitHttpState, headers: &HeaderMap) -> Option<User> {
+    const PLACEHOLDER_USERNAMES: [&str; 2] = ["x-access-token", "oauth2"];
+
     let auth_header = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
 
     // Bearer token.
@@ -137,8 +145,11 @@ pub(crate) async fn resolve_authed_user(state: &GitHttpState, headers: &HeaderMa
         let text = String::from_utf8(decoded).ok()?;
         let (username, password) = text.split_once(':')?;
         let user = state.auth.resolve_bearer(&state.db, password).await.ok()?;
-        // The token must belong to the named user.
-        if !user.username.eq_ignore_ascii_case(username) {
+        // The token must belong to the named user, unless the username is
+        // one of the placeholders that name nobody.
+        if !PLACEHOLDER_USERNAMES.contains(&username.to_ascii_lowercase().as_str())
+            && !user.username.eq_ignore_ascii_case(username)
+        {
             return None;
         }
         return Some(user);

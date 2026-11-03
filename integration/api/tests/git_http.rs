@@ -227,3 +227,33 @@ async fn a_path_without_a_git_segment_is_not_intercepted() {
     .await;
     assert_ne!(status, StatusCode::UNAUTHORIZED, "got {status}");
 }
+
+/// The runner clones with `x-access-token:<token>`, the spelling GitHub
+/// uses. Basic auth insists the username name the token's owner, so the
+/// placeholder has to be recognised — otherwise every CI job on a private
+/// repository fails at checkout.
+#[tokio::test]
+async fn a_runner_clone_with_the_placeholder_username_reads_a_private_repo() {
+    let (app, _guard) = common::test_app().await;
+    let user = common::register_user(&app, "runnerauth").await;
+    common::create_repo_with(
+        &app,
+        &user.token,
+        "secret",
+        Some(serde_json::json!({ "is_private": true })),
+    )
+    .await;
+    let token = common::runner_token(&app, "runnerauth").await;
+
+    let resp = info_refs(
+        &app,
+        "/runnerauth/secret.git/info/refs",
+        Some(basic("x-access-token", &token)),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "the runner's clone URL puts `x-access-token` in the username field"
+    );
+}
