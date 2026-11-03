@@ -150,8 +150,9 @@ pub(crate) async fn get_dispatch(
             let res = list_pipelines(state, user, owner, repo).await?;
             Ok(res.into_response())
         }
-        ("pipelines", [path, "runs"]) => {
-            let res = list_runs(state, user, owner, repo, path).await?;
+        ("pipelines", parts) if parts.last() == Some(&"runs") => {
+            let path = pipeline_path(&parts[..parts.len() - 1]);
+            let res = list_runs(state, user, owner, repo, &path).await?;
             Ok(res.into_response())
         }
         ("runs", [run_id]) => {
@@ -198,8 +199,9 @@ pub(crate) async fn post_dispatch(
     rest: &str,
 ) -> ApiResult<axum::response::Response> {
     match (marker, rest.split('/').collect::<Vec<_>>().as_slice()) {
-        ("pipelines", [path, "runs"]) => {
-            let res = trigger_run(state, user, owner, repo, path).await?;
+        ("pipelines", parts) if parts.last() == Some(&"runs") => {
+            let path = pipeline_path(&parts[..parts.len() - 1]);
+            let res = trigger_run(state, user, owner, repo, &path).await?;
             Ok(res.into_response())
         }
         ("runs", [run_id, "cancel"]) => {
@@ -214,6 +216,50 @@ pub(crate) async fn post_dispatch(
 fn parse_id(s: &str, what: &str) -> ApiResult<i64> {
     s.parse()
         .map_err(|_| ApiError::BadRequest(format!("invalid {what} id")))
+}
+
+/// The pipeline's path, from the segments between the `pipelines` marker
+/// and its `runs` suffix.
+///
+/// A pipeline can sit in a directory — `.github/workflows/ci.yml` — so the
+/// path reaches us either raw (split across several segments) or `%2F`
+/// escaped by a client that escapes it. Both spellings must name the same
+/// pipeline row, otherwise every workflow in a subdirectory reports no runs.
+///
+/// A fully-escaped path arrives as one segment (`%2F.github…`), which
+/// decodes with a leading slash; the markers in the route have already
+/// consumed the separators, so the decoded leading and trailing slashes are
+/// trimmed rather than joining to `/.github/…`.
+fn pipeline_path(parts: &[&str]) -> String {
+    let decoded: Vec<String> = parts.iter().map(|p| percent_decode_path(p)).collect();
+    decoded.join("/").trim_matches('/').to_string()
+}
+
+/// Percent-decoding for a path segment: unlike a query value, a `+` in a
+/// path is a literal plus, not a space.
+fn percent_decode_path(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                Ok(v) => {
+                    out.push(v);
+                    i += 3;
+                }
+                Err(_) => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 // ----- Handlers ---------------------------------------------------------
@@ -686,4 +732,34 @@ pub struct RunVmResponse {
 #[derive(Debug, Serialize)]
 pub struct LogsResponse {
     pub lines: Vec<LogLineResponse>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A workflow in a directory is one path, not three segments: the
+    /// dispatcher must re-join the segments between the marker and `runs`.
+    #[test]
+    fn a_pipeline_path_with_slashes_survives_the_split() {
+        let parts = [".github", "workflows", "ci.yml", "runs"];
+        let path = pipeline_path(&parts[..parts.len() - 1]);
+        assert_eq!(path, ".github/workflows/ci.yml");
+    }
+
+    /// A client that escapes the slashes must reach the same pipeline as
+    /// one that does not.
+    #[test]
+    fn an_escaped_pipeline_path_decodes_to_the_same_path() {
+        let parts = ["%2F.github%2Fworkflows%2Fci.yml", "runs"];
+        let path = pipeline_path(&parts[..parts.len() - 1]);
+        assert_eq!(path, ".github/workflows/ci.yml");
+    }
+
+    /// A `+` in a path is a plus, not a space — unlike in a query value.
+    #[test]
+    fn a_plus_in_a_path_stays_a_plus() {
+        assert_eq!(percent_decode_path("c++"), "c++");
+        assert_eq!(percent_decode_path("a%20b"), "a b");
+    }
 }
