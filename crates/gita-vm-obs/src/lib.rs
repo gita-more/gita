@@ -4,7 +4,9 @@
 
 use axum::Router;
 use lazy_static::lazy_static;
-use prometheus::{Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Registry, TextEncoder};
+use prometheus::{
+    Encoder, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Registry, TextEncoder,
+};
 use std::sync::Arc;
 
 lazy_static! {
@@ -153,9 +155,7 @@ mod metrics_tests {
     /// of events counted under that kind.
     #[test]
     fn counting_events_grows_the_counter() {
-        let before = METRIC_EVENTS_TOTAL
-            .with_label_values(&["test"])
-            .get();
+        let before = METRIC_EVENTS_TOTAL.with_label_values(&["test"]).get();
         inc_events_total("test");
         inc_events_total("test");
         inc_events_total("test");
@@ -194,7 +194,9 @@ mod metrics_tests {
             "the exposition format is text, got {content_type}"
         );
 
-        let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let body = String::from_utf8_lossy(&body);
         assert!(
             body.contains("gita_vm_vms_total"),
@@ -203,6 +205,109 @@ mod metrics_tests {
         assert!(
             body.contains("gita_vm_events_total"),
             "the events counter must be exported, got:\n{body}"
+        );
+    }
+
+    fn family<'a>(
+        families: &'a [prometheus::proto::MetricFamily],
+        name: &str,
+    ) -> &'a prometheus::proto::MetricFamily {
+        families
+            .iter()
+            .find(|family| family.get_name() == name)
+            .unwrap_or_else(|| panic!("{name} was not gathered"))
+    }
+
+    fn labelled<'a>(
+        family: &'a prometheus::proto::MetricFamily,
+        name: &str,
+        value: &str,
+    ) -> &'a prometheus::proto::Metric {
+        family
+            .get_metric()
+            .iter()
+            .find(|metric| {
+                metric
+                    .get_label()
+                    .iter()
+                    .any(|label| label.get_name() == name && label.get_value() == value)
+            })
+            .unwrap_or_else(|| panic!("no {name}={value} series exported"))
+    }
+
+    /// Two values of the same label are two independent series: updating one
+    /// must not move the other.
+    #[test]
+    fn label_values_are_independent_series() {
+        METRIC_VMS_TOTAL.with_label_values(&["obs-a"]).set(3);
+        METRIC_VMS_TOTAL.with_label_values(&["obs-b"]).set(5);
+
+        let registry = MetricsRegistry::new();
+        let families = registry.registry.gather();
+        let vms = family(&families, "gita_vm_vms_total");
+
+        assert_eq!(
+            labelled(vms, "status", "obs-a").get_gauge().get_value(),
+            3.0
+        );
+        assert_eq!(
+            labelled(vms, "status", "obs-b").get_gauge().get_value(),
+            5.0
+        );
+    }
+
+    /// The counters are shared by every thread in the process. Concurrent
+    /// increments must all be counted: a lost update would silently
+    /// under-report VM events.
+    #[test]
+    fn concurrent_counters_lose_no_increments() {
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 1_000;
+        let label = "obs-concurrent";
+
+        let before = METRIC_EVENTS_TOTAL.with_label_values(&[label]).get();
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    for _ in 0..PER_THREAD {
+                        inc_events_total(label);
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("worker thread must not panic");
+        }
+
+        let after = METRIC_EVENTS_TOTAL.with_label_values(&[label]).get();
+        assert_eq!(after - before, (THREADS * PER_THREAD) as u64);
+    }
+
+    /// Observations feed the histogram's count and sum, which is what the
+    /// latency dashboards query.
+    #[test]
+    fn histogram_observations_update_count_and_sum() {
+        let kind = "obs-histogram";
+        METRIC_OPERATION_DURATION
+            .with_label_values(&[kind])
+            .observe(0.1);
+        METRIC_OPERATION_DURATION
+            .with_label_values(&[kind])
+            .observe(0.2);
+        METRIC_OPERATION_DURATION
+            .with_label_values(&[kind])
+            .observe(0.3);
+
+        let registry = MetricsRegistry::new();
+        let families = registry.registry.gather();
+        let durations = family(&families, "gita_vm_operation_duration_seconds");
+        let histogram = labelled(durations, "kind", kind).get_histogram();
+
+        assert_eq!(histogram.get_sample_count(), 3);
+        assert!(
+            (histogram.get_sample_sum() - 0.6).abs() < 1e-9,
+            "sum was {}",
+            histogram.get_sample_sum()
         );
     }
 }
