@@ -280,7 +280,13 @@ jobs:
         # --ignore-tests would only measure unit tests; leaving the
         # integration tests in is the point — they are where most of the
         # API surface is exercised.
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        #
+        # The floor is a ratchet, not a target: a full instrumented run
+        # currently reports ~80% of lines covered. The CLI crate is low
+        # because its integration tests execute the release-shaped binary
+        # as a subprocess, which coverage cannot see; 75% keeps that known
+        # blind spot from hiding a real regression elsewhere.
+        run: cargo llvm-cov --workspace --fail-under-lines 75 --lcov --output-path lcov.info
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
