@@ -1,5 +1,5 @@
 import { Fragment, useState, type ReactNode, useRef, useEffect } from 'react'
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   AlertTriangleIcon,
   BookIcon,
@@ -339,7 +339,6 @@ export function Sidebar({
   const { t } = useI18n()
   const location = useLocation()
   const navigate = useNavigate()
-  const params = useParams<{ owner?: string; repo?: string; group?: string; tab?: string }>()
 
   // For the global sidebar, prefer the URL pathname over the deprecated
   // globalActive/onGlobalNavigate props (kept for backwards compatibility).
@@ -352,10 +351,19 @@ export function Sidebar({
     return globalActive ?? null
   })()
 
-  // Derive the repo root from route params (owner/repo or group/repo).
-  const repoRoot = params.owner && params.repo
-    ? `/${params.owner}/${params.repo}`
-    : undefined
+  // Derive the repo root from the URL. The repo route is a `/*` catch-all
+  // (the owner/repo shape is resolved at runtime), so `params.owner` /
+  // `params.repo` are never populated and both the repo root and the
+  // active tab have to come from the pathname.
+  //
+  // The sidebars that need this are only rendered under a repo, so the
+  // first two path segments are the repository. Settings pages put their
+  // section after them; everything else is a tab.
+  const repoRoot = (() => {
+    if (variant === 'global' || sections) return undefined
+    const segs = location.pathname.split('/').filter(Boolean)
+    return segs.length >= 2 ? `/${segs[0]}/${segs[1]}` : undefined
+  })()
 
   // Page-local navigation: each item is its own page under the section's
   // base path (e.g. /settings/language). The active item is the one whose
@@ -407,7 +415,14 @@ export function Sidebar({
             const Icon = item.icon
             // Tab is a URL path segment (/owner/repo/issues); the index
             // route (no segment) is the "files" tab.
-            const currentTab = params.tab ?? 'files'
+            //
+            // It is read from the pathname, not from `params.tab`: the repo
+            // route is a `/*` catch-all (NamespaceLayout resolves the
+            // owner/repo shape at runtime), so there is no `:tab` param to
+            // read and every tab highlighted "代码".
+            const currentTab = repoRoot
+              ? location.pathname.slice(repoRoot.length + 1).split('/')[0] || 'files'
+              : 'files'
             // The settings page is its own route subtree
             // (/{owner}/{repo}/settings[/section]).
             const isSettingsRoute = repoRoot

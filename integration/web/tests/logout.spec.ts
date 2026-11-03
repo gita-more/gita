@@ -27,10 +27,18 @@ test.describe('退出登录', () => {
     // 点击用户菜单里的“退出登录”。
     await page.goto('/');
     await page.locator('.user-menu-toggle, .avatar, [aria-label*="用户"]').first().click();
+    // The revocation is fire-and-forget (a failed logout must not trap the
+    // user), so waiting for the local UI alone races the server: the
+    // assertion below could run before the POST landed. Wait for the
+    // request itself.
+    const logoutDone = page.waitForResponse(
+      (r) => r.url().includes('/api/auth/logout') && r.request().method() === 'POST',
+    )
     await page.getByRole('button', { name: /退出登录/ }).click();
 
     // 页面回到登录态。
     await expect(page.locator('#username')).toBeVisible({ timeout: 10000 });
+    await logoutDone;
 
     // 关键断言：同一个 token 在服务端已经被吊销。
     const after = await page.request.get(`${BASE}/api/auth/me`, {

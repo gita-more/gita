@@ -77,20 +77,29 @@ test.describe('i18n 切换', () => {
   })
 
   test('设置页切语言不需要刷新页面就生效', async ({ page }) => {
+    // The locale has to be set *before* the first load: the app reads it
+    // from localStorage while mounting, and `setUserLocale` does not
+    // reload. Doing it after `goto('/')` left the page rendered in
+    // whatever locale the previous test left behind.
     await page.goto('/')
-    // Force initial locale to zh so we start from a known state.
     await setUserLocale(page, 'zh')
+    await page.reload()
     await page.goto('/settings')
 
-    // 初始为 zh：侧边栏看到「项目」
-    await expect(page.locator('.sidebar-link', { hasText: '项目' })).toBeVisible()
+    // The settings route has its own sidebar (sections like 界面语言 /
+    // 访问令牌), not the global nav — asserting on 项目 here looked for
+    // an element this page never renders.
+    const languageLink = page.locator('.sidebar-link', { hasText: '界面语言' })
+    await expect(languageLink).toBeVisible()
 
     // 在 settings 里切到 English（点击 "English" radio label）
     await page.locator('.settings-locale-options label', { hasText: 'English' }).click()
 
-    // 不刷新 — 侧边栏应实时变英文
-    await expect(page.locator('.sidebar-link', { hasText: 'Projects' })).toBeVisible({ timeout: 3000 })
-    // 「项目」从结果中消失
-    await expect(page.locator('.sidebar-link', { hasText: '项目' })).toHaveCount(0)
+    // 不刷新 — 设置页侧边栏应实时变英文
+    await expect(
+      page.locator('.sidebar-link', { hasText: 'Language' }),
+    ).toBeVisible({ timeout: 3000 })
+    // 「界面语言」从结果中消失
+    await expect(page.locator('.sidebar-link', { hasText: '界面语言' })).toHaveCount(0)
   })
 })
