@@ -1590,6 +1590,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "gita-ci",
  "gita-workflow",
  "reqwest",
  "serde",
@@ -1755,6 +1756,7 @@ dependencies = [
 name = "gita-pipeline"
 version = "0.0.1"
 dependencies = [
+ "gita-workflow",
  "globset",
  "indexmap",
  "proptest",

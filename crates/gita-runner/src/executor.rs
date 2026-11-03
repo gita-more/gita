@@ -238,6 +238,37 @@ async fn run_job(
     cmd.env_remove("GITA_RUNNER_TOKEN");
     cmd.env_remove("GITA_SERVER_URL");
 
+    // Start the job's service containers before anything runs, so the
+    // first step can connect. Torn down at the end whatever the outcome.
+    let services_sink = client.clone();
+    let services_job_id = job_id;
+    let services_log = move |line: &str| {
+        let client = services_sink.clone();
+        let line = line.to_string();
+        tokio::spawn(async move {
+            let _ = client
+                .append_logs(
+                    services_job_id,
+                    &[crate::client::LogLine {
+                        seq: 0,
+                        stream: "system".to_string(),
+                        line,
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                    }],
+                )
+                .await;
+        });
+    };
+    let mut services =
+        match gita_ci::services::Services::start(job_id, &job.services, &services_log).await {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!(job = %job.name, "services failed to start: {e:#}");
+                client.set_job_status(job_id, "failed", None).await?;
+                return Ok(false);
+            }
+        };
+
     let child = cmd.spawn().context("spawn sh")?;
 
     // Register the child so a cancel-watcher (spawned below) can find
@@ -423,6 +454,11 @@ async fn run_job(
     client
         .set_job_status(job_id, final_status, exit_code)
         .await?;
+
+    // Tear the service containers down now that the job has settled.
+    if let Some(mut services) = services.take() {
+        services.stop().await;
+    }
 
     // Clean up the job workspace to avoid accumulating dirs. A git
     // worktree has to be removed through git so the clone's worktree

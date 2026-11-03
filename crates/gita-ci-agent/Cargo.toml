@@ -24,6 +24,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 gita-workflow = { path = "../gita-workflow" }
+gita-ci = { path = "../gita-ci" }
 
 [dev-dependencies]
 axum = { workspace = true }

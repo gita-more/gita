@@ -15,7 +15,7 @@ const RESERVED_TOP_LEVEL_KEYS: [&str; 4] = ["stages", "jobs", "only", "except"];
 
 /// The keys a job definition may carry. A top-level mapping with none of
 /// them is a typo in a top-level keyword, not a job.
-const JOB_KEYS: [&str; 4] = ["stage", "script", "needs", "vm"];
+const JOB_KEYS: [&str; 5] = ["stage", "script", "needs", "vm", "services"];
 
 /// The whole `.gita-ci.yml` document, flattened so that top-level job
 /// entries and a `jobs:` mapping can be merged before validation.
@@ -108,6 +108,10 @@ struct RawJob {
     needs: Vec<String>,
     #[serde(default)]
     vm: Option<RawVmJob>,
+    /// Service containers, in the same shape `.github/workflows` uses, so
+    /// one `gita_workflow::Service` describes both formats' services.
+    #[serde(default)]
+    services: std::collections::BTreeMap<String, gita_workflow::Service>,
 }
 
 // ----- Public API -------------------------------------------------------
@@ -222,6 +226,7 @@ pub fn parse_yaml(src: &str) -> Result<PipelineSpec, PipelineParseError> {
             script,
             needs: raw_job.needs,
             vm,
+            services: raw_job.services,
         });
     }
 

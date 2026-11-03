@@ -93,6 +93,10 @@ pub struct ParsedJob {
     /// cluster template — with the optional resource overrides applied —
     /// executes the script inside it, and reclaims the VM afterwards.
     pub vm: Option<VmJob>,
+    /// Service containers started alongside the job, keyed by the label a
+    /// step uses as the hostname. Same model and semantics as the GitHub
+    /// workflow format.
+    pub services: std::collections::BTreeMap<String, gita_workflow::Service>,
 }
 
 /// The `vm:` block of a job: which cluster template to instantiate, and

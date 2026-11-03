@@ -1,6 +1,7 @@
 //! Shared CI library for admin CLI and orchestrator.
 
 pub mod image;
+pub mod services;
 pub mod template;
 pub mod userdata;
 

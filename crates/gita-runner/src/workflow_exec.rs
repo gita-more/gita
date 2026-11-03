@@ -118,6 +118,25 @@ pub async fn execute_workflow_job(
         }
     }
 
+    // Start the job's service containers, exactly as the in-VM agent
+    // does: same network, same masks, same health wait. A job that declares
+    // `services:` must not run against a half-built environment.
+    let services_log = |line: &str| {
+        log_sink.write(job_id, 0, "system", line);
+    };
+    let mut services = match gita_ci::services::Services::start(
+        job_id,
+        &job.services,
+        &services_log,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return Err(anyhow::anyhow!("services failed to start: {e}"));
+        }
+    };
+
     let seq = Arc::new(AtomicI64::new(0));
     let mut exit_code: Option<i32> = None;
 
@@ -192,6 +211,10 @@ pub async fn execute_workflow_job(
             break;
         }
     }
+
+    // Tear the services down whatever the steps did, before reporting the
+    // job's own outcome.
+    services.stop().await;
 
     Ok(WorkflowJobResult {
         job_name: job.name.clone(),
