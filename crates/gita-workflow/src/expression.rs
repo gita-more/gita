@@ -513,20 +513,22 @@ fn values_equal(a: &CValue, b: &CValue) -> bool {
     }
 }
 
+/// The numeric value of a comparison operand.
+///
+/// A boolean counts as 1 or 0 so that `true == 1` behaves the way a
+/// spreadsheet would read it; anything else is 0.
+fn cvalue_to_number(v: &CValue) -> f64 {
+    match v {
+        CValue::Number(n) => *n,
+        CValue::Str(s) => s.parse().unwrap_or(0.0),
+        CValue::Bool(true) => 1.0,
+        CValue::Bool(false) => 0.0,
+        _ => 0.0,
+    }
+}
+
 fn cmp_numbers(a: &CValue, b: &CValue, f: fn(f64, f64) -> bool) -> bool {
-    let an = match a {
-        CValue::Number(n) => *n,
-        CValue::Str(s) => s.parse().unwrap_or(0.0),
-        CValue::Bool(b) => if *b { 1.0 } else { 0.0 },
-        _ => 0.0,
-    };
-    let bn = match b {
-        CValue::Number(n) => *n,
-        CValue::Str(s) => s.parse().unwrap_or(0.0),
-        CValue::Bool(b) => if *b { 1.0 } else { 0.0 },
-        _ => 0.0,
-    };
-    f(an, bn)
+    f(cvalue_to_number(a), cvalue_to_number(b))
 }
 
 fn cvalue_to_string(v: &CValue) -> String {
