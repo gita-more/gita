@@ -28,11 +28,21 @@ pub fn job_work_dir(config: &RunnerConfig, run_id: i64, job_name: &str) -> PathB
         .join(&safe)
 }
 
-fn base_host(config: &RunnerConfig) -> &str {
-    config
-        .server_base_url
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
+/// The scheme and authority of the configured server base URL.
+///
+/// The scheme is returned separately because it must survive into the
+/// clone URL: a deployment that serves plain HTTP (an internal install
+/// behind a plain-HTTP proxy, a test instance) cannot be cloned over
+/// TLS.
+fn split_base(config: &RunnerConfig) -> (&str, &str) {
+    let base = config.server_base_url.trim_end_matches('/');
+    if let Some(rest) = base.strip_prefix("https://") {
+        ("https", rest)
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        ("http", rest)
+    } else {
+        ("http", base)
+    }
 }
 
 /// Build the clone URL with the runner token as Basic auth password.
@@ -40,6 +50,10 @@ fn base_host(config: &RunnerConfig) -> &str {
 ///
 /// Git smart-HTTP is mounted at the root path `/{owner}/{repo}.git/...`,
 /// matching GitLab/GitHub's clean clone URLs.
+///
+/// The scheme follows the configured server base URL. Hardcoding `https`
+/// breaks every job on a plain-HTTP deployment: the checkout fails with
+/// a TLS handshake error before the first step runs.
 ///
 /// A `file://` server base is passed through unchanged, without the token,
 /// so a runner can be pointed at a local bare repository. That is what the
@@ -51,9 +65,9 @@ pub fn clone_url(config: &RunnerConfig, owner: &str, repo: &str) -> String {
     }
     // The trailing slash of a configured base URL is dropped: keeping it
     // would produce `host//owner/repo.git`, which git refuses to clone.
-    let host = base_host(config).trim_end_matches('/');
+    let (scheme, host) = split_base(config);
     format!(
-        "https://x-access-token:{}@{}/{}/{}.git",
+        "{scheme}://x-access-token:{}@{}/{}/{}.git",
         config.runner_token, host, owner, repo
     )
 }
@@ -123,13 +137,14 @@ mod tests {
 
     /// Git smart-HTTP is mounted at the root path, so the clone URL has
     /// no `/git` prefix — and the runner token travels as the Basic-auth
-    /// password.
+    /// password. The scheme follows the server base URL: hardcoding
+    /// `https` would break every job on a plain-HTTP deployment.
     #[test]
     fn the_clone_url_carries_the_token_and_has_no_git_prefix() {
         let c = config("http://localhost:3100", "secret-token");
         assert_eq!(
             clone_url(&c, "alice", "widgets"),
-            "https://x-access-token:secret-token@localhost:3100/alice/widgets.git"
+            "http://x-access-token:secret-token@localhost:3100/alice/widgets.git"
         );
 
         let c = config("https://gita.example.com/", "secret-token");
