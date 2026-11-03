@@ -215,6 +215,7 @@ pub fn git_version() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// Create a fresh, unique temp root per test invocation.
     ///
@@ -1344,6 +1345,31 @@ mod tests {
         assert!(mgr.list_dir("alice", "dirlist", "main", "nope").unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// Any full 40-hex reference is treated as an object id, in either
+        /// case, and is passed through unchanged.
+        #[test]
+        fn a_full_hex_reference_is_an_object_id(hex in "[0-9a-fA-F]{40}") {
+            match classify_reference(&hex) {
+                RefSpec::ObjectId(id) => prop_assert_eq!(id, hex.as_str()),
+                RefSpec::Ref(other) => prop_assert!(false, "classified {hex} as ref {other}"),
+            }
+        }
+
+        /// Anything that is not a full object id resolves as a ref name, so a
+        /// short SHA or a branch can never be mistaken for a commit id.
+        #[test]
+        fn a_non_object_id_reference_is_always_a_ref(reference in ".{0,200}") {
+            prop_assume!(
+                !(reference.len() == 40
+                    && reference.bytes().all(|b| b.is_ascii_hexdigit()))
+            );
+            prop_assert!(matches!(classify_reference(&reference), RefSpec::Ref(_)));
+        }
     }
 }
 

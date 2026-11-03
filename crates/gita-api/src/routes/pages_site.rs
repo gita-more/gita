@@ -434,6 +434,7 @@ fn content_security_policy() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn content_type_mapping() {
@@ -514,5 +515,37 @@ mod tests {
         assert!(sanitize_site_path(&"x".repeat(1025)).is_none());
         let deep = (0..65).map(|_| "d").collect::<Vec<_>>().join("/");
         assert!(sanitize_site_path(&deep).is_none());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// Whatever the input, an accepted path stays inside the site root:
+        /// relative, forward-slashed, non-empty segments, no `.` / `..`, and
+        /// no `.git*` segment that could expose repository internals.
+        #[test]
+        fn an_accepted_path_never_escapes_the_site_root(
+            raw in prop::collection::vec(any::<char>(), 0..200)
+                .prop_map(|chars| chars.into_iter().collect::<String>()),
+        ) {
+            let Some(path) = sanitize_site_path(&raw) else {
+                return Ok(());
+            };
+
+            prop_assert!(!path.starts_with('/'));
+            prop_assert!(!path.contains('\\'));
+            prop_assert!(!path.contains('\0'));
+            prop_assert!(path.len() <= 1024);
+
+            if !path.is_empty() {
+                let segments: Vec<&str> = path.split('/').collect();
+                prop_assert!(segments.len() <= 64);
+                for segment in segments {
+                    prop_assert!(!segment.is_empty());
+                    prop_assert!(segment != "." && segment != "..");
+                    prop_assert!(!segment.starts_with(".git"));
+                }
+            }
+        }
     }
 }

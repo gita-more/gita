@@ -36,3 +36,6 @@ governor = "0.7"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+proptest = "1"

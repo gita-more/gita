@@ -18,6 +18,7 @@ tempfile = "3"
 gita-core = { path = "../gita-core" }
 
 [dev-dependencies]
+proptest = "1"
 tracing-subscriber = { workspace = true }
 
 [lints]
