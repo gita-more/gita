@@ -65,6 +65,22 @@ pub async fn dispatch(
     }
 }
 
+/// Read lines up to (and excluding) the blank line that ends a request.
+///
+/// Split out from [`CredentialRequest::read`] so the multi-line read can
+/// be tested without a terminal.
+fn lines_until_blank(reader: impl std::io::BufRead) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.is_empty() {
+            break;
+        }
+        lines.push(line);
+    }
+    Ok(lines)
+}
+
 /// A git credential-helper request.
 #[derive(Debug, Default)]
 struct CredentialRequest {
@@ -77,13 +93,16 @@ struct CredentialRequest {
 
 impl CredentialRequest {
     /// Read git's `key=value` request format from stdin.
+    ///
+    /// Git writes the whole request — `protocol`, `host`, `path`, and for
+    /// `store`/`erase` also `username` and `password` — and terminates it
+    /// with a blank line. Reading a single line leaves `host` unset, and
+    /// the lookup keys on scheme + host, so every `get` answered "no
+    /// credential".
     fn read() -> Result<Self> {
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        // The helper is given the whole request on stdin; parse what was
-        // read, so the parsing can be tested without a terminal.
-        let lines: Vec<&str> = input.split('\n').collect();
-        Self::parse(&lines)
+        let lines = lines_until_blank(std::io::stdin().lock())?;
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        Self::parse(&refs)
     }
 
     /// Parse the `key=value` lines of a credential-helper request.
@@ -524,6 +543,24 @@ fn prompt_password(msg: &str) -> Result<String> {
 #[cfg(test)]
 mod credential_request_tests {
     use super::*;
+
+    /// `read` must consume the whole request, not just its first line.
+    ///
+    /// This is the difference between a helper that works and one that
+    /// silently answers "no credential": the lookup keys on scheme +
+    /// host, and `host` is the *second* line git sends.
+    #[test]
+    fn the_whole_request_is_read_from_stdin() {
+        let input = std::io::Cursor::new(b"protocol=https\nhost=gita.example.com\n\n".to_vec());
+        let lines = super::lines_until_blank(input).unwrap();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let req = CredentialRequest::parse(&refs).unwrap();
+        assert_eq!(req.host.as_deref(), Some("gita.example.com"));
+        assert_eq!(
+            req.server_url().as_deref(),
+            Some("https://gita.example.com")
+        );
+    }
 
     #[test]
     fn the_request_is_read_from_key_value_lines() {
