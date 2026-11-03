@@ -41,6 +41,13 @@ pages_enabled = true
 # register with this server.
 [server.vm]
 enabled = false
+# Run workflow jobs inside a cluster VM.
+#
+# The embedded runner runs workflow jobs in a per-job workspace on this
+# host by default. With this on, each job gets a fresh VM instead — the
+# closer match to a GitHub-hosted runner, but it needs `enabled = true`
+# above and at least one registered node with Docker in the CI image.
+# workflow_vm = false
 # Where VM images, snapshots and node working directories live.
 # Defaults to <data_dir>/vm.
 # data_dir = "data/vm"

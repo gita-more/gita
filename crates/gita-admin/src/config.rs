@@ -379,6 +379,12 @@ pub struct VmConfig {
     /// 节点心跳超时（秒）：超过这个时间没有心跳就判定节点下线。
     #[serde(default = "default_vm_heartbeat_timeout")]
     pub heartbeat_timeout_secs: u64,
+    /// 让 workflow job 跑在集群 VM 里，而不是 runner 宿主机上。
+    ///
+    /// 对应 runner 的 `GITA_WORKFLOW_VM`。需要 `enabled = true` 且至少
+    /// 有一个已注册的节点；没有节点时 job 会因为找不到模板而失败。
+    #[serde(default)]
+    pub workflow_vm: bool,
 }
 
 fn default_vm_enabled() -> bool {
@@ -406,6 +412,7 @@ impl Default for VmConfig {
             reconcile_interval_secs: default_vm_reconcile_interval(),
             overload_ratio: default_vm_overload_ratio(),
             heartbeat_timeout_secs: default_vm_heartbeat_timeout(),
+            workflow_vm: false,
         }
     }
 }
@@ -599,6 +606,13 @@ impl Config {
             {
                 config.server.vm.heartbeat_timeout_secs = v;
             }
+            if let Some(v) = raw_server
+                .and_then(|s| s.get("vm"))
+                .and_then(|v| v.get("workflow_vm"))
+                .and_then(|v| v.as_bool())
+            {
+                config.server.vm.workflow_vm = v;
+            }
         } else {
             warn!("config file {} not found, using defaults", path.display());
         }
@@ -659,6 +673,39 @@ mod tests {
         // Non-overridden fields keep defaults.
         assert_eq!(config.server.jwt_secret, "dev-secret-change-me");
         assert!(config.server.database_url.contains("postgres://"));
+    }
+
+    /// The `[server.vm]` keys must survive `Config::load`.
+    ///
+    /// That merge is hand-written (the TOML is walked key by key), so a new
+    /// field is silently dropped unless someone adds a branch for it — and
+    /// a dropped key looks exactly like "the operator left it at the
+    /// default".
+    #[test]
+    fn config_load_merges_every_vm_key() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("gita.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [server.vm]
+            enabled = true
+            workflow_vm = true
+            reconcile_interval_secs = 11
+            overload_ratio = 0.5
+            heartbeat_timeout_secs = 22
+            "#,
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert!(config.server.vm.enabled);
+        assert!(
+            config.server.vm.workflow_vm,
+            "workflow_vm must reach the runner"
+        );
+        assert_eq!(config.server.vm.reconcile_interval_secs, 11);
+        assert_eq!(config.server.vm.overload_ratio, 0.5);
+        assert_eq!(config.server.vm.heartbeat_timeout_secs, 22);
     }
 
     #[test]

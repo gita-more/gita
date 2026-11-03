@@ -102,7 +102,9 @@ pub async fn run(config: Config) -> Result<()> {
         claim_lease_secs: 300,
         concurrent_jobs: 1,
         job_timeout_secs: 3600,
-        workflow_vm: false,
+        // A workflow job runs in a VM only when the operator asks for it:
+        // it needs the control plane plus a registered node.
+        workflow_vm: config.server.vm.enabled && config.server.vm.workflow_vm,
     };
     tokio::spawn(async move {
         if let Err(e) = gita_runner::run(runner_cfg).await {
