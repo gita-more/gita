@@ -159,7 +159,9 @@ async fn agent_can_run_a_job_to_completion() {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["applied"], true);
 
@@ -212,7 +214,6 @@ async fn finished_job_ignores_further_status_reports() {
     let send = |body: serde_json::Value| {
         let app = &app;
         let token = &token;
-        let job_id = job_id;
         async move {
             let req = axum::http::Request::builder()
                 .method(Method::POST)
@@ -231,7 +232,9 @@ async fn finished_job_ignores_further_status_reports() {
     // A second "success" (a retried callback) must not change the row.
     let resp = send(serde_json::json!({"status": "success", "exit_code": 0})).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["applied"], false);
 
@@ -255,13 +258,14 @@ async fn agent_cannot_finish_a_job_that_never_started() {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(axum::body::Body::from(
-            serde_json::to_vec(&serde_json::json!({"status": "success", "exit_code": 0}))
-                .unwrap(),
+            serde_json::to_vec(&serde_json::json!({"status": "success", "exit_code": 0})).unwrap(),
         ))
         .unwrap();
     let resp = app.router().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(v["applied"], false);
 

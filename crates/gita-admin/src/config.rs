@@ -1,4 +1,4 @@
-/// Server configuration types, TOML loading/merging, and defaults.
+//! Server configuration types, TOML loading/merging, and defaults.
 
 use anyhow::{Context, Result};
 
@@ -10,7 +10,11 @@ use tracing::warn;
 
 /// CLI arguments for gita-admin.
 #[derive(Parser, Debug)]
-#[command(name = "gita-admin", version, about = "Gita Admin - server & CI infrastructure")]
+#[command(
+    name = "gita-admin",
+    version,
+    about = "Gita Admin - server & CI infrastructure"
+)]
 pub struct Args {
     #[arg(short = 'c', long, global = true, default_value = "gita.toml")]
     pub config: PathBuf,
@@ -160,8 +164,10 @@ pub enum VmCmd {
 pub enum WorkerCommand {
     /// Register a new runner and print its token
     Register {
-        #[arg(long)] name: String,
-        #[arg(long)] user: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        user: String,
     },
 }
 
@@ -169,56 +175,81 @@ pub enum WorkerCommand {
 pub enum ImageCmd {
     /// Build a base CI image (requires root)
     Build {
-        #[arg(long)] output: String,
-        #[arg(long, default_value = "8G")] size: String,
-        #[arg(long, default_value = "noble")] ubuntu_release: String,
-        #[arg(long)] agent_script: Option<String>,
+        #[arg(long)]
+        output: String,
+        #[arg(long, default_value = "8G")]
+        size: String,
+        #[arg(long, default_value = "noble")]
+        ubuntu_release: String,
+        #[arg(long)]
+        agent_script: Option<String>,
     },
     /// Register a built image to rcluster
     Register {
-        #[arg(long)] control_url: String,
-        #[arg(long)] pool: String,
-        #[arg(long)] path: String,
-        #[arg(long)] name: String,
-        #[arg(long, default_value = "x86_64")] arch: String,
+        #[arg(long)]
+        control_url: String,
+        #[arg(long)]
+        pool: String,
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "x86_64")]
+        arch: String,
         /// rcluster API key (defaults to $RCLUSTER_API_KEY)
-        #[arg(long)] api_key: Option<String>,
+        #[arg(long)]
+        api_key: Option<String>,
     },
     /// List registered images
     List {
-        #[arg(long)] control_url: String,
+        #[arg(long)]
+        control_url: String,
         /// rcluster API key (defaults to $RCLUSTER_API_KEY)
-        #[arg(long)] api_key: Option<String>,
+        #[arg(long)]
+        api_key: Option<String>,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum TemplateCmd {
     Create {
-        #[arg(long)] control_url: String,
+        #[arg(long)]
+        control_url: String,
         /// rcluster API key (defaults to $RCLUSTER_API_KEY)
-        #[arg(long)] api_key: Option<String>,
-        #[arg(long)] image: String,
+        #[arg(long)]
+        api_key: Option<String>,
+        #[arg(long)]
+        image: String,
         /// 内核镜像名；缺省使用平台默认内核。
-        #[arg(long)] kernel: Option<String>,
-        #[arg(long)] template: String,
-        #[arg(long, default_value = "4000")] cpu: u64,
-        #[arg(long, default_value = "4G")] memory: String,
-        #[arg(long, default_value = "20G")] disk: String,
-        #[arg(long)] network: String,
+        #[arg(long)]
+        kernel: Option<String>,
+        #[arg(long)]
+        template: String,
+        #[arg(long, default_value = "4000")]
+        cpu: u64,
+        #[arg(long, default_value = "4G")]
+        memory: String,
+        #[arg(long, default_value = "20G")]
+        disk: String,
+        #[arg(long)]
+        network: String,
     },
     List {
-        #[arg(long)] control_url: String,
+        #[arg(long)]
+        control_url: String,
         /// rcluster API key (defaults to $RCLUSTER_API_KEY)
-        #[arg(long)] api_key: Option<String>,
+        #[arg(long)]
+        api_key: Option<String>,
     },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum RunnerCmd {
     Register {
-        #[arg(long)] name: String,
-        #[arg(long)] user: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        user: String,
     },
 }
 
@@ -582,11 +613,11 @@ pub fn parse_size(s: &str) -> anyhow::Result<u64> {
         anyhow::bail!("empty size string");
     }
     let (num_str, unit) = if s.ends_with('G') || s.ends_with('g') {
-        (&s[..s.len()-1], 1024*1024*1024)
+        (&s[..s.len() - 1], 1024 * 1024 * 1024)
     } else if s.ends_with('M') || s.ends_with('m') {
-        (&s[..s.len()-1], 1024*1024)
+        (&s[..s.len() - 1], 1024 * 1024)
     } else if s.ends_with('K') || s.ends_with('k') {
-        (&s[..s.len()-1], 1024)
+        (&s[..s.len() - 1], 1024)
     } else {
         (s, 1)
     };

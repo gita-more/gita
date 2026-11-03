@@ -1,0 +1,6 @@
+[toolchain]
+# Pin the compiler so a stable-channel update cannot silently change lints,
+# formatting, or code generation between two CI runs. Bump this deliberately.
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
