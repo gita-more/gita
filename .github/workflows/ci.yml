@@ -223,7 +223,9 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git libdbus-1-dev pkg-config
+          # postgresql-client provides psql, which the E2E setup uses to
+          # drop the run's schema when it finishes.
+          sudo apt-get install -y git libdbus-1-dev pkg-config postgresql-client
 
       - name: Build the frontend
         # The server serves `web/dist` (found relative to the checkout),
@@ -240,33 +242,13 @@ jobs:
         run: npx playwright install --with-deps chromium
         working-directory: integration/web
 
-      - name: Start gita-admin
-        run: |
-          cat > gita-e2e.toml <<'EOF'
-          [server]
-          host = "127.0.0.1"
-          port = 3100
-          data_dir = "e2e-data"
-          database_url = "postgres://gita:gita@localhost:55432/gita"
-          jwt_secret = "ci-e2e-secret"
-
-          [server.vm]
-          enabled = true
-          api_key = "e2e-vm-key"
-          EOF
-          ./target/debug/gita-admin -c gita-e2e.toml &
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:3100/api/health > /dev/null 2>&1; then
-              echo "gita-admin is ready"
-              exit 0
-            fi
-            echo "Waiting for gita-admin (attempt $i)..."
-            sleep 1
-          done
-          echo "gita-admin did not become ready in time"
-          exit 1
-
       - name: Run Playwright tests
+        # The suite starts its own server (integration/web/tests/global-setup.ts),
+        # in its own Postgres schema and its own data directory, and removes
+        # both when it finishes. Nothing has to be started by hand here, and
+        # no state survives the run.
+        env:
+          GITA_TEST_DATABASE_URL: postgres://gita:gita@localhost:55432/gita
         run: npx playwright test
         working-directory: integration/web
 

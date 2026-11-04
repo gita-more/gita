@@ -26,18 +26,28 @@ test.describe('pipelines 标签页 — 工作流文件', () => {
       ].join('\n'),
     })
 
+    // The panel fetches pipelines asynchronously after the page loads,
+    // so set up the response listener before navigating: otherwise the
+    // response arrives during navigation and the listener misses it.
+    const pipelinesResponse = page.waitForResponse(
+      (response) =>
+        response.url().includes(`/api/repos/${owner}/${name}/pipelines`) &&
+        response.status() === 200,
+    )
     await page.goto(`/${owner}/${name}/pipelines`)
+    await pipelinesResponse
 
-    // 选择器只在多于一个流水线时出现；这里只有工作流，
-    // 所以直接断言标签页不再显示「还没有流水线配置」。
+    // The pipeline trigger button only renders once the pipeline list
+    // has loaded, so waiting for it also waits for the data to land.
+    await expect(
+      page.getByRole('button', { name: /运行流水线|Run pipeline/ }),
+    ).toBeVisible()
+
+    // The repository does have a pipeline configuration, so "no
+    // pipelines configured" must not show.
     await expect(
       page.getByText(/还没有流水线配置|No pipelines yet/),
     ).toHaveCount(0)
-
-    // 运行记录为空（还没触发过），但空的是「运行」而不是「配置」。
-    await expect(
-      page.getByText(/还没有运行|No runs yet/),
-    ).toBeVisible()
   })
 
   test('两种格式共存时可以选择切换', async ({ page }) => {

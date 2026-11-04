@@ -4,11 +4,17 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { expect, type APIRequestContext, type Page, type BrowserContext } from '@playwright/test'
 
+import { E2E_BASE } from './server-env'
+
 /**
  * Base URL of the gita-server under test.
- * Override with GITA_URL when running against a non-default deployment.
+ *
+ * The setup (`global-setup.ts`) starts a server of its own and puts its
+ * address in `GITA_URL`; the workers inherit it. When it is not set —
+ * a run against a deployment somebody else started — the suite's own
+ * port is used.
  */
-export const BASE = process.env.GITA_URL ?? 'http://127.0.0.1:3100'
+export const BASE = process.env.GITA_URL ?? E2E_BASE
 
 /**
  * Default e2e user used by tests that don't need a unique account.

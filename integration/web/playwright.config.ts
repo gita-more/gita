@@ -1,19 +1,28 @@
 import { defineConfig } from '@playwright/test'
 
-// Gita Web E2E 测试配置
-// 浏览器使用本机缓存的 Chromium（与 @playwright/test 版本匹配），不重新下载。
-// 服务地址默认 http://127.0.0.1:3100（可用环境变量 GITA_URL 覆盖）。
-const GITA_URL = process.env.GITA_URL ?? 'http://127.0.0.1:3100'
+import { E2E_BASE, externalUrl } from './tests/server-env'
+
+// The web E2E configuration.
+//
+// The suite starts its own server (see `tests/global-setup.ts`), so
+// there is nothing to run by hand and nothing to remember to clean up
+// afterwards. Each run gets its own Postgres schema and its own data
+// directory, both of which are removed when the run ends.
+//
+// The port is the suite's own, not the development deployment's: a
+// server that was already listening would be tested instead of the one
+// the suite started, and the failure would look like a broken login.
+
+const GITA_URL = externalUrl() ?? E2E_BASE
 
 export default defineConfig({
   testDir: './tests',
   timeout: 30_000,
   fullyParallel: false,
-  // Serial execution: tests share the same running gita-server and can
-  // create repos/users that later tests rely on; parallel files would
-  // race on repo visibility.
+  // Serial execution: the tests share one running gita-server, and
+  // parallel files would race on the repositories they create.
   workers: 1,
-  // A retry hides a race: the same test that passed on the second try is
+  // A retry hides a race: the same test that passed the second time is
   // still broken. Keep failures visible instead.
   retries: 0,
   // `.only` that reaches CI silently disables the rest of the suite.
@@ -23,6 +32,7 @@ export default defineConfig({
   expect: {
     timeout: 5_000,
   },
+  globalSetup: './tests/global-setup.ts',
   use: {
     baseURL: GITA_URL,
     headless: true,
