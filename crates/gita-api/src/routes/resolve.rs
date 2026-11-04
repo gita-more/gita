@@ -107,3 +107,38 @@ async fn resolve(
         "no repository or group matches this path".into(),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_path_serde_uses_snake_case() {
+        let repo = ResolvedPath::Repo {
+            owner: "alice".to_string(),
+            name: "widgets".to_string(),
+            owner_kind: OwnerKind::User,
+        };
+        let json = serde_json::to_value(&repo).unwrap();
+        assert_eq!(json["kind"], "repo");
+        assert_eq!(json["owner"], "alice");
+        assert_eq!(json["name"], "widgets");
+        assert_eq!(json["owner_kind"], "user");
+
+        let group = ResolvedPath::Group {
+            full_path: "gita/tests".to_string(),
+        };
+        let json = serde_json::to_value(&group).unwrap();
+        assert_eq!(json["kind"], "group");
+        assert_eq!(json["full_path"], "gita/tests");
+    }
+
+    #[test]
+    fn owner_kind_serde_uses_snake_case() {
+        assert_eq!(serde_json::to_string(&OwnerKind::User).unwrap(), "\"user\"");
+        assert_eq!(
+            serde_json::to_string(&OwnerKind::Group).unwrap(),
+            "\"group\""
+        );
+    }
+}
