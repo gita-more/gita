@@ -117,3 +117,99 @@ pub fn message(msg: &str) -> axum::Json<MessageResponse> {
         message: msg.to_string(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::StatusCode;
+
+    async fn response_body(res: Response) -> String {
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap_or_default();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    #[tokio::test]
+    async fn status_code_maps_each_variant() {
+        assert_eq!(ApiError::BadRequest("x".into()).status_code(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            ApiError::Unauthorized("x".into()).status_code(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            ApiError::Forbidden("x".into()).status_code(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            ApiError::NotFound("x".into()).status_code(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            ApiError::Conflict("x".into()).status_code(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            ApiError::RateLimited("x".into()).status_code(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            ApiError::Internal("x".into()).status_code(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn client_errors_are_returned_verbatim() {
+        let err = ApiError::NotFound("repository not found".into());
+        let res = err.into_response();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let body = response_body(res).await;
+        assert!(body.contains("repository not found"));
+        assert!(body.contains("\"status\":404"));
+    }
+
+    #[tokio::test]
+    async fn internal_errors_do_not_leak_details() {
+        // An absolute filesystem path and a constraint name must not reach
+        // the client — they go to the log instead.
+        let err = ApiError::Database(
+            sqlx::Error::RowNotFound,
+        );
+        let res = err.into_response();
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_body(res).await;
+        assert_eq!(body, r#"{"error":{"message":"internal error","status":500}}"#);
+    }
+
+    #[tokio::test]
+    async fn io_errors_do_not_leak_details() {
+        let err = ApiError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no such file or directory",
+        ));
+        let res = err.into_response();
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_body(res).await;
+        assert_eq!(body, r#"{"error":{"message":"internal error","status":500}}"#);
+    }
+
+    #[tokio::test]
+    async fn internal_error_do_not_leak_details() {
+        let err = ApiError::Internal("open bare repo /srv/gita/data/repos/alice/secret.git".into());
+        let res = err.into_response();
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_body(res).await;
+        assert!(!body.contains("/srv/gita"));
+        assert_eq!(body, r#"{"error":{"message":"internal error","status":500}}"#);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_response_keeps_its_message() {
+        let err = ApiError::Unauthorized("bad token".into());
+        let res = err.into_response();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let body = response_body(res).await;
+        assert!(body.contains("bad token"));
+        assert!(body.contains("\"status\":401"));
+    }
+}
