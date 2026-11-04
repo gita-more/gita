@@ -1363,3 +1363,200 @@ async fn delete_hook(
         message: "webhook deleted".to_string(),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------------------------------------------------------------------------
+    // parse_owner_repo
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn parse_owner_repo_splits_owner_and_repo() {
+        assert_eq!(
+            parse_owner_repo("alice/repo").unwrap(),
+            ("alice".to_string(), "repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_owner_repo_handles_nested_group_owner() {
+        assert_eq!(
+            parse_owner_repo("groupa/subgroupa/repo").unwrap(),
+            ("groupa/subgroupa".to_string(), "repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_owner_repo_preserves_dots_and_hyphens_in_names() {
+        assert_eq!(
+            parse_owner_repo("my.group/my-repo.v2").unwrap(),
+            ("my.group".to_string(), "my-repo.v2".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_owner_repo_rejects_single_segment() {
+        assert!(parse_owner_repo("justarepo").is_err());
+        assert!(parse_owner_repo("").is_err());
+    }
+
+    #[test]
+    fn parse_owner_repo_rejects_trailing_slash() {
+        // A trailing slash yields an empty repo name, which is invalid.
+        let result = parse_owner_repo("alice/repo/").unwrap();
+        assert!(result.1.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // split_suffix
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn split_suffix_splits_at_last_occurrence() {
+        assert_eq!(
+            split_suffix("a/b/c", "/").unwrap(),
+            ("a/b", "c")
+        );
+        assert_eq!(
+            split_suffix("a/b/c/d", "/").unwrap(),
+            ("a/b/c", "d")
+        );
+    }
+
+    #[test]
+    fn split_suffix_returns_none_when_not_found() {
+        assert!(split_suffix("hello", "/").is_none());
+        assert!(split_suffix("", "/").is_none());
+    }
+
+    #[test]
+    fn split_suffix_handles_empty_remainder() {
+        assert_eq!(split_suffix("a/b/", "/").unwrap(), ("a/b", ""));
+    }
+
+    // ---------------------------------------------------------------------------
+    // existing_repo
+    // ---------------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------------
+    // split_repo_subpath
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn split_repo_subpath_finds_first_marker() {
+        assert_eq!(
+            split_repo_subpath("alice/repo/prs/1/comments").unwrap(),
+            ("alice".to_string(), "repo".to_string(), "prs", "1/comments".to_string())
+        );
+    }
+
+    #[test]
+    fn split_repo_subpath_handles_nested_group_owner() {
+        assert_eq!(
+            split_repo_subpath("groupa/subgroupa/repo/issues/5").unwrap(),
+            (
+                "groupa/subgroupa".to_string(),
+                "repo".to_string(),
+                "issues",
+                "5".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn split_repo_subpath_requires_at_least_three_segments() {
+        assert!(split_repo_subpath("alice/repo").is_none());
+        assert!(split_repo_subpath("alice").is_none());
+        assert!(split_repo_subpath("").is_none());
+    }
+
+    #[test]
+    fn split_repo_subpath_only_matches_known_markers() {
+        assert!(split_repo_subpath("alice/repo/something/else").is_none());
+    }
+
+    #[test]
+    fn split_repo_subpath_marker_is_first_segment_after_repo() {
+        // `prs` as the owner name (segment 0) is not a marker; segment 1
+        // (repo) and segment 2 (the marker) are what matter.
+        assert_eq!(
+            split_repo_subpath("prs/repo/prs/1").unwrap(),
+            ("prs".to_string(), "repo".to_string(), "prs", "1".to_string())
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // percent_decode
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn percent_decode_decodes_percent_encoded_bytes() {
+        assert_eq!(percent_decode("a%2Fb"), "a/b");
+        assert_eq!(percent_decode("a%20b"), "a b");
+        assert_eq!(percent_decode("%41%42%43"), "ABC");
+    }
+
+    #[test]
+    fn percent_decode_handles_plus_as_space() {
+        assert_eq!(percent_decode("a+b"), "a b");
+    }
+
+    #[test]
+    fn percent_decode_leaves_invalid_sequences_intact() {
+        assert_eq!(percent_decode("a%ZZb"), "a%ZZb");
+        assert_eq!(percent_decode("%2"), "%2");
+    }
+
+    #[test]
+    fn percent_decode_passthrough() {
+        assert_eq!(percent_decode("plain"), "plain");
+        assert_eq!(percent_decode(""), "");
+    }
+
+    // ---------------------------------------------------------------------------
+    // parse_query
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn parse_query_parses_key_value_pairs() {
+        let q = parse_query(&Some("ref=main&path=src".to_string()));
+        assert_eq!(q.get("ref"), Some(&"main".to_string()));
+        assert_eq!(q.get("path"), Some(&"src".to_string()));
+    }
+
+    #[test]
+    fn parse_query_handles_empty_value() {
+        let q = parse_query(&Some("key=".to_string()));
+        assert_eq!(q.get("key"), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn parse_query_handles_no_value() {
+        let q = parse_query(&Some("key".to_string()));
+        assert_eq!(q.get("key"), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn parse_query_handles_multiple_pairs() {
+        let q = parse_query(&Some("a=1&b=2&c=3".to_string()));
+        assert_eq!(q.len(), 3);
+        assert_eq!(q.get("a"), Some(&"1".to_string()));
+        assert_eq!(q.get("b"), Some(&"2".to_string()));
+        assert_eq!(q.get("c"), Some(&"3".to_string()));
+    }
+
+    #[test]
+    fn parse_query_handles_none() {
+        let q = parse_query(&None);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn parse_query_percent_decodes_keys_and_values() {
+        let q = parse_query(&Some("ref=main%2Fbranch&path=a%2Fb".to_string()));
+        assert_eq!(q.get("ref"), Some(&"main/branch".to_string()));
+        assert_eq!(q.get("path"), Some(&"a/b".to_string()));
+    }
+}
