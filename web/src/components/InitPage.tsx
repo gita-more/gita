@@ -27,7 +27,7 @@ export function InitPage({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div className="auth-page">
+    <div data-testid="init-page" className="auth-page">
       <div className="auth-card">
         <div className="auth-brand">
           <span className="brand-mark">

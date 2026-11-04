@@ -425,6 +425,7 @@ function NotFound() {
   return (
     <Root>
       <EmptyState
+        data-testid="not-found"
         icon={<FolderIcon size={22} />}
         title="404"
         description={t('error.notFound')}

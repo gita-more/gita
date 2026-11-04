@@ -32,7 +32,7 @@ export function LoginPage({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div className="auth-page">
+    <div data-testid="login-page" className="auth-page">
       <div className="auth-card">
         <div className="auth-brand">
           <span className="brand-mark">
