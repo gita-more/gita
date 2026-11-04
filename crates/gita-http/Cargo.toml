@@ -24,5 +24,8 @@ gita-api = { path = "../gita-api" }
 gita-pipeline = { path = "../gita-pipeline" }
 gita-push = { path = "../gita-push" }
 
+[dev-dependencies]
+proptest = "1"
+
 [lints]
 workspace = true

@@ -26,6 +26,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+proptest = "1"
 tokio = { workspace = true }
 tempfile = "3"
 

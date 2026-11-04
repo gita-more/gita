@@ -4,7 +4,10 @@
 /// For group repositories, owner can be a nested path like `groupa/subgroupa`.
 #[allow(dead_code)]
 pub(crate) fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<String>) {
-    let parts = path_info.trim_start_matches('/').split('/').collect::<Vec<_>>();
+    let parts = path_info
+        .trim_start_matches('/')
+        .split('/')
+        .collect::<Vec<_>>();
     if parts.len() < 2 {
         return (None, None);
     }
@@ -33,7 +36,10 @@ pub(crate) fn parse_repo_from_path(path_info: &str) -> (Option<String>, Option<S
 /// named `git-receive-pack` as a write.
 #[allow(dead_code)]
 pub(crate) fn request_verb(path_info: &str) -> Option<&str> {
-    let parts = path_info.trim_start_matches('/').split('/').collect::<Vec<_>>();
+    let parts = path_info
+        .trim_start_matches('/')
+        .split('/')
+        .collect::<Vec<_>>();
     // Find the repo segment (ends with .git)
     let repo_idx = parts.iter().position(|p| p.ends_with(".git"))?;
     // The verb is the segment immediately after the repo
@@ -135,10 +141,7 @@ mod tests {
     /// owner to address the repository to.
     #[test]
     fn a_leading_repo_segment_has_no_owner() {
-        assert_eq!(
-            parse_repo_from_path("/widgets.git/info/refs"),
-            (None, None)
-        );
+        assert_eq!(parse_repo_from_path("/widgets.git/info/refs"), (None, None));
     }
 
     /// The leading slash is optional — the router hands over the path
@@ -203,7 +206,96 @@ mod tests {
     /// objects from being served to an anonymous client.
     #[test]
     fn the_object_endpoints_read_the_repository() {
-        assert!(is_read_request("/alice/widgets.git/objects/info/packs", &None));
+        assert!(is_read_request(
+            "/alice/widgets.git/objects/info/packs",
+            &None
+        ));
         assert!(is_read_request("/alice/widgets.git/HEAD", &None));
+    }
+
+    /// The classification of a request is decided by the path's
+    /// structure, and the path is chosen by the client.
+    ///
+    /// Two properties matter here, and both are about a client that
+    /// picks names adversarially:
+    ///
+    /// * a repository whose *name* contains `git-receive-pack` is not a
+    ///   write — the verb is the segment after the repository, not a
+    ///   substring of the whole path;
+    /// * a request that addresses a repository at all is a read unless
+    ///   it is structurally a receive-pack. A path the parser fails to
+    ///   understand must fail *closed*, never open.
+    mod arbitrary_paths {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(1024))]
+
+            /// A repository named after the write verb is still a
+            /// repository, and a request for it is a read.
+            #[test]
+            fn a_repository_named_after_the_write_verb_is_not_a_write(
+                name in "[a-z]{1,12}",
+            ) {
+                let path = format!("/{name}/git-receive-pack.git/info/refs");
+                prop_assert!(
+                    !is_write_request(&path, &None),
+                    "{} was classified as a write", path
+                );
+                prop_assert!(is_read_request(&path, &None));
+            }
+
+            /// The verb is the segment *after* the repository, so a
+            /// write needs one there.
+            #[test]
+            fn only_a_verb_after_the_repository_is_a_write(
+                owner in "[a-z]{1,10}",
+                repo in "[a-z]{1,10}",
+                tail in "[a-z/]{0,20}",
+            ) {
+                let path = format!("/{owner}/{repo}.git/{tail}");
+                let is_write = is_write_request(&path, &None);
+                prop_assert_eq!(
+                    is_write,
+                    request_verb(&path) == Some("git-receive-pack"),
+                    "{} was classified inconsistently", path
+                );
+            }
+
+            /// A path the parser cannot make sense of is a read, never
+            /// an open door. Failing closed is what keeps a private
+            /// repository private.
+            #[test]
+            fn an_unrecognised_path_fails_closed(
+                path in "/[a-zA-Z0-9._/-]{0,80}",
+            ) {
+                let (owner, repo) = parse_repo_from_path(&path);
+                if owner.is_none() && repo.is_none() {
+                    // The path addresses no repository, so the
+                    // classification carries no repository to leak.
+                    return Ok(());
+                }
+                prop_assert!(
+                    is_read_request(&path, &None),
+                    "{} addresses a repository but was not treated as a read", path
+                );
+            }
+
+            /// The owner path may be nested, and the repository is
+            /// always the segment that ends in `.git`.
+            #[test]
+            fn the_repository_is_the_dot_git_segment(
+                owner in "[a-z]{1,8}",
+                repo in "[a-z]{1,8}",
+                verb in "[a-z-]{1,12}",
+            ) {
+                let path = format!("/{owner}/{repo}.git/{verb}");
+                let (parsed_owner, parsed_repo) = parse_repo_from_path(&path);
+                prop_assert_eq!(parsed_owner.as_deref(), Some(owner.as_str()));
+                prop_assert_eq!(parsed_repo.as_deref(), Some(repo.as_str()));
+                prop_assert_eq!(request_verb(&path), Some(verb.as_str()));
+            }
+        }
     }
 }

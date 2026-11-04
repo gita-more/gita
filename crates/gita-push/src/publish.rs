@@ -459,10 +459,7 @@ mod tests {
         let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(
             paths,
-            vec![
-                ".github/workflows/ci.yml",
-                ".github/workflows/other.yaml"
-            ],
+            vec![".github/workflows/ci.yml", ".github/workflows/other.yaml"],
             "got {paths:?}"
         );
     }

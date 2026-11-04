@@ -144,7 +144,7 @@ mod pkt_line_tests {
     #[test]
     fn a_truncated_packet_stops_the_parse() {
         let mut body = format!("{:04x}", CMD.len() + 5).into_bytes();
-        body.extend_from_slice( CMD.as_bytes());
+        body.extend_from_slice(CMD.as_bytes());
         assert!(parse_receive_pack_commands(&body).is_empty());
     }
 
@@ -202,5 +202,65 @@ mod pkt_line_tests {
         let updates = parse_receive_pack_commands(&body);
         assert_eq!(updates.len(), 1, "got {updates:?}");
         assert_eq!(updates[0].ref_name, "refs/heads/main");
+    }
+
+    /// The parser reads bytes a client controls completely, so it must
+    /// never panic on them and never invent a ref that was not in the
+    /// input.
+    ///
+    /// A ref name that was not sent is worse than a crash: it would be
+    /// published as a push event, and would trigger CI for a branch
+    /// nobody pushed.
+    mod arbitrary_bytes {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            /// Whatever bytes arrive, the parser answers with a list and
+            /// does not panic.
+            #[test]
+            fn arbitrary_bytes_never_panic(
+                body in prop::collection::vec(any::<u8>(), 0..4000)
+            ) {
+                let updates = parse_receive_pack_commands(&body);
+                prop_assert!(updates.len() <= body.len() / 4 + 1);
+            }
+
+            /// Every ref the parser reports appears verbatim in the
+            /// bytes it was given. A ref that was not sent must never be
+            /// reported.
+            #[test]
+            fn a_reported_ref_was_actually_sent(
+                body in prop::collection::vec(any::<u8>(), 0..4000)
+            ) {
+                let updates = parse_receive_pack_commands(&body);
+                let text = String::from_utf8_lossy(&body).to_string();
+                for update in &updates {
+                    prop_assert!(
+                        text.contains(&update.ref_name),
+                        "reported a ref that was never sent: {:?}",
+                        update.ref_name
+                    );
+                }
+            }
+
+            /// A well-formed command is reported exactly as it was
+            /// written, with the trailing newline removed.
+            #[test]
+            fn a_well_formed_command_round_trips(
+                old in "[0-9a-f]{40}",
+                new in "[0-9a-f]{40}",
+                branch in "refs/heads/[a-z]{1,10}",
+            ) {
+                let body = pkt_line(&format!("{old} {new} {branch}"));
+                let updates = parse_receive_pack_commands(&body);
+                prop_assert_eq!(updates.len(), 1);
+                prop_assert_eq!(updates[0].old_sha.as_str(), old);
+                prop_assert_eq!(updates[0].new_sha.as_str(), new);
+                prop_assert_eq!(updates[0].ref_name.as_str(), branch);
+            }
+        }
     }
 }
