@@ -137,3 +137,62 @@ pub fn ssh_fingerprint(public_key: &str) -> Option<String> {
 pub fn ssh_key_is_valid(public_key: &str) -> bool {
     ssh_fingerprint(public_key).is_some()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ED25519_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOdYkZTkDeEH+uyPPRgGafFbSTPG5lUOpCXImtloO5I7 test@example.com";
+
+    const RSA_KEY: &str =
+        "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCbhz/nx4/O2SE47PjwrypXevTq9b0wJkscnNTc7z9IRFNq6UizGwYtbseovZj7E+YTO65IpMuP7dxkrmXosEcvMqsa6kFg3P6mzx0L4f76S6NcB2ap828ME+zTU/GcVR1QBJ49pVIpLhRx62PGjthmGA7V0ORi9dMQ6Cf0X4ZlFQexNXOWZHaTa3e9wlx14I2e0woRQyrSZxDFx0rEBEzhWlwbakwcA57UGDzjKsQNPfrd76Rk+Q/omCZNjqV+lxnSF2JZPNUi1M0ciQ7ZniPTsaztJOQPhKTtALpYEc68geOdgP6CLtuDLGPn9/ZEieryvITvK7boVq8OURqzC6bD test@example.com";
+
+    #[test]
+    fn ssh_fingerprint_returns_sha256_prefix() {
+        let fp = ssh_fingerprint(ED25519_KEY).unwrap();
+        assert!(fp.starts_with("SHA256:"), "unexpected fingerprint: {fp}");
+        // The digest part is base64 without padding, never empty.
+        let digest = fp.strip_prefix("SHA256:").unwrap();
+        assert!(!digest.is_empty());
+        assert!(!digest.contains('='));
+    }
+
+    #[test]
+    fn ssh_fingerprint_is_deterministic() {
+        let a = ssh_fingerprint(ED25519_KEY).unwrap();
+        let b = ssh_fingerprint(ED25519_KEY).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ssh_fingerprint_distinguishes_keys() {
+        let ed = ssh_fingerprint(ED25519_KEY).unwrap();
+        let rsa = ssh_fingerprint(RSA_KEY).unwrap();
+        assert_ne!(ed, rsa);
+    }
+
+    #[test]
+    fn ssh_fingerprint_ignores_trailing_whitespace() {
+        let padded = format!("{ED25519_KEY}   \n");
+        assert_eq!(
+            ssh_fingerprint(&padded),
+            ssh_fingerprint(ED25519_KEY)
+        );
+    }
+
+    #[test]
+    fn ssh_key_is_valid_accepts_real_keys() {
+        assert!(ssh_key_is_valid(ED25519_KEY));
+        assert!(ssh_key_is_valid(RSA_KEY));
+    }
+
+    #[test]
+    fn ssh_key_is_valid_rejects_junk() {
+        assert!(!ssh_key_is_valid(""));
+        assert!(!ssh_key_is_valid("not a key at all"));
+        assert!(!ssh_key_is_valid("ssh-ed25519"));
+        assert!(!ssh_key_is_valid("ssh-ed25519 :::not-base64::: comment"));
+        assert!(!ssh_key_is_valid("ecdsa-sha2-nistp256 garbage comment"));
+    }
+}
