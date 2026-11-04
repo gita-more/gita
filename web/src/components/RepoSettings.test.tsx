@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for RepoSettings — the repository settings page.
 //
 // The page has four sections (general / branches / tags / pages) selected
@@ -19,7 +18,6 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

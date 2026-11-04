@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for the auth store (src/hooks/useAuth).
 //
 // What can actually break:
@@ -54,7 +53,6 @@ async function withStore(run: (sync: () => Promise<void>) => Promise<void>) {
   await run(sync)
 }
 
-afterEach(cleanup)
 
 describe('useAuth.sync', () => {
   beforeEach(() => {

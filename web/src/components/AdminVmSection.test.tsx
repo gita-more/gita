@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for the admin VM cluster panel.
 //
 // The panel is a thin client over three GET endpoints plus two DELETEs.
@@ -12,11 +11,10 @@
 //
 // The api module is mocked, following the ReadmePanel test pattern.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for Issues — the global issue feed.
 //
 // The feed reads GET /api/issues?status=all&limit=50 and lists every issue
@@ -11,12 +10,11 @@
 //  3. clicking an issue must open the right repository;
 //  4. an API failure must be shown.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

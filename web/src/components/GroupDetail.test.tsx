@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for GroupDetail — the /:group page.
 //
 // The page reads GET /api/groups/{full_path} and shows the group's
@@ -8,12 +7,11 @@
 // The component reads the group path from the route, so it is rendered
 // inside a MemoryRouter with a "/:group" route.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

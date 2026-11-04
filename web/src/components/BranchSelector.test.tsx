@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for BranchSelector — the GitHub-style "switch branches/tags" popover.
 //
 // What can actually break:
@@ -12,12 +11,11 @@
 // The component uses useNavigate, so it needs a router; a small location
 // probe captures where it navigated to.
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 import { I18nProvider } from '../i18n'
 import { BranchSelector } from './BranchSelector'

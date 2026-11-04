@@ -1,14 +1,12 @@
-// @vitest-environment jsdom
 // CloneDropdown and ReadmePanel render into a DOM, so these tests need
 // one; the pure i18n tests stay in plain Node.
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // RTL's automatic cleanup relies on global afterEach hooks, which only
 // exist when vitest `globals` is on. Clean up explicitly so one test's
 // DOM does not leak into the next.
-afterEach(cleanup)
 import { I18nProvider } from '../i18n'
 import { CloneDropdown } from './CloneDropdown'
 import { buildCloneUrl } from './EmptyRepoWelcome'

@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for the topbar breadcrumbs.
 //
 // What can actually break:
@@ -9,7 +8,7 @@
 //     verbatim;
 //  4. a repo breadcrumb must keep pointing at the namespace and the repo.
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -27,7 +26,6 @@ import { Topbar } from './Layout'
 import { I18nProvider } from '../i18n'
 import type { Crumb } from './Layout'
 
-afterEach(cleanup)
 
 function setup(crumbs: Crumb[]) {
   render(

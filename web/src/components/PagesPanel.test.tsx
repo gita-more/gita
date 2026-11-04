@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for PagesPanel — the Pages publishing configuration.
 //
 // The panel reads the current Pages config and the repository (to know
@@ -14,11 +13,10 @@
 //  6. a private repo must show the auth notice;
 //  7. an API failure must be shown.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

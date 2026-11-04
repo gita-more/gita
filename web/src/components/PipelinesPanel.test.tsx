@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for PipelinesPanel — the CI runs view.
 //
 // The panel lists the runs of the repository's first pipeline and lets the
@@ -16,7 +15,6 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

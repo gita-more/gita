@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for Sidebar page-local navigation sections.
 //
 // What can actually break:
@@ -6,7 +5,7 @@
 //  2. each item links to its own page (/settings/language, …);
 //  3. the item whose path the browser is on is highlighted.
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -19,7 +18,6 @@ import type { SidebarSection } from './Layout'
 import { SettingsIcon, GlobeIcon, CodeIcon } from './Icons'
 import { I18nProvider } from '../i18n'
 
-afterEach(cleanup)
 
 function makeSections(): SidebarSection[] {
   return [

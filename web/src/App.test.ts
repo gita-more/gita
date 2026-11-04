@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for the global-page breadcrumb mapping (src/App.tsx).
 //
 // What can actually break:

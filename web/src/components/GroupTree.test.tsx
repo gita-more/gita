@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for GroupTree — the GitLab-style group/project tree.
 //
 // The tree has two flavours of children provider and both are easy to get
@@ -11,11 +10,10 @@
 // What is asserted here is user-visible behaviour: which rows show, what
 // they say, what happens when you click them.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 import { I18nProvider } from '../i18n'
 import type { Group, Repository } from '../lib/api'

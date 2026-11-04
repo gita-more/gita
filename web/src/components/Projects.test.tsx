@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for Projects — the user's repository list.
 //
 // The page reads GET /api/repos and shows one card per repository, plus a
@@ -18,7 +17,6 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

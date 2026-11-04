@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for EmptyRepoWelcome's clone-URL block.
 //
 // The SSH tab is the interesting part: when the server has no SSH
@@ -7,11 +6,10 @@
 // can never be displayed. The button used to be disabled in that case,
 // which made the notice dead UI.
 
-import { cleanup, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 
-afterEach(cleanup)
 
 import { I18nProvider } from '../i18n'
 import { EmptyRepoWelcome } from './EmptyRepoWelcome'

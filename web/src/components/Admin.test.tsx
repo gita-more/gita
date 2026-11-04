@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for the Administration pages — one page per section.
 //
 // /admin/users shows user management; /admin/vm shows the VM cluster.
@@ -19,7 +18,6 @@ import { useEffect } from 'react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

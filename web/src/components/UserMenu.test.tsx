@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for the topbar user menu.
 //
 // What can actually break:
@@ -8,7 +7,7 @@
 //  3. the admin entry must not reuse the settings gear icon — the two
 //     entries lead to different pages and must be told apart at a glance.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -43,7 +42,6 @@ function makeUser(overrides: Partial<User> = {}): User {
   }
 }
 
-afterEach(cleanup)
 
 function setup() {
   const user = userEvent.setup()

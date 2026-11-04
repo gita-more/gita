@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for the Settings pages — one page per section.
 //
 // The language page shows the language switcher; the tokens page shows the
@@ -19,7 +18,6 @@ import { useEffect } from 'react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

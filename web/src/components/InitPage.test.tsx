@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for InitPage — the first-run "create the administrator" form.
 //
 // The page calls api.init (through the useAuth hook) with the username,
@@ -9,11 +8,10 @@
 //  4. the page must never offer a "sign in instead" switch — there is no
 //    account to sign in to yet.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {

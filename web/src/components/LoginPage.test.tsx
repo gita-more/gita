@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 // Tests for LoginPage — the sign-in / sign-up card.
 //
 // The page delegates the actual API calls to the useAuth hook, which in turn
@@ -12,11 +11,10 @@
 //  4. switching to the register mode must add the email field and call the
 //     register endpoint instead of the login one.
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(cleanup)
 
 vi.mock('../lib/api', () => ({
   api: {
