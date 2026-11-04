@@ -15,6 +15,13 @@ use gita_vm_core::{Error, Result};
 use sqlx::PgPool;
 use sqlx::Row;
 
+/// Whether a database error is a unique-constraint violation (SQLSTATE
+/// 23505). Used where the constraint, not the application code, is the
+/// arbiter of a race.
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
+}
+
 /// PostgreSQL 存储实现
 #[derive(Clone)]
 pub struct VmStore {
@@ -688,7 +695,22 @@ impl Repository for VmStore {
         .bind(lease.created_at_ms)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| Error::Storage(e.to_string()))?;
+        .map_err(|e| {
+            // The partial unique index `idx_vm_ip_leases_unique_active`
+            // is the only thing that stops two concurrent allocations
+            // from holding the same address. The allocator reads the
+            // lease table, picks a free address, then inserts — so two
+            // callers that read at the same moment pick the same one.
+            // Mapping the constraint violation to `AlreadyExists` lets
+            // the caller retry with a fresh read instead of surfacing a
+            // storage error, and keeps the race impossible at the level
+            // where it can actually be enforced.
+            if is_unique_violation(&e) {
+                Error::AlreadyExists(format!("IP {} 已被占用", lease.ip))
+            } else {
+                Error::Storage(e.to_string())
+            }
+        })?;
         Ok(row.try_get("id").unwrap_or(0))
     }
 
@@ -1196,7 +1218,11 @@ mod tests {
         let id = listed[0].id;
         vm.id = id;
 
-        let loaded = store.get_vm(id).await.unwrap().expect("the vm must be there");
+        let loaded = store
+            .get_vm(id)
+            .await
+            .unwrap()
+            .expect("the vm must be there");
         assert_eq!(loaded.name, "vm-1");
         assert_eq!(loaded.owner.owner_type, OwnerType::Repo);
         assert_eq!(loaded.owner.owner_id, 1);
@@ -1367,13 +1393,19 @@ mod tests {
         let (_db, store) = store().await;
         assert!(store.get_default_network().await.unwrap().is_none());
 
-        store.create_network(&a_network("other", false)).await.unwrap();
+        store
+            .create_network(&a_network("other", false))
+            .await
+            .unwrap();
         assert!(
             store.get_default_network().await.unwrap().is_none(),
             "a network that is not the default must not be returned"
         );
 
-        store.create_network(&a_network("default", true)).await.unwrap();
+        store
+            .create_network(&a_network("default", true))
+            .await
+            .unwrap();
         let default = store
             .get_default_network()
             .await
@@ -1387,16 +1419,25 @@ mod tests {
     #[tokio::test]
     async fn there_can_be_only_one_default_network() {
         let (_db, store) = store().await;
-        store.create_network(&a_network("first", true)).await.unwrap();
+        store
+            .create_network(&a_network("first", true))
+            .await
+            .unwrap();
         let second = store.create_network(&a_network("second", true)).await;
-        assert!(second.is_err(), "the second default network must be refused");
+        assert!(
+            second.is_err(),
+            "the second default network must be refused"
+        );
     }
 
     /// An IP lease is handed out, found by IP and by VM, and released.
     #[tokio::test]
     async fn an_ip_lease_is_handed_out_and_released() {
         let (_db, store) = store().await;
-        store.create_network(&a_network("net", false)).await.unwrap();
+        store
+            .create_network(&a_network("net", false))
+            .await
+            .unwrap();
         let network_id = store.list_networks(None).await.unwrap()[0].id;
 
         let lease = IpLease {
@@ -1603,7 +1644,11 @@ mod tests {
         assert_eq!(listed.len(), 1);
 
         store.delete_quota(QuotaScope::Repo, 5).await.unwrap();
-        assert!(store.get_quota(QuotaScope::Repo, 5).await.unwrap().is_none());
+        assert!(store
+            .get_quota(QuotaScope::Repo, 5)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     /// The usage of a scope counts the VMs that are alive in it.
@@ -1672,7 +1717,10 @@ mod tests {
         let (db, store) = store().await;
         // The linkage points at real gita rows, so the VM can be
         // reclaimed when the pipeline it belongs to goes away.
-        let user = db.create_user("alice", "alice@example.com", "hash").await.unwrap();
+        let user = db
+            .create_user("alice", "alice@example.com", "hash")
+            .await
+            .unwrap();
         let repo = db
             .create_repository(user.id, "alice", "widgets", "", false, "main", None)
             .await
