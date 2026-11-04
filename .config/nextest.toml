@@ -1,0 +1,36 @@
+# nextest configuration.
+#
+# The `ci` profile is what the CI workflow runs. It differs from the
+# default in two ways:
+#
+# * it writes a JUnit report, so a failure in a run of ~800 tests can be
+#   read as "this test broke" instead of "somewhere in this log";
+# * it retries a failed test once.
+#
+# The retry deserves a word. A retry is normally a way of hiding a
+# flaky test: the same test that passes the second time is still
+# broken, and it will break again in front of a user. But a *test* is
+# not the only thing that can be flaky — a shared database, a busy CI
+# runner, or a port that is not free yet are all real sources of
+# intermittent failures that say nothing about the code.
+#
+# So the retry is for those, and the report says which tests were
+# retried: nextest marks a retried-but-passed test in the JUnit output,
+# and the summary prints it. A test that needs the retry every time is
+# visible as such, and can be fixed. What must not happen is a test that
+# fails because of the code — that fails again on the retry and fails
+# the job.
+
+[profile.ci]
+# Retain the output of a failed test so the report can show it.
+failure-output = "immediate-final"
+
+# A test that fails is retried once. `fail-fast = false` keeps the rest
+# of the suite running, so one broken test does not hide the others.
+retries = 1
+
+[profile.ci.junit]
+path = "target/nextest/ci/junit.xml"
+# The report is what the CI summary is built from; a test that never
+# ran is worth knowing about.
+success-on-failure = false

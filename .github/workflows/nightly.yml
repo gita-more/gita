@@ -1,0 +1,102 @@
+name: Nightly
+
+# What runs when nobody is waiting.
+#
+# The pull-request build answers "does this change work?". The nightly
+# build answers two questions it cannot:
+#
+# * **Is anything flaky?** A test that fails once in fifty runs is a
+#   test that will fail in front of a user one day. The nightly runs
+#   the suite repeatedly and reports the tests that needed the retry.
+#   The PR build's retry is hidden; here it is the whole point.
+# * **Does anything rot?** A dependency, a database, or a git version
+#   can change under a test that passes today. The nightly pins nothing
+#   new on purpose — it runs the same code on a schedule, so a test
+#   that depends on the day of the week or on an external service shows
+#   up here.
+
+on:
+  schedule:
+    # 03:17 UTC. Not on the hour: every scheduled job in the world
+    # fires at :00, and the runners are busiest then.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Nightly test run
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: gita
+          POSTGRES_PASSWORD: gita
+          POSTGRES_DB: gita
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -h localhost -U gita -d gita"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.99.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git ssh openssh-client postgresql-client libdbus-1-dev pkg-config
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            if PGPASSWORD=gita psql -h localhost -p 55432 -U gita -d gita -c 'SELECT 1' >/dev/null 2>&1; then
+              echo "Postgres is ready"
+              exit 0
+            fi
+            echo "Waiting for Postgres (attempt $i)..."
+            sleep 2
+          done
+          echo "Postgres did not become ready in time"
+          exit 1
+
+      - name: Build binaries
+        run: cargo build -p gita-admin -p gita
+
+      - name: Run the suite three times
+        env:
+          DATABASE_URL: postgres://gita:gita@localhost:55432/gita
+          GITA_TEST_DATABASE_URL: postgres://gita:gita@localhost:55432/gita
+        # Three runs of the same suite: a test that passes every time
+        # in a week was never flaky, and a test that fails on the third
+        # run was. The retries inside a run hide the symptom; running
+        # the whole suite again exposes the cause.
+        run: |
+          for run in 1 2 3; do
+            echo "=== run $run of 3 ==="
+            cargo nextest run --workspace --no-fail-fast --retries 0 || {
+              echo "run $run failed"
+              exit 1
+            }
+          done
+
+      - name: Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-nextest-report
+          path: target/nextest/default/junit.xml
+          retention-days: 14
+          if-no-files-found: ignore

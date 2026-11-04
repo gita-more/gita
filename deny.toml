@@ -1,0 +1,59 @@
+# The dependency policy for this project.
+#
+# `cargo deny check` runs in CI. It answers three questions that
+# `cargo audit` does not: may this project use this dependency at all
+# (licence), is the dependency graph what the lockfile says it is
+# (sources), and is there a crate in the tree twice in different
+# versions (bans).
+
+[graph]
+# A crate that is in the tree twice in two versions is usually a sign
+# that a dependency needs a version bump, and it doubles the amount of
+# code that has to be kept up to date.
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licences only. The project is MIT-licensed (see LICENSE),
+# so a dependency under a copyleft or a source-available licence would
+# impose obligations the project cannot meet.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "BSL-1.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+]
+# A licence that is not on the list has to be reviewed and named here
+# explicitly, with a reason. That is the point: an unknown licence
+# should stop the build rather than pass unnoticed.
+confidence-threshold = 0.8
+
+[bans]
+# A duplicate version is worth seeing.
+multiple-versions = "warn"
+wildcards = "deny"
+# A yanked version was withdrawn by its author; using it is a problem.
+deny = []
+allow = []
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# The crates.io index and the dependencies' own repositories are the
+# only places a dependency may come from.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

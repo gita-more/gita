@@ -72,7 +72,10 @@ jobs:
         env:
           DATABASE_URL: postgres://gita:gita@localhost:55432/gita
           GITA_TEST_DATABASE_URL: postgres://gita:gita@localhost:55432/gita
-        run: cargo nextest run --workspace --no-fail-fast
+        # The JUnit report is what the test-report step below turns into
+        # a PR comment. Without it, a failure in a 791-test run is a
+        # wall of log output with no indication of which test broke.
+        run: cargo nextest run --workspace --no-fail-fast --profile ci
 
       - name: Run doctests
         env:
@@ -80,6 +83,15 @@ jobs:
           GITA_TEST_DATABASE_URL: postgres://gita:gita@localhost:55432/gita
         # nextest does not run doctests; keep them in the gate explicitly.
         run: cargo test --workspace --doc
+
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-report
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+          if-no-files-found: ignore
 
   lint:
     name: Lint
@@ -116,6 +128,38 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.99.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        uses:EmbarkStudios/cargo-deny-action@v2
+
+      # rustsec/audit-check above finds the crates with a known
+      # vulnerability. cargo-deny finds the rest: a dependency whose
+      # licence does not permit this project's use of it, a crate that
+      # was pulled in twice in different versions, and a source that is
+      # not the one the lockfile says it is.
+      - name: Check the dependency graph
+        run: cargo deny check
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Audit the npm dependencies
+        working-directory: web
+        run: npm audit --audit-level=high
 
   web:
     name: Web frontend
@@ -237,10 +281,14 @@ jobs:
   coverage:
     name: Coverage (cargo-llvm-cov)
     runs-on: ubuntu-latest
-    # Instrumented builds run the whole suite several times slower. Run
-    # coverage on pushes to main only, so PRs stay fast — the regular
-    # test job already gates every PR.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Instrumented builds run the whole suite several times slower, so
+    # this job does not gate a pull request — the `test` job does that.
+    # It does run on a pull request, though, and it reports what it
+    # found: a change that quietly drops a thousand covered lines is
+    # invisible otherwise, and "invisible" is how coverage goes down.
+    #
+    # On a push to main the job also enforces the floor.
+    if: always()
     services:
       postgres:
         image: postgres:17
@@ -286,7 +334,18 @@ jobs:
         # because its integration tests execute the release-shaped binary
         # as a subprocess, which coverage cannot see; 75% keeps that known
         # blind spot from hiding a real regression elsewhere.
-        run: cargo llvm-cov --workspace --fail-under-lines 75 --lcov --output-path lcov.info
+        #
+        # The floor is enforced on main only. On a pull request the same
+        # measurement runs, but a threshold that a pull request cannot
+        # meet is a threshold nobody looks at.
+        run: |
+          cargo llvm-cov --workspace --lcov --output-path lcov.info --summary-only
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "Enforcing the coverage floor on main."
+            cargo llvm-cov report --fail-under-lines 75
+          else
+            echo "Reporting coverage without enforcing the floor."
+          fi
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
