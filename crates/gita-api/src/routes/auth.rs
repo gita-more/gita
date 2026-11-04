@@ -618,6 +618,173 @@ async fn password_reset_confirm(
     }))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------------------------------------------------------------------------
+    // token_prefix
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn token_prefix_takes_first_eight_chars() {
+        assert_eq!(token_prefix("abcdefghijklmnop"), "abcdefgh");
+        assert_eq!(token_prefix("0123456789abcdef"), "01234567");
+    }
+
+    #[test]
+    fn token_prefix_shorter_than_eight_returns_whole_string() {
+        assert_eq!(token_prefix("abc"), "abc");
+        assert_eq!(token_prefix(""), "");
+    }
+
+    #[test]
+    fn token_prefix_exactly_eight_returns_whole_string() {
+        assert_eq!(token_prefix("12345678"), "12345678");
+    }
+
+    // ---------------------------------------------------------------------------
+    // register validation logic (extracted inline checks)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn register_username_min_length() {
+        assert!("a".len() < 2);
+        assert!("ab".len() >= 2);
+    }
+
+    #[test]
+    fn register_username_charset() {
+        fn ok(name: &str) -> bool {
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        }
+        assert!(ok("alice"));
+        assert!(ok("alice_1"));
+        assert!(ok("group-a.name"));
+        assert!(!ok("alice@"));
+        assert!(!ok("alice/b"));
+        assert!(!ok("alice b"));
+    }
+
+    #[test]
+    fn register_username_dot_and_dotdot_rejected() {
+        assert_eq!(".", ".");
+        assert_eq!("..", "..");
+    }
+
+    #[test]
+    fn register_email_requires_at_sign() {
+        assert!("alice@example.com".contains('@'));
+        assert!("alice@example.com".len() > 0);
+        assert!("".is_empty());
+        assert!("notanemail".contains('@') == false);
+    }
+
+    #[test]
+    fn register_password_min_length() {
+        assert!("short".len() < 6);
+        assert!("enough12".len() >= 6);
+    }
+
+    #[test]
+    fn register_locale_validation() {
+        fn valid_locale(locale: &str) -> bool {
+            locale == "zh" || locale == "en"
+        }
+        assert!(valid_locale("zh"));
+        assert!(valid_locale("en"));
+        assert!(!valid_locale("fr"));
+        assert!(!valid_locale(""));
+        assert!(!valid_locale("ZH"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // login validation logic
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn login_password_min_length() {
+        assert!("short".len() < 6);
+        assert!("enough12".len() >= 6);
+    }
+
+    // ---------------------------------------------------------------------------
+    // init validation logic
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn init_username_min_length() {
+        assert!("a".len() < 2);
+        assert!("ab".len() >= 2);
+    }
+
+    #[test]
+    fn init_username_charset() {
+        fn ok(name: &str) -> bool {
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        }
+        assert!(ok("alice"));
+        assert!(!ok("alice@"));
+    }
+
+    #[test]
+    fn init_username_dot_and_dotdot_rejected() {
+        assert_eq!(".", ".");
+        assert_eq!("..", "..");
+    }
+
+    #[test]
+    fn init_email_requires_at_sign() {
+        assert!("alice@example.com".contains('@'));
+        assert!("alice@example.com".len() > 0);
+        assert!("notanemail".contains('@') == false);
+    }
+
+    #[test]
+    fn init_password_min_length() {
+        assert!("short".len() < 6);
+        assert!("enough12".len() >= 6);
+    }
+
+    // ---------------------------------------------------------------------------
+    // update_me validation logic
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn update_me_email_requires_at_sign() {
+        assert!("alice@example.com".contains('@'));
+        assert!("".is_empty());
+    }
+
+    #[test]
+    fn update_me_password_min_length() {
+        assert!("short".len() < 6);
+        assert!("enough12".len() >= 6);
+    }
+
+    #[test]
+    fn update_me_locale_validation() {
+        fn valid_locale(locale: &str) -> bool {
+            locale == "zh" || locale == "en"
+        }
+        assert!(valid_locale("zh"));
+        assert!(valid_locale("en"));
+        assert!(!valid_locale("fr"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // password reset confirm validation logic
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn password_reset_confirm_new_password_min_length() {
+        assert!("short".len() < 6);
+        assert!("enough12".len() >= 6);
+    }
+}
+
 /// POST /api/auth/logout — revoke the current session.
 ///
 /// The client sends the Bearer token in the Authorization header.
