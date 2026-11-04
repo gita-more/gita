@@ -1200,6 +1200,89 @@ pub const OPENAPI_JSON: &str = r##"{
         }
       }
     },
+    "/api/ci/agent/jobs/{job_id}/logs": {
+      "post": {
+        "tags": ["ci-agent"],
+        "summary": "Append a log line to a job (agent inside the VM)",
+        "description": "Requires the per-job agent token. A wrong token and a nonexistent job get the same answer, so the endpoint cannot be used to probe which job ids exist.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["seq", "stream", "line"],
+                "properties": {
+                  "seq": { "type": "integer" },
+                  "stream": { "type": "string", "enum": ["stdout", "stderr"] },
+                  "line": { "type": "string" },
+                  "timestamp": { "type": "string", "format": "date-time" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The line was appended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok"],
+                  "properties": { "ok": { "type": "boolean" } }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid stream name" },
+          "401": { "description": "Missing or invalid agent token" }
+        }
+      }
+    },
+    "/api/ci/agent/jobs/{job_id}/status": {
+      "post": {
+        "tags": ["ci-agent"],
+        "summary": "Report a job's status (agent inside the VM)",
+        "description": "Requires the per-job agent token. Only running, success and failed may be reported. A job that has moved on (canceled, or already finished) answers `applied: false` rather than an error, so a replayed callback does not make the agent retry forever.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": { "type": "string", "enum": ["running", "success", "failed"] },
+                  "exit_code": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The status was reported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "applied"],
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "applied": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid status value" },
+          "401": { "description": "Missing or invalid agent token" }
+        }
+      }
+    },
     "/api/users/me/avatar": {
       "post": {
         "tags": ["misc"],
@@ -1949,9 +2032,97 @@ mod tests {
             .expect("OPENAPI_JSON should be valid JSON");
     }
 
+    /// Every route module that registers an `/api/` route must be listed
+    /// in the drift test's include list.
+    ///
+    /// The drift test reads routes out of the *source text* of the route
+    /// modules, so a module that is not on the list contributes nothing:
+    /// its routes are neither documented nor checked. That is exactly
+    /// what happened to `routes/ci_agent.rs` — two live endpoints that
+    /// no test could see.
+    ///
+    /// Listing the modules by hand means the list can fall behind the
+    /// directory. This test compares the list against the files that are
+    /// actually there, so adding a module without registering it fails
+    /// here rather than silently widening the blind spot.
+    ///
+    /// A module that registers no `/api/` route is not required in the
+    /// list: `pages_site.rs` serves the published site under
+    /// `/{owner}/{repo}/`, and `visibility.rs` is shared loading logic
+    /// rather than a router.
+    #[test]
+    fn every_api_route_module_is_registered_for_the_drift_check() {
+        // The modules the drift test reads. Keep in sync with
+        // `registered_api_routes()`.
+        const LISTED: &[&str] = &[
+            "auth", "admin", "repo", "pr", "issue", "comment", "group", "pipeline", "search",
+            "avatar", "ssh_key", "pages", "misc", "resolve", "runner", "ci_agent",
+        ];
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .expect("the routes directory must be readable")
+            .filter_map(|entry| {
+                let name = entry.ok()?.file_name().into_string().ok()?;
+                name.strip_suffix(".rs").map(|s| s.to_string())
+            })
+            .filter(|name| name != "mod")
+            .collect();
+        on_disk.sort();
+
+        // The modules that actually register an `/api/` route.
+        let api_modules: Vec<&String> = on_disk
+            .iter()
+            .filter(|name| {
+                let text = std::fs::read_to_string(dir.join(format!("{name}.rs")))
+                    .expect("the module must be readable");
+                registers_an_api_route(&text)
+            })
+            .collect();
+
+        for module in &api_modules {
+            assert!(
+                LISTED.contains(&module.as_str()),
+                "crates/gita-api/src/routes/{module}.rs registers an /api/ route but \
+                 is not in the drift test's include list, so its routes are neither \
+                 documented nor checked"
+            );
+        }
+
+        // The reverse direction too: a listed module that no longer
+        // exists would make the include list quietly wrong.
+        for listed in LISTED {
+            assert!(
+                on_disk.iter().any(|n| n == listed),
+                "the drift test lists routes/{listed}.rs, which does not exist"
+            );
+        }
+    }
+
+    /// Whether a route module's source registers at least one path under
+    /// `/api/`.
+    fn registers_an_api_route(module: &str) -> bool {
+        let mut idx = 0;
+        while let Some(pos) = module[idx..].find(".route(") {
+            let after = idx + pos + ".route(".len();
+            let Some(quote) = module[after..].find('"') else {
+                break;
+            };
+            let start = after + quote + 1;
+            let Some(end) = module[start..].find('"') else {
+                break;
+            };
+            let path = &module[start..start + end];
+            if path.starts_with("/api/") {
+                return true;
+            }
+            idx = start + end;
+        }
+        false
+    }
+
     /// Every route the API registers should appear in the spec, and every
     /// route the spec describes should exist.
-    ///
     /// The spec is maintained by hand, so it drifted: 17 of the 35 API
     /// routes were missing, including the whole pipeline family and every
     /// PR action. Rather than trust a checklist, this compares the spec
@@ -2092,6 +2263,7 @@ mod tests {
             include_str!("routes/misc.rs"),
             include_str!("routes/resolve.rs"),
             include_str!("routes/runner.rs"),
+            include_str!("routes/ci_agent.rs"),
         ] {
             let mut idx = 0;
             while let Some(pos) = module[idx..].find(".route(") {

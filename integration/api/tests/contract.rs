@@ -124,16 +124,97 @@ fn validate(value: &Value, schema: &Value, root: &Value, path: &str) -> Result<(
     Ok(())
 }
 
+/// Find the response schema the spec publishes for `method` on `path`.
+///
+/// The path in the spec is a *template* — `/api/repos/{owner}/{repo}` —
+/// while the path a request carries is concrete
+/// (`/api/repos/alice/widgets`). Looking the concrete path up verbatim
+/// therefore finds nothing, and every endpoint with a path parameter
+/// would be unreachable by this test.
+///
+/// So the lookup matches the concrete path against the templates:
+///
+/// - a literal segment must be equal;
+/// - a `{parameter}` segment matches exactly one segment;
+/// - a `{*parameter}` segment (axum's catch-all) matches one or more
+///   trailing segments.
 fn response_schema<'a>(spec: &'a Value, path: &str, method: &str) -> &'a Value {
+    let paths = spec["paths"]
+        .as_object()
+        .expect("paths should be an object");
+    let wanted: Vec<&str> = path.split('/').collect();
+
+    // Several templates can match one concrete path: `/api/repos/{*path}`
+    // matches everything under `/api/repos/`, and so does
+    // `/api/repos/{owner}/{repo}/prs`. The most specific one is the
+    // right answer — it is the one the server's own dispatcher picks,
+    // and the only one that describes the response.
+    let mut best: Option<(&str, usize)> = None;
+    for (candidate, _) in paths {
+        let Some(literals) = path_matches_template(candidate, &wanted) else {
+            continue;
+        };
+        // More literal segments means a more specific template.
+        if best.map(|(_, score)| literals > score).unwrap_or(true) {
+            best = Some((candidate, literals));
+        }
+    }
+
+    let (template, _) = best.unwrap_or_else(|| {
+        panic!("{method} {path} is not documented in the OpenAPI document at all")
+    });
+
     // A JSON pointer treats `/` as a separator, and the OpenAPI path keys
     // themselves contain slashes. Escape the key before interpolating it.
-    let key = path.replace('~', "~0").replace('/', "~1");
+    let key = template.replace('~', "~0").replace('/', "~1");
     spec.pointer(&format!(
         "/paths/{key}/{method}/responses/200/content/application~1json/schema"
     ))
     .unwrap_or_else(|| {
         panic!("{method} {path} must document a 200 JSON response schema in the OpenAPI document")
     })
+}
+
+/// Whether the concrete path segments `wanted` fit the template path
+/// `template`.
+///
+/// Returns the number of literal (non-parameter) segments in the
+/// template, which is how specific the match is.
+fn path_matches_template(template: &str, wanted: &[&str]) -> Option<usize> {
+    let template_segments: Vec<&str> = template.split('/').collect();
+    let mut literals = 0usize;
+    let mut t = 0usize;
+    let mut w = 0usize;
+
+    while t < template_segments.len() {
+        let segment = template_segments[t];
+        if segment.starts_with("{*") && segment.ends_with('}') {
+            // A catch-all takes every remaining segment, and there must
+            // be at least one.
+            if wanted.len() - w == 0 {
+                return None;
+            }
+            return Some(literals);
+        }
+        if w >= wanted.len() {
+            return None;
+        }
+        if segment.starts_with('{') && segment.ends_with('}') {
+            // A named parameter takes exactly one segment.
+        } else {
+            if segment != wanted[w] {
+                return None;
+            }
+            literals += 1;
+        }
+        t += 1;
+        w += 1;
+    }
+
+    if w != wanted.len() {
+        return None;
+    }
+    Some(literals)
 }
 
 /// Validate a response body and return it for further assertions.
@@ -214,6 +295,147 @@ async fn the_documented_shapes_are_the_ones_the_server_returns() {
     let repos = listed.as_array().expect("the repository list is an array");
     assert_eq!(repos.len(), 1);
     assert_eq!(repos[0]["full_name"], "contractuser/contract-repo");
+}
+
+/// An endpoint whose path carries parameters is documented under a
+/// template, and the request carries concrete values. The lookup has to
+/// bridge the two, or every endpoint with a path parameter is out of
+/// reach of this validator.
+#[tokio::test]
+async fn a_path_with_parameters_is_matched_against_its_template() {
+    let (app, _guard) = common::test_app().await;
+
+    let registered = assert_response_matches(
+        &app,
+        Method::POST,
+        "/api/auth/register",
+        Some(serde_json::json!({
+            "username": "templated",
+            "email": "templated@example.com",
+            "password": "hunter22",
+        })),
+        None,
+    )
+    .await;
+    let token = registered["token"].as_str().unwrap().to_string();
+
+    let created = assert_response_matches(
+        &app,
+        Method::POST,
+        "/api/repos",
+        Some(serde_json::json!({
+            "name": "templated-repo",
+            "description": "template",
+            "default_branch": "main",
+        })),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(created["full_name"], "templated/templated-repo");
+
+    // The documented path is `/api/repos/{owner}/{repo}/prs`; the request
+    // carries `templated` and `templated-repo`.
+    let prs = assert_response_matches(
+        &app,
+        Method::GET,
+        "/api/repos/templated/templated-repo/prs",
+        None,
+        Some(&token),
+    )
+    .await;
+    assert!(
+        prs["prs"].is_array(),
+        "the PR list must be an array, got {prs}"
+    );
+}
+
+/// The CI agent callbacks are documented, and their documented shapes are
+/// the shapes they answer with.
+///
+/// These two endpoints were live long before they were documented: the
+/// drift test read the route list out of a hand-maintained list of
+/// modules, and `routes/ci_agent.rs` was not on it. Nothing could see
+/// them — not the drift test, not this validator.
+#[tokio::test]
+async fn the_agent_callbacks_match_their_documented_shapes() {
+    let (app, _guard) = common::test_app().await;
+
+    // A job to report on.
+    let user = common::register_user(&app, "contractagent").await;
+    let full = common::create_repo(&app, &user.token, "contract-agent-repo").await;
+    let (owner, repo) = full.split_once('/').unwrap();
+    let repo_row = app
+        .db
+        .get_repository_by_name(&owner, &repo)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let pipeline_id: i64 = sqlx::query_scalar(
+        "INSERT INTO pipelines (repo_id, path, ref, ref_sha, content, created_at, updated_at)
+         VALUES ($1, '.gita-ci.yml', 'main', 'deadbeef', 'stages: [b]', $2, $2)
+         RETURNING id",
+    )
+    .bind(repo_row.id)
+    .bind(&now)
+    .fetch_one(app.db.pool())
+    .await
+    .unwrap();
+    let run_id: i64 = sqlx::query_scalar(
+        "INSERT INTO pipeline_runs (pipeline_id, repo_id, ref, head_sha, status, queued_at)
+         VALUES ($1, $2, 'main', 'deadbeef', 'running', $3)
+         RETURNING id",
+    )
+    .bind(pipeline_id)
+    .bind(repo_row.id)
+    .bind(&now)
+    .fetch_one(app.db.pool())
+    .await
+    .unwrap();
+    let job_id = app
+        .db
+        .insert_job(run_id, "build", "b", &[], &["echo hi".to_string()])
+        .await
+        .unwrap();
+
+    // The agent token, minted the way the runner mints it.
+    let token = {
+        use rand::RngCore;
+        let mut bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        let plaintext = hex::encode(bytes);
+        app.db
+            .set_job_agent_token(job_id, &gita_db::hash_token(&plaintext))
+            .await
+            .unwrap();
+        plaintext
+    };
+
+    let appended = assert_response_matches(
+        &app,
+        Method::POST,
+        &format!("/api/ci/agent/jobs/{job_id}/logs"),
+        Some(serde_json::json!({
+            "seq": 1,
+            "stream": "stdout",
+            "line": "hello from the agent",
+        })),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(appended["ok"], true);
+
+    let reported = assert_response_matches(
+        &app,
+        Method::POST,
+        &format!("/api/ci/agent/jobs/{job_id}/status"),
+        Some(serde_json::json!({ "status": "running" })),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(reported["ok"], true);
+    assert_eq!(reported["applied"], true);
 }
 
 /// The number of JSON 200 responses that currently publish a schema.

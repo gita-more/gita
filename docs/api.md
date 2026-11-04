@@ -676,3 +676,23 @@ Fetch a user's avatar image
 - 无需认证
 - 响应码：`200`, `404`
 
+## ci-agent
+
+### `POST /api/ci/agent/jobs/{job_id}/logs`
+
+Append a log line to a job (agent inside the VM)
+
+Requires the per-job agent token. A wrong token and a nonexistent job get the same answer, so the endpoint cannot be used to probe which job ids exist.
+
+- 需要认证
+- 响应码：`200`, `400`, `401`
+
+### `POST /api/ci/agent/jobs/{job_id}/status`
+
+Report a job's status (agent inside the VM)
+
+Requires the per-job agent token. Only running, success and failed may be reported. A job that has moved on (canceled, or already finished) answers `applied: false` rather than an error, so a replayed callback does not make the agent retry forever.
+
+- 需要认证
+- 响应码：`200`, `400`, `401`
+
