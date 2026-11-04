@@ -361,3 +361,142 @@ async fn get_repo(
         name: repo.name,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------------------------------------------------------------------------
+    // default_lease
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn default_lease_is_five_minutes() {
+        assert_eq!(default_lease(), 300);
+    }
+
+    // ---------------------------------------------------------------------------
+    // ClaimRequest validation
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn claim_request_lease_secs_defaults_to_300() {
+        let req: ClaimRequest = serde_json::from_str(r#"{"runner_name":"r1"}"#).unwrap();
+        assert_eq!(req.runner_name, "r1");
+        assert_eq!(req.lease_secs, 300);
+    }
+
+    #[test]
+    fn claim_request_lease_secs_from_body() {
+        let req: ClaimRequest =
+            serde_json::from_str(r#"{"runner_name":"r1","lease_secs":600}"#).unwrap();
+        assert_eq!(req.runner_name, "r1");
+        assert_eq!(req.lease_secs, 600);
+    }
+
+    // ---------------------------------------------------------------------------
+    // CreateJobRequest validation
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn create_job_request_defaults() {
+        let req: CreateJobRequest = serde_json::from_str(r#"{"name":"build","stage":"build"}"#).unwrap();
+        assert_eq!(req.name, "build");
+        assert_eq!(req.stage, "build");
+        assert_eq!(req.needs, Vec::<String>::new());
+        assert_eq!(req.script, Vec::<String>::new());
+    }
+
+    #[test]
+    fn create_job_request_with_values() {
+        let req: CreateJobRequest =
+            serde_json::from_str(r#"{"name":"build","stage":"build","needs":["test"],"script":["echo hi"]}"#)
+                .unwrap();
+        assert_eq!(req.name, "build");
+        assert_eq!(req.stage, "build");
+        assert_eq!(req.needs, vec!["test"]);
+        assert_eq!(req.script, vec!["echo hi"]);
+    }
+
+    // ---------------------------------------------------------------------------
+    // JobStatusRequest validation
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn job_status_request_accepts_valid_statuses() {
+        for status in ["queued", "running", "success", "failed", "canceled"] {
+            let req: JobStatusRequest =
+                serde_json::from_str(&format!(r#"{{"status":"{status}"}}"#)).unwrap();
+            assert_eq!(req.status, status);
+            assert_eq!(req.exit_code, None);
+        }
+    }
+
+    #[test]
+    fn job_status_request_with_exit_code() {
+        let req: JobStatusRequest =
+            serde_json::from_str(r#"{"status":"failed","exit_code":1}"#).unwrap();
+        assert_eq!(req.status, "failed");
+        assert_eq!(req.exit_code, Some(1));
+    }
+
+    // ---------------------------------------------------------------------------
+    // RunStatusRequest validation
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn run_status_request_accepts_valid_statuses() {
+        for status in ["running", "success", "failed", "canceled"] {
+            let req: RunStatusRequest =
+                serde_json::from_str(&format!(r#"{{"status":"{status}"}}"#)).unwrap();
+            assert_eq!(req.status, status);
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // LogLine validation
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn log_line_defaults_timestamp() {
+        let line: LogLine =
+            serde_json::from_str(r#"{"seq":1,"stream":"stdout","line":"hi"}"#).unwrap();
+        assert_eq!(line.seq, 1);
+        assert_eq!(line.stream, "stdout");
+        assert_eq!(line.line, "hi");
+        assert!(line.timestamp.is_none());
+    }
+
+    #[test]
+    fn log_line_accepts_timestamp() {
+        let line: LogLine = serde_json::from_str(
+            r#"{"seq":1,"stream":"stderr","line":"err","timestamp":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(line.stream, "stderr");
+        assert!(line.timestamp.is_some());
+    }
+
+    // ---------------------------------------------------------------------------
+    // Log stream validation
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn log_stream_accepts_stdout_stderr_system() {
+        for stream in ["stdout", "stderr", "system"] {
+            let line: LogLine =
+                serde_json::from_str(&format!(r#"{{"seq":1,"stream":"{stream}","line":"x"}}"#)).unwrap();
+            assert_eq!(line.stream, stream);
+        }
+    }
+
+    #[test]
+    fn log_stream_parses_any_stream_string_validation_happens_at_handler() {
+        // The LogLine struct itself accepts any stream string; the
+        // "stream must be stdout/stderr/system" check is enforced by the
+        // append_logs handler, not at deserialization.
+        let line: LogLine =
+            serde_json::from_str(r#"{"seq":1,"stream":"bogus","line":"x"}"#).unwrap();
+        assert_eq!(line.stream, "bogus");
+    }
+}
