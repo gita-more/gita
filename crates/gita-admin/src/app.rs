@@ -16,11 +16,14 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use crate::config::{PASSWORD_RESET_RATE_BURST, PASSWORD_RESET_RATE_PER_SECOND, REGISTER_RATE_BURST, REGISTER_RATE_PER_SECOND};
+use crate::config::{
+    PASSWORD_RESET_RATE_BURST, PASSWORD_RESET_RATE_PER_SECOND, REGISTER_RATE_BURST,
+    REGISTER_RATE_PER_SECOND,
+};
 
 use crate::runtime::find_web_dist;
 use crate::shutdown;
-use crate::sign_webhook_payload;
+
 use crate::Config;
 
 /// The assembled application state.
@@ -73,11 +76,8 @@ async fn build_vm_state(
     // key back with `gita-admin vm api-key` and hand it to `gita-vm-node`.
     let node_api_key =
         gita_vm_control::internal::resolve_node_api_key(&db, vm_cfg.api_key.clone()).await?;
-    let vm_auth = gita_vm_control::auth::VmAuth::new(
-        db.clone(),
-        Arc::new(auth.clone()),
-        Some(node_api_key),
-    );
+    let vm_auth =
+        gita_vm_control::auth::VmAuth::new(db.clone(), Arc::new(auth.clone()), Some(node_api_key));
 
     let control_config = gita_vm_control::ControlConfig {
         reconcile_interval: std::time::Duration::from_secs(vm_cfg.reconcile_interval_secs),
@@ -183,25 +183,11 @@ impl App {
                                 // user was told about and never got.
                                 let delivery_tasks = outer_tasks.clone();
                                 delivery_tasks.spawn(async move {
-                                    let client = reqwest::Client::new();
-                                    let mut req = client
-                                        .post(&url)
-                                        .header("content-type", "application/json")
-                                        .header("x-gita-event", &event_name);
-                                    // Sign the body with the hook's secret so
-                                    // the receiver can verify it came from
-                                    // us. A hook without a secret is still
-                                    // delivered, but unsigned.
-                                    if !secret.is_empty() {
-                                        let signature = sign_webhook_payload(&secret, &body);
-                                        req = req.header(
-                                            "x-gita-signature-256",
-                                            format!("sha256={signature}"),
-                                        );
-                                    }
-                                    let req = req.body(body);
-                                    match req.send().await {
-                                        Ok(_) => {
+                                    let outcome =
+                                        crate::webhook::deliver(&url, &event_name, &secret, &body)
+                                            .await;
+                                    match outcome {
+                                        Ok(()) => {
                                             tracing::info!("webhook {hook_id} delivered to {url}")
                                         }
                                         Err(e) => {

@@ -15,10 +15,7 @@ pub async fn run(cmd: crate::config::ImageCmd) -> Result<()> {
             name,
             arch,
             api_key,
-        } => {
-            register_image(&control_url, &pool, &path, &name, &arch, api_key.as_deref())
-                .await
-        }
+        } => register_image(&control_url, &pool, &path, &name, &arch, api_key.as_deref()).await,
         crate::config::ImageCmd::List {
             control_url,
             api_key,

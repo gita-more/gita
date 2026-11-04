@@ -126,7 +126,10 @@ pub async fn run(config: Config) -> Result<()> {
             ticker.tick().await;
             match reap_db.reap_stale_runs(600).await {
                 Ok(ids) if !ids.is_empty() => {
-                    warn!("failed {} run(s) whose runner stopped renewing: {ids:?}", ids.len())
+                    warn!(
+                        "failed {} run(s) whose runner stopped renewing: {ids:?}",
+                        ids.len()
+                    )
                 }
                 Ok(_) => {}
                 Err(e) => warn!("reaping stale runs failed: {e}"),
@@ -220,7 +223,6 @@ fn random_hex_token() -> String {
     hex::encode(bytes)
 }
 
-
 /// Mint (or reuse) a runner token for the embedded CI runner.
 ///
 /// The runner API requires a personal access token whose name starts with
@@ -233,12 +235,14 @@ async fn ensure_embedded_runner_token(db: &gita_db::Db) -> anyhow::Result<String
         Some(u) => u,
         None => {
             let hash = gita_api::auth::hash_password("gita-runner-internal");
-            db.create_user(username, "gita-runner@localhost", &hash).await?
+            db.create_user(username, "gita-runner@localhost", &hash)
+                .await?
         }
     };
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     let token = hex::encode(bytes);
-    db.create_access_token(user.id, &token, "runner/embedded").await?;
+    db.create_access_token(user.id, &token, "runner/embedded")
+        .await?;
     Ok(token)
 }

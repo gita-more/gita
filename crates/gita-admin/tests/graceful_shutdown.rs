@@ -495,8 +495,8 @@ fn the_shutdown_waits_for_a_webhook_delivery_in_flight() {
         std::thread::sleep(Duration::from_millis(20));
     }
     // "At least one delivery" rather than "exactly one": the dispatcher
-    // may retry a delivery whose response was slow, and a retry is not
-    // what this test is about.
+    // retries a delivery that failed, and a retry is not what this test
+    // is about.
     assert!(
         receiver.count() >= 1,
         "the webhook should have been delivered"

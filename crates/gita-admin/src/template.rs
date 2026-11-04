@@ -45,9 +45,7 @@ async fn create_template(
     network: &str,
 ) -> Result<()> {
     use crate::config::parse_size;
-    use gita_ci::template::{
-        CreateTemplateRequest, ImageRef, NetworkAttachment, VmSpec,
-    };
+    use gita_ci::template::{CreateTemplateRequest, ImageRef, NetworkAttachment, VmSpec};
 
     let client = gita_ci::TemplateClient::with_key(control_url, api_key);
     let req = CreateTemplateRequest {
@@ -76,10 +74,7 @@ async fn create_template(
     };
 
     let template = client.create(req).await?;
-    println!(
-        "Template created: {} (id: {})",
-        template.name, template.id
-    );
+    println!("Template created: {} (id: {})", template.name, template.id);
     Ok(())
 }
 

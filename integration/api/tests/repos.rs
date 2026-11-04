@@ -711,6 +711,38 @@ async fn update_repo_settings_rename_transfer_visibility() {
     assert_eq!(body["is_private"], false);
 }
 
+/// The body of a raw HTTP request, as the receiver would read it.
+///
+/// The signature is computed over the body *exactly as sent*, so the
+/// test has to extract the same bytes the server wrote — not a
+/// re-serialization of the parsed JSON.
+///
+/// The body is cut at `content-length`: the mock server reads into a
+/// fixed-size buffer, so whatever follows the body is padding the
+/// receiver would never see.
+fn body_of(raw_request: &str) -> &str {
+    let separator = raw_request
+        .find("\r\n\r\n")
+        .expect("an HTTP request must have a header/body separator");
+    let headers = &raw_request[..separator];
+    let body = &raw_request[separator + 4..];
+
+    let length: usize = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())?
+        })
+        .expect("the request must carry a content-length");
+
+    // A UTF-8 string's bytes may be longer than its character count,
+    // so cut on the byte boundary.
+    let bytes = body.as_bytes();
+    &body[..length.min(bytes.len())]
+}
+
 #[tokio::test]
 async fn webhooks_crud_and_fanout() {
     let (app, _guard) = common::test_app().await;
@@ -738,7 +770,7 @@ async fn webhooks_crud_and_fanout() {
     // Start a small mock HTTP server that records POSTs.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let received: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+    let received: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let received_clone = received.clone();
     tokio::spawn(async move {
@@ -754,9 +786,7 @@ async fn webhooks_crud_and_fanout() {
                 received_inner
                     .lock()
                     .unwrap()
-                    .push(serde_json::Value::String(
-                        String::from_utf8_lossy(&buf).to_string(),
-                    ));
+                    .push(String::from_utf8_lossy(&buf).to_string());
                 let _ = socket
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                     .await;
@@ -765,6 +795,9 @@ async fn webhooks_crud_and_fanout() {
     });
 
     let url = format!("http://{addr}/hook");
+    // The hook's secret. The delivery must be signed with it, or the
+    // receiver has no way to tell a real delivery from a forged one.
+    let hook_secret = "hook-secret-value";
 
     // Non-owner cannot create a hook.
     let intruder = register_user(&app, "hook-intruder").await;
@@ -783,7 +816,7 @@ async fn webhooks_crud_and_fanout() {
         &app,
         axum::http::Method::POST,
         &format!("/api/repos/{owner}/{name}/hooks"),
-        Some(serde_json::json!({"url": url, "events": ["push"]})),
+        Some(serde_json::json!({"url": url, "events": ["push"], "secret": hook_secret})),
         Some(&user.token),
     )
     .await;
@@ -834,6 +867,24 @@ async fn webhooks_crud_and_fanout() {
     assert!(
         !received.lock().unwrap().is_empty(),
         "webhook did not fire within 5s"
+    );
+
+    // The delivery carries the event name and a signature over the
+    // body. A receiver that cannot verify the signature has no way to
+    // tell a real delivery from a forged one, so this is part of the
+    // contract — not a detail.
+    let raw = received.lock().unwrap()[0].clone();
+    assert!(
+        raw.contains("x-gita-event: push"),
+        "the delivery must name the event, got:\n{raw}"
+    );
+    let expected = format!(
+        "x-gita-signature-256: sha256={}",
+        gita_admin::sign_webhook_payload(hook_secret, body_of(&raw))
+    );
+    assert!(
+        raw.contains(&expected),
+        "the delivery must be signed with the hook's secret.\n  expected: {expected}\n  got:\n{raw}"
     );
 
     // Delete hook.
