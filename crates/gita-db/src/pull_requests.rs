@@ -134,23 +134,38 @@ impl Db {
         rows.iter().map(row_to_pr).collect()
     }
 
-    pub async fn update_pr_status(
+    /// Move a pull request from one status to another, but only if it is
+    /// still in `from`.
+    ///
+    /// Returns `true` when this call performed the transition. Two racing
+    /// requests therefore cannot both win: the second one's `WHERE` clause
+    /// no longer matches, it updates zero rows, and it learns it lost.
+    ///
+    /// The merge path needs this. Git's own ref update is already a
+    /// compare-and-swap on the branch, but two merges of the same PR would
+    /// both pass a plain `status != Open` check and both run git; the
+    /// second would then overwrite the first one's `merged_at` and publish
+    /// a second "merged" event for a PR that was already merged.
+    pub async fn transition_pr_status(
         &self,
         id: i64,
-        status: PrStatus,
+        from: PrStatus,
+        to: PrStatus,
         merged_at: Option<DateTime<Utc>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query(
-            "UPDATE pull_requests SET status = $2, updated_at = $3, merged_at = $4 WHERE id = $1",
+        let result = sqlx::query(
+            "UPDATE pull_requests SET status = $3, updated_at = $4, merged_at = $5
+             WHERE id = $1 AND status = $2",
         )
         .bind(id)
-        .bind(status.to_string())
+        .bind(from.to_string())
+        .bind(to.to_string())
         .bind(&now)
         .bind(merged_at.map(|d| d.to_rfc3339()))
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn update_pr_head_sha(&self, id: i64, head_sha: &str) -> Result<()> {

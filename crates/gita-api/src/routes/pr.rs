@@ -306,7 +306,8 @@ async fn merge_pr(
     repo: &str,
     number: i64,
 ) -> ApiResult<axum::Json<serde_json::Value>> {
-    let repository = crate::routes::visibility::load_writable_repo(state, owner, repo, user).await?;
+    let repository =
+        crate::routes::visibility::load_writable_repo(state, owner, repo, user).await?;
     let pr = state
         .db
         .get_pull_request(repository.id, number)
@@ -316,6 +317,28 @@ async fn merge_pr(
         return Err(ApiError::Conflict("pull request is not open".into()));
     }
 
+    // Claim the merge before touching git.
+    //
+    // Checking `status != Open` and merging afterwards is a race: two
+    // requests both pass the check, both run git, and the second one
+    // produces a *second* merge commit whose parents include the first
+    // one's — the branch then carries a duplicate merge for one PR. The
+    // state change is the only thing that can be made atomic, so it goes
+    // first and decides the winner; a request that loses it never runs git.
+    //
+    // If the merge below fails, the claim is reverted so the PR can be
+    // retried instead of being stuck "merged" with no merge commit.
+    let claimed_at = chrono::Utc::now();
+    if !state
+        .db
+        .transition_pr_status(pr.id, PrStatus::Open, PrStatus::Merged, Some(claimed_at))
+        .await?
+    {
+        return Err(ApiError::Conflict(
+            "pull request is already being merged or closed".into(),
+        ));
+    }
+
     // Detect conflicts before attempting the merge so a conflicting PR
     // returns a clear 409 instead of a generic 500.
     let conflicts = state
@@ -323,6 +346,7 @@ async fn merge_pr(
         .check_merge_conflict(owner, repo, &pr.target_branch, &pr.head_sha)
         .map_err(ApiError::from)?;
     if !conflicts.is_empty() {
+        revert_merge_claim(state, pr.id).await;
         return Err(ApiError::Conflict(format!(
             "merge conflict in: {}",
             conflicts.join(", ")
@@ -340,23 +364,17 @@ async fn merge_pr(
     let author_name = user.username.clone();
 
     // Perform the merge (fast-forward or merge commit).
-    state
-        .git
-        .merge_branch(
-            owner,
-            repo,
-            &pr.target_branch,
-            &pr.head_sha,
-            &author_name,
-            &author_email,
-        )
-        .map_err(ApiError::from)?;
-
-    let merged_at = chrono::Utc::now();
-    state
-        .db
-        .update_pr_status(pr.id, PrStatus::Merged, Some(merged_at))
-        .await?;
+    if let Err(e) = state.git.merge_branch(
+        owner,
+        repo,
+        &pr.target_branch,
+        &pr.head_sha,
+        &author_name,
+        &author_email,
+    ) {
+        revert_merge_claim(state, pr.id).await;
+        return Err(ApiError::from(e));
+    }
 
     let new_head = state
         .git
@@ -378,6 +396,24 @@ async fn merge_pr(
         "message": "pull request merged",
         "merge_sha": new_head,
     })))
+}
+
+/// Undo the "claimed for merge" status change when the git step fails.
+///
+/// Only a *failure path* calls this: the claim already moved the PR to
+/// merged, so leaving it there would strand a PR whose branch never got
+/// the merge. The revert is best-effort by design — if it cannot run
+/// (database gone), the error that is about to be returned is the one
+/// worth reporting, and the next merge attempt will see a non-open PR
+/// rather than silently merging twice.
+async fn revert_merge_claim(state: &AppState, pr_id: i64) {
+    if let Err(e) = state
+        .db
+        .transition_pr_status(pr_id, PrStatus::Merged, PrStatus::Open, None)
+        .await
+    {
+        tracing::error!("failed to revert the merge claim on PR {pr_id}: {e}");
+    }
 }
 
 async fn pr_diff(
@@ -438,10 +474,17 @@ async fn close_pr(
     if pr.status != PrStatus::Open {
         return Err(ApiError::Conflict("pull request is not open".into()));
     }
-    state
+    // Same claim as the merge path: closing is a status transition, and
+    // two concurrent closes (or a close racing a merge) must not both
+    // report success. Only the request that moves open → closed publishes
+    // the event.
+    if !state
         .db
-        .update_pr_status(pr.id, PrStatus::Closed, None)
-        .await?;
+        .transition_pr_status(pr.id, PrStatus::Open, PrStatus::Closed, None)
+        .await?
+    {
+        return Err(ApiError::Conflict("pull request is not open".into()));
+    }
 
     state.bus.publish(
         EventType::PullRequestClosed,
